@@ -21,7 +21,13 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        submodules: recursive
+        submodules: false
+
+    - name: Clone Mu-Silicium
+      run: |
+        git clone --depth 1 https://github.com/Project-Silicium/Mu-Silicium.git Mu-Silicium-ref
+        cd Mu-Silicium-ref
+        git submodule update --init --recursive
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -56,10 +62,33 @@ jobs:
         python3 -m pip install --upgrade pip
         pip3 install -r pip-requirements.txt
 
-    - name: Initialize git submodules
-      working-directory: Mu-Silicium-ref
+    - name: Copy MT6765 UEFI packages
       run: |
-        git submodule update --init --recursive
+        # Copy MT6765 SoC package
+        cp -r uefi-dandelion/Silicon/MediaTek/MT6765Pkg Mu-Silicium-ref/Silicon/MediaTek/
+        # Copy dandelion device package
+        cp -r uefi-dandelion/Platforms/Xiaomi/dandelionPkg Mu-Silicium-ref/Platforms/Xiaomi/
+        # Copy device configuration (create if not exists)
+        mkdir -p Mu-Silicium-ref/Resources/Configs
+        if [ -f uefi-dandelion/Resources/Configs/dandelion.toml ]; then
+          cp uefi-dandelion/Resources/Configs/dandelion.toml Mu-Silicium-ref/Resources/Configs/
+        else
+          echo "Creating dandelion.toml configuration..."
+          cat > Mu-Silicium-ref/Resources/Configs/dandelion.toml << 'EOF'
+        [uefi_fd]
+        base = "0x40080000"
+        size = "0x200000"
+
+        [boot_image]
+        base = "0x40000000"
+        kernel_offset = "0x00080000"
+        ramdisk_offset = "0x01000000"
+        tags_offset = "0x00000100"
+        pagesize = "2048"
+        header_version = "2"
+        cmdline = "console=ttyS0,115200 loglevel=8"
+        EOF
+        fi
 
     - name: Build UEFI firmware
       working-directory: Mu-Silicium-ref
