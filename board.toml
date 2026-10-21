@@ -1,0 +1,144 @@
+# UniXNU Device Configuration: Xiaomi Redmi 9A (dandelion)
+# Device repository for iOS on MTK MT6765
+
+[device]
+name = "dandelion"
+product = "Redmi 9A"
+model = "M2006C3LC"
+soc = "MT6765"
+soc_vendor = "MediaTek"
+architecture = "arm64"
+cpu_cores = 4
+cpu_type = "Cortex-A53"
+cpu_freq_mhz = 2000
+ram_gb = 3.7
+storage_type = "emmc"
+storage_gb = 32
+display_resolution = "720x1600"
+display_interface = "DSI"
+display_driver = "NT36525B"
+touch_driver = "Novatek"
+pmic = "MT6357"
+bootloader = "LK"
+android_version = "13"
+kernel_version = "4.19.127"
+
+[ipsw]
+# Target iOS version (iPhone X for compatibility)
+device_class = "iPhone10,3"
+product_type = "D22AP"
+build = "20H392"
+version = "16.7.16"
+
+[boot]
+# MTK boot flow: preloader -> LK -> XNU
+boot_flow = "mtk-lk"
+boot_address = "0x40000000"
+kernel_load_address = "0x40080000"
+dtb_load_address = "0x47c80000"
+ramdisk_load_address = "0x48000000"
+
+[memory]
+# Memory map from /proc/iomem
+ram_base = "0x40000000"
+ram_size = "0xFCC00000"  # ~4GB
+kernel_window = "0x40080000"
+kernel_window_size = "0x02000000"  # 32MB for kernel
+payload_base = "0x48000000"
+payload_size = "0x08000000"  # 128MB for payload
+
+[interrupts]
+# GICv3 with MTK extensions
+interrupt_controller = "GICv3"
+timer_irq = 30
+pmic_irq = 161
+touch_irq = 17
+
+[peripherals]
+# I2C buses
+i2c0 = "0x11007000"
+i2c1 = "0x11008000"
+i2c2 = "0x11009000"
+i2c3 = "0x1100F000"
+i2c4 = "0x11011000"
+i2c5 = "0x11016000"
+i2c6 = "0x1100D000"
+
+# SPI buses
+spi0 = "0x1100A000"
+spi1 = "0x11010000"
+spi2 = "0x11012000"
+spi3 = "0x11013000"
+spi4 = "0x11014000"
+spi5 = "0x11015000"
+
+# Display
+display_controller = "MTK DDP"
+display_base = "0x14000000"
+display_irq = 0
+
+# Touch
+touch_controller = "Novatek"
+touch_bus = "i2c3"
+touch_addr = "0x5d"
+touch_irq = 17
+
+# PMIC
+pmic_controller = "MT6357"
+pmic_interface = "PMIC_WRAP"
+pmic_base = "0x1000D000"
+pmic_irq = 161
+
+# Storage
+storage_controller = "MSDC"
+storage_base = "0x11230000"
+storage_type = "eMMC"
+
+# USB
+usb_controller = "MU3D"
+usb_base = "0x11200000"
+
+[kernel]
+# XNU kernel configuration
+xnu_version = "xnu-8796"  # iOS 16 generation
+page_size = "16K"
+defconfig = "dandelion_defconfig"
+
+[drivers]
+# Required drivers
+required = [
+  "mtk-pmic",
+  "mtk-display",
+  "mtk-touch",
+  "mtk-emmc",
+  "mtk-i2c",
+  "mtk-uart",
+  "mtk-timer",
+  "mtk-gic",
+]
+
+[build]
+# Build configuration
+toolchain = "aarch64-none-elf"
+compiler = "clang"
+linker = "lld"
+
+[notes]
+status = "bringup"
+last_updated = "2026-10-21"
+notes = """
+Initial device repository created based on hardware information collected via adb.
+
+Key challenges:
+1. MTK boot flow differs from Qualcomm (no ABL, uses LK instead)
+2. No Mu-Silicium UEFI port for MT6765 yet
+3. All drivers need to be written from scratch or ported from Linux
+4. Cortex-A53 is older than supported devices (A55/A76)
+
+Hardware information sources:
+- /proc/iomem: Memory map
+- /proc/interrupts: Interrupt layout
+- /proc/mtkfb: Display info
+- dmesg: Driver logs
+- getprop: Device properties
+"""
