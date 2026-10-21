@@ -1,0 +1,55 @@
+# UniXNU-dandelion Device Configuration
+# Xiaomi Redmi 9A (MT6765 / Helio G25)
+
+[device]
+name = "dandelion"
+codename = "dandelion"
+vendor = "Xiaomi"
+model = "Redmi 9A"
+soc = "MT6765"
+soc_vendor = "MediaTek"
+architecture = "arm64"
+
+[uefi]
+# UEFI firmware configuration
+firmware_base = "0x40080000"
+firmware_size = "0x200000"  # 2MB
+fd_base = "0x40080000"
+fd_size = "0x200000"
+
+[boot]
+# Boot image configuration
+boot_base = "0x40000000"
+kernel_offset = "0x00080000"
+ramdisk_offset = "0x01000000"
+tags_offset = "0x00000100"
+pagesize = "2048"
+header_version = "2"
+cmdline = "console=ttyS0,115200 loglevel=8"
+
+[display]
+# Display configuration for Redmi 9A
+width = 720
+height = 1600
+color_depth = 32
+
+[memory]
+# Memory configuration
+ram_base = "0x40000000"
+ram_size = "0xFCC00000"  # ~4GB
+
+[gic]
+# GICv2 configuration for MT6765
+gic_distributor_base = "0x10221000"
+gic_cpu_interface_base = "0x10222000"
+gic_version = "2"
+
+[storage]
+# Storage configuration
+storage_type = "emmc"
+emmc_base = "0x11230000"
+
+[debug]
+# Debug configuration
+uart_base = "0x11002000"
+uart_baud = 115200
