@@ -5,11 +5,13 @@ on:
     branches: [ main, develop ]
     paths:
       - 'Mu-Silicium-ref/**'
+      - 'uefi-dandelion/**'
       - '.github/workflows/build-uefi.yml'
   pull_request:
     branches: [ main ]
     paths:
       - 'Mu-Silicium-ref/**'
+      - 'uefi-dandelion/**'
   workflow_dispatch:
 
 jobs:
