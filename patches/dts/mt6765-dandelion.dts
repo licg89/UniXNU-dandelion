@@ -1,0 +1,169 @@
+/*
+ * XNU Device Tree for MT6765 (dandelion)
+ *
+ * Copyright (c) 2026 UniXNU Project
+ *
+ * Device tree source for Xiaomi Redmi 9A
+ */
+
+/dts-v1/;
+
+/ {
+    compatible = "xiaomi,dandelion", "mediatek,mt6765";
+    model = "Xiaomi Redmi 9A";
+    #address-cells = <2>;
+    #size-cells = <2>;
+
+    chosen {
+        bootargs = "debug=0x8 loglevel=15";
+        stdout-path = "serial0:115200n8";
+    };
+
+    memory@40000000 {
+        device_type = "memory";
+        reg = <0x0 0x40000000 0x0 0xFCC00000>;  /* 4GB */
+    };
+
+    cpus {
+        #address-cells = <2>;
+        #size-cells = <0>;
+
+        cpu0: cpu@0 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a53";
+            reg = <0x0 0x0>;
+            enable-method = "psci";
+            cpu-idle-states = <&CPU_SLEEP_0>;
+        };
+
+        cpu1: cpu@1 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a53";
+            reg = <0x0 0x1>;
+            enable-method = "psci";
+            cpu-idle-states = <&CPU_SLEEP_0>;
+        };
+
+        cpu2: cpu@2 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a53";
+            reg = <0x0 0x2>;
+            enable-method = "psci";
+            cpu-idle-states = <&CPU_SLEEP_0>;
+        };
+
+        cpu3: cpu@3 {
+            device_type = "cpu";
+            compatible = "arm,cortex-a53";
+            reg = <0x0 0x3>;
+            enable-method = "psci";
+            cpu-idle-states = <&CPU_SLEEP_0>;
+        };
+    };
+
+    idle-states {
+        entry-method = "psci";
+
+        CPU_SLEEP_0: cpu-sleep-0 {
+            compatible = "arm,idle-state";
+            arm,psci-suspend-param = <0x0010000>;
+            entry-latency-us = <300>;
+            exit-latency-us = <600>;
+            min-residency-us = <1000>;
+        };
+    };
+
+    psci {
+        compatible = "arm,psci-1.0";
+        method = "smc";
+    };
+
+    timer {
+        compatible = "arm,armv8-timer";
+        interrupts = <1 13 0xff01>,
+                     <1 14 0xff01>,
+                     <1 11 0xff01>,
+                     <1 10 0xff01>;
+        clock-frequency = <13000000>;
+        always-on;
+    };
+
+    interrupt-controller@10221000 {
+        compatible = "arm,gic-400";
+        reg = <0x0 0x10221000 0x0 0x1000>,
+              <0x0 0x10222000 0x0 0x1000>;
+        #interrupt-cells = <3>;
+        interrupt-controller;
+        interrupts = <1 9 0xf04>;
+    };
+
+    serial@11002000 {
+        compatible = "mediatek,mt6765-uart", "mediatek,mt6577-uart";
+        reg = <0x0 0x11002000 0x0 0x1000>;
+        interrupts = <0 219 0x4>;
+        clock-frequency = <26000000>;
+        current-speed = <115200>;
+        reg-shift = <2>;
+        status = "okay";
+    };
+
+    pmic@1000d000 {
+        compatible = "mediatek,mt6357";
+        reg = <0x0 0x1000d000 0x0 0x1000>;
+        interrupts = <0 161 0x4>;
+        interrupt-parent = <&gic>;
+    };
+
+    i2c@1100f000 {
+        compatible = "mediatek,mt6765-i2c";
+        reg = <0x0 0x1100f000 0x0 0x1000>;
+        interrupts = <0 226 0x4>;
+        clock-frequency = <400000>;
+        #address-cells = <1>;
+        #size-cells = <0>;
+        status = "okay";
+
+        touchscreen@5d {
+            compatible = "novatek,nvt-ts";
+            reg = <0x5d>;
+            interrupts = <0 17 0x4>;
+            interrupt-parent = <&gic>;
+            touch-max-x = <720>;
+            touch-max-y = <1600>;
+            touch-max-touches = <5>;
+        };
+    };
+
+    display@14000000 {
+        compatible = "mediatek,mt6765-display";
+        reg = <0x0 0x14000000 0x0 0x100000>;
+        status = "okay";
+
+        panel {
+            compatible = "novatek,nt36525b";
+            width-mm = <68>;
+            height-mm = <151>;
+            resolution-x = <720>;
+            resolution-y = <1600>;
+            refresh-rate = <60>;
+        };
+    };
+
+    mmc@11230000 {
+        compatible = "mediatek,mt6765-mmc";
+        reg = <0x0 0x11230000 0x0 0x1000>;
+        interrupts = <0 110 0x4>;
+        bus-width = <8>;
+        non-removable;
+        cap-mmc-highspeed;
+        mmc-hs200-1_8v;
+        status = "okay";
+    };
+
+    timer@10008000 {
+        compatible = "mediatek,mt6765-timer";
+        reg = <0x0 0x10008000 0x0 0x1000>;
+        interrupts = <0 106 0x4>;
+        status = "okay";
+    };
+};
