@@ -37,10 +37,14 @@ UniXNU-dandelion/
 ├── configs/
 │   └── dandelion_defconfig # Kernel configuration
 ├── drivers/
-│   ├── mtk-pmic/          # MT6357 PMIC driver
-│   ├── mtk-display/       # MTK DDP + NT36525B driver
-│   ├── mtk-touch/         # Novatek touch driver
-│   └── mtk-emmc/          # MTK MSDC eMMC driver
+│   ├── mtk-pmic/          # MT6357 PMIC driver ✅
+│   ├── mtk-i2c/           # I2C controller driver ✅
+│   ├── novatek-touch/     # Novatek touch driver ✅
+│   ├── mtk-ddp/           # Display (DDP) driver ✅
+│   ├── mtk-msdc/          # eMMC storage driver ✅
+│   ├── mtk-gic/           # Interrupt controller ✅
+│   ├── mtk-uart/          # Debug UART driver ✅
+│   └── mtk-timer/         # System timer driver ✅
 ├── patches/               # MTK-specific XNU patches
 ├── scripts/
 │   └── mt6765_hw.py      # Hardware definitions
@@ -49,28 +53,38 @@ UniXNU-dandelion/
 
 ## 🚧 Current Status
 
-**Phase**: Initial bringup
+**Phase**: Driver bringup complete, XNU integration next
 
-### ✅ Completed
+### ✅ Completed (8 drivers)
 - [x] Device repository structure
 - [x] Hardware information collection (via adb)
 - [x] Memory map documentation
 - [x] Peripheral base addresses
 - [x] Interrupt layout
 - [x] Kernel defconfig
+- [x] **MT6357 PMIC driver** - Power management
+- [x] **MTK I2C driver** - 7 I2C controllers, touch bus
+- [x] **Novatek touch driver** - Multi-touch, 5 points
+- [x] **MTK DDP display driver** - NT36525B MIPI DSI, 720x1600
+- [x] **MTK MSDC eMMC driver** - Storage read/write
+- [x] **MTK GIC driver** - Interrupt handling (GICv2)
+- [x] **MTK UART driver** - Debug console, 115200 baud
+- [x] **MTK Timer driver** - ARM generic timer, scheduling
+- [x] **GitHub Actions CI/CD** - macOS build infrastructure
 
 ### 🚧 In Progress
-- [ ] MT6357 PMIC driver
-- [ ] MTK DDP display driver
-- [ ] Novatek touch driver
-- [ ] MTK MSDC eMMC driver
-
-### ❌ Not Started
 - [ ] XNU kernel patches for MT6765
 - [ ] LK bootloader integration
-- [ ] UEFI firmware (if applicable)
+- [ ] Driver integration with XNU IOKit
 - [ ] Boot image creation
+
+### ❌ Not Started
+- [ ] UEFI firmware (if applicable)
 - [ ] iOS userland integration
+- [ ] Filesystem support (HFS+/APFS)
+- [ ] GPU driver (PowerVR GE8320)
+- [ ] Audio driver
+- [ ] WiFi/Bluetooth driver
 
 ## 🔧 Hardware Details
 
