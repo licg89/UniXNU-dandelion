@@ -5,13 +5,11 @@ on:
     branches: [ main, develop ]
     paths:
       - 'Mu-Silicium-ref/**'
-      - 'uefi-dandelion/**'
       - '.github/workflows/build-uefi.yml'
   pull_request:
     branches: [ main ]
     paths:
       - 'Mu-Silicium-ref/**'
-      - 'uefi-dandelion/**'
   workflow_dispatch:
 
 jobs:
@@ -62,7 +60,32 @@ jobs:
       working-directory: Mu-Silicium-ref
       run: |
         python3 -m pip install --upgrade pip
-        pip3 install -r pip-requirements.txt
+        pip3 install --break-system-packages -r pip-requirements.txt || pip3 install -r pip-requirements.txt
+
+    - name: Pre-download external dependencies
+      working-directory: Mu-Silicium-ref
+      run: |
+        # Create directories for external dependencies
+        mkdir -p Mu_Basecore/BaseTools/Bin/mu_nasm_extdep/Linux-x86
+        mkdir -p Mu_Basecore/CryptoPkg/Binaries/onecrypto-bin_extdep
+
+        # Link system nasm
+        ln -sf /usr/bin/nasm Mu_Basecore/BaseTools/Bin/mu_nasm_extdep/Linux-x86/nasm
+        echo "20016.1.1" > Mu_Basecore/BaseTools/Bin/mu_nasm_extdep/version.txt
+
+        # Download onecrypto
+        cd Mu_Basecore/CryptoPkg/Binaries/onecrypto-bin_extdep
+        wget -q https://github.com/microsoft/mu_crypto_release/releases/download/v1.1.2-OneCrypto/OneCrypto-Accelerated.zip -O onecrypto.zip
+        unzip -q onecrypto.zip
+        echo "1.1.2" > extdep_state.yaml
+        cd ../../../..
+
+        # Build BaseTools from source
+        cd Mu_Basecore/BaseTools
+        make -j$(nproc) 2>&1 | tail -20
+        cd ../..
+
+        echo "External dependencies pre-downloaded successfully"
 
     - name: Copy MT6765 UEFI packages
       run: |
