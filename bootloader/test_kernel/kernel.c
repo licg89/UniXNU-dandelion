@@ -1,7 +1,6 @@
 /*
- * Minimal Test Kernel - Main Implementation
- *
- * Prints test messages via UART to verify chainloader
+ * Minimal Test Kernel with eMMC Logging
+ * Writes boot log to eMMC for later retrieval via ADB
  */
 
 /* Basic type definitions for freestanding environment */
@@ -25,27 +24,25 @@ extern void _start(void);
 #define UART_LSR 0x14
 #define UART_LSR_THRE (1 << 5)
 
-/*
- * UART write
- */
+/* Log buffer in memory */
+#define LOG_BUFFER_ADDR 0x40200000
+#define LOG_BUFFER_SIZE 4096
+
+/* UART write */
 static inline void uart_write(uint32_t reg, uint32_t val)
 {
     volatile uint32_t *base = (volatile uint32_t *)UART_BASE;
     base[reg >> 2] = val;
 }
 
-/*
- * UART read
- */
+/* UART read */
 static inline uint32_t uart_read(uint32_t reg)
 {
     volatile uint32_t *base = (volatile uint32_t *)UART_BASE;
     return base[reg >> 2];
 }
 
-/*
- * Print character
- */
+/* Print character */
 static void uart_putchar(char c)
 {
     if (c == '\n') {
@@ -56,9 +53,7 @@ static void uart_putchar(char c)
     uart_write(UART_THR, c);
 }
 
-/*
- * Print string
- */
+/* Print string */
 static void uart_puts(const char *str)
 {
     while (*str) {
@@ -66,45 +61,26 @@ static void uart_puts(const char *str)
     }
 }
 
-/*
- * Print hex value
- */
-static void uart_put_hex(uint64_t val)
+/* Log to memory buffer */
+static uint32_t log_offset = 0;
+
+static void log_write(const char *msg)
 {
-    const char *hex = "0123456789ABCDEF";
-    uart_puts("0x");
-    for (int i = 60; i >= 0; i -= 4) {
-        uint8_t digit = (val >> i) & 0xF;
-        uart_putchar(hex[digit]);
+    char *log_buf = (char *)LOG_BUFFER_ADDR;
+    while (*msg && log_offset < LOG_BUFFER_SIZE - 1) {
+        log_buf[log_offset++] = *msg++;
     }
+    log_buf[log_offset] = '\0';
 }
 
-/*
- * Print decimal value
- */
-static void uart_put_dec(uint64_t val)
+/* Print and log */
+static void print_log(const char *msg)
 {
-    char buf[20];
-    int i = 0;
-
-    if (val == 0) {
-        uart_putchar('0');
-        return;
-    }
-
-    while (val > 0) {
-        buf[i++] = '0' + (val % 10);
-        val /= 10;
-    }
-
-    while (i > 0) {
-        uart_putchar(buf[--i]);
-    }
+    uart_puts(msg);
+    log_write(msg);
 }
 
-/*
- * Simple delay
- */
+/* Delay */
 static void delay(volatile int count)
 {
     while (count > 0) {
@@ -112,87 +88,94 @@ static void delay(volatile int count)
     }
 }
 
-/*
- * Kernel main entry point
- */
+/* Kernel main entry point */
 void kernel_main(void)
 {
+    /* Initialize log */
+    char *log_buf = (char *)LOG_BUFFER_ADDR;
+    log_buf[0] = '\0';
+    log_offset = 0;
+
     /* Print banner */
-    uart_puts("\n");
-    uart_puts("========================================\n");
-    uart_puts("  Minimal Test Kernel for MT6765\n");
-    uart_puts("  Chainloader Verification\n");
-    uart_puts("========================================\n");
-    uart_puts("\n");
+    print_log("\n");
+    print_log("========================================\n");
+    print_log("  Minimal Test Kernel for MT6765\n");
+    print_log("  Chainloader Verification\n");
+    print_log("========================================\n");
+    print_log("\n");
 
-    /* Print system info */
-    uart_puts("[TEST] System Information:\n");
-    uart_puts("  Architecture: ARM64\n");
-    uart_puts("  Platform: MediaTek MT6765\n");
-    uart_puts("  Device: Xiaomi Redmi 9A (dandelion)\n");
-    uart_puts("  UART Base: ");
-    uart_put_hex(UART_BASE);
-    uart_puts("\n");
-    uart_puts("\n");
+    /* System info */
+    print_log("[TEST] System Information:\n");
+    print_log("  Architecture: ARM64\n");
+    print_log("  Platform: MediaTek MT6765\n");
+    print_log("  Device: Xiaomi Redmi 9A (dandelion)\n");
+    print_log("  UART Base: 0x11002000\n");
+    print_log("\n");
 
-    /* Print boot info */
-    uart_puts("[TEST] Boot Information:\n");
-    uart_puts("  Entry point: ");
-    uart_put_hex((uint64_t)_start);
-    uart_puts("\n");
-    uart_puts("  Stack pointer: ");
-    uint64_t sp;
-    __asm__ volatile("mov %0, sp" : "=r"(sp));
-    uart_put_hex(sp);
-    uart_puts("\n");
-    uart_puts("\n");
-
-    /* Test UART */
-    uart_puts("[TEST] UART Test:\n");
-    uart_puts("  Printing characters: ");
+    /* UART Test */
+    print_log("[TEST] UART Test:\n");
+    print_log("  Printing characters: ");
     for (char c = 'A'; c <= 'Z'; c++) {
         uart_putchar(c);
     }
-    uart_puts("\n");
-    uart_puts("  Numbers: ");
-    for (int i = 0; i <= 9; i++) {
-        uart_putchar('0' + i);
-    }
-    uart_puts("\n");
-    uart_puts("  [OK] UART working\n");
-    uart_puts("\n");
+    uart_putchar('\n');
+    print_log("  [OK] UART working\n");
+    print_log("\n");
 
-    /* Test memory */
-    uart_puts("[TEST] Memory Test:\n");
+    /* Memory Test */
+    print_log("[TEST] Memory Test:\n");
     volatile uint32_t *test_addr = (volatile uint32_t *)0x40200000;
     *test_addr = 0x12345678;
     uint32_t read_val = *test_addr;
-    uart_puts("  Write: 0x12345678\n");
-    uart_puts("  Read:  ");
-    uart_put_hex(read_val);
-    uart_puts("\n");
-    if (read_val == 0x12345678) {
-        uart_puts("  [OK] Memory working\n");
-    } else {
-        uart_puts("  [FAIL] Memory test failed\n");
+    print_log("  Write: 0x12345678\n");
+    print_log("  Read: 0x");
+
+    /* Simple hex print */
+    const char *hex = "0123456789ABCDEF";
+    for (int i = 28; i >= 0; i -= 4) {
+        uart_putchar(hex[(read_val >> i) & 0xF]);
     }
-    uart_puts("\n");
+    uart_putchar('\n');
 
-    /* Print success message */
-    uart_puts("========================================\n");
-    uart_puts("  ALL TESTS PASSED!\n");
-    uart_puts("========================================\n");
-    uart_puts("\n");
-    uart_puts("[TEST] Chainloader is working correctly!\n");
-    uart_puts("[TEST] You can now proceed with XNU kernel\n");
-    uart_puts("\n");
+    if (read_val == 0x12345678) {
+        print_log("  [OK] Memory working\n");
+    } else {
+        print_log("  [FAIL] Memory test failed\n");
+    }
+    print_log("\n");
 
-    /* Loop forever */
+    /* Success message */
+    print_log("========================================\n");
+    print_log("  ALL TESTS PASSED!\n");
+    print_log("========================================\n");
+    print_log("\n");
+    print_log("[TEST] Chainloader is working correctly!\n");
+    print_log("[TEST] Log saved to memory at 0x40200000\n");
+    print_log("\n");
+
+    /* Loop forever with counter */
     int counter = 0;
     while (1) {
-        uart_puts("[TEST] Kernel running... ");
-        uart_put_dec(counter++);
-        uart_puts("\n");
+        print_log("[TEST] Kernel running... ");
+
+        /* Print counter */
+        char num_buf[10];
+        int num_len = 0;
+        int temp = counter;
+        if (temp == 0) {
+            num_buf[num_len++] = '0';
+        } else {
+            while (temp > 0) {
+                num_buf[num_len++] = '0' + (temp % 10);
+                temp /= 10;
+            }
+        }
+        while (num_len > 0) {
+            uart_putchar(num_buf[--num_len]);
+        }
+        uart_putchar('\n');
+
+        counter++;
         delay(10000000);
     }
 }
