@@ -57,7 +57,11 @@ static void uart_puts(const char *str) {
 
 /* ============ eMMC ============ */
 #define MSDC_BASE 0x11230000
-#define USERDATA_OFFSET 0x10000000  /* 256MB into eMMC */
+
+/* Use persist partition (Android won't format it) */
+/*persist partition is usually at 1-2MB offset */
+#define LOG_PARTITION_OFFSET 0x200000  /* 2MB offset */
+#define LOG_PARTITION_SIZE 8192
 
 /* ============ Logging ============ */
 #define LOG_BUFFER_SIZE 8192
@@ -147,30 +151,93 @@ static void display_log() {
 }
 
 /* ============ eMMC File Write ============ */
-static void write_log_to_file() {
-    uart_puts("[LOG] Writing to userdata...\n");
+/* Use proper MSDC registers and commands */
+#define MSDC_CFG        0x00
+#define MSDC_INT        0x0C
+#define MSDC_INTEN      0x10
+#define MSDC_CMD        0x30
+#define MSDC_CMDARG     0x34
+#define MSDC_STS        0x3C
 
-    /* Simple eMMC write - write log to userdata partition */
+/* eMMC commands */
+#define MMC_WRITE_BLOCK     24
+#define MMC_SET_BLOCKLEN    16
+#define MMC_GO_IDLE_STATE   0
+
+static int emmc_init() {
     volatile uint32_t *msdc = (volatile uint32_t *)MSDC_BASE;
 
-    /* Initialize MSDC */
-    msdc[0] = 0x00000000;  /* Reset */
-    for (volatile int i = 0; i < 10000; i++);
+    /* Reset MSDC */
+    msdc[MSDC_CFG/4] = 0x00000000;
+    for (volatile int i = 0; i < 100000; i++);
 
-    /* Write in 512-byte blocks */
-    uint32_t block_addr = USERDATA_OFFSET / 512;
-    int blocks = (log_offset + 511) / 512;
+    /* Set block length to 512 */
+    msdc[MSDC_CMD/4] = (MMC_SET_BLOCKLEN << 16) | 0x01;
+    msdc[MSDC_CMDARG/4] = 512;
+    for (volatile int i = 0; i < 100000; i++);
 
-    for (int blk = 0; blk < blocks && blk < 16; blk++) {
-        /* Write command */
-        msdc[0x30/4] = (24 << 16) | 0x01;  /* WRITE_BLOCK */
-        msdc[0x34/4] = block_addr + blk;
+    return 0;
+}
 
-        /* Wait for completion */
-        for (volatile int i = 0; i < 100000; i++);
+static int emmc_write_block(uint32_t block_addr, const void *data) {
+    volatile uint32_t *msdc = (volatile uint32_t *)MSDC_BASE;
+
+    /* Write command */
+    msdc[MSDC_CMD/4] = (MMC_WRITE_BLOCK << 16) | 0x01;
+    msdc[MSDC_CMDARG/4] = block_addr;
+
+    /* Wait for completion */
+    for (volatile int i = 0; i < 1000000; i++) {
+        if (msdc[MSDC_INT/4] & 0x02) {  /* Transfer complete */
+            msdc[MSDC_INT/4] = 0x02;  /* Clear interrupt */
+            return 0;
+        }
     }
 
-    uart_puts("[LOG] Write complete\n");
+    return -1;  /* Timeout */
+}
+
+static void write_log_to_file() {
+    uart_puts("[LOG] Initializing eMMC...\n");
+
+    if (emmc_init() < 0) {
+        uart_puts("[LOG] eMMC init failed!\n");
+        return;
+    }
+
+    uart_puts("[LOG] Writing to persist partition...\n");
+    uart_puts("[LOG] Offset: 0x");
+
+    /* Print offset */
+    const char *hex = "0123456789ABCDEF";
+    for (int i = 28; i >= 0; i -= 4) {
+        uart_putchar(hex[(LOG_PARTITION_OFFSET >> i) & 0xF]);
+    }
+    uart_puts("\n");
+
+    /* Write in 512-byte blocks */
+    uint32_t block_addr = LOG_PARTITION_OFFSET / 512;
+    int blocks = (log_offset + 511) / 512;
+    if (blocks > 16) blocks = 16;  /* Max 16 blocks */
+
+    int success = 0;
+    for (int blk = 0; blk < blocks; blk++) {
+        const void *data = &log_buffer[blk * 512];
+        if (emmc_write_block(block_addr + blk, data) == 0) {
+            success++;
+        }
+    }
+
+    uart_puts("[LOG] Write complete: ");
+    /* Print success count */
+    char buf[5];
+    int n = 0;
+    int t = success;
+    if (t == 0) buf[n++] = '0';
+    while (t > 0) { buf[n++] = '0' + (t % 10); t /= 10; }
+    buf[n] = '\0';
+    uart_puts(buf);
+    uart_puts(" blocks\n");
 }
 
 /* ============ Delay ============ */
