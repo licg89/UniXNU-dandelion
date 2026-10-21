@@ -14,6 +14,9 @@ typedef signed short int16_t;
 typedef signed int int32_t;
 typedef signed long long int64_t;
 
+/* External reference to entry point */
+extern void _start(void);
+
 /* UART base address (MT6765 UART0) */
 #define UART_BASE 0x11002000
 
@@ -193,6 +196,3 @@ void kernel_main(void)
         delay(10000000);
     }
 }
-
-/* External reference */
-extern void _start(void);
