@@ -13,6 +13,9 @@ typedef signed int int32_t;
 typedef signed long long int64_t;
 typedef uint64_t size_t;
 
+/* Include chainloader definitions */
+#include "chainloader.h"
+
 /* UART base address (from device tree) */
 #define UART_BASE 0x11002000
 
