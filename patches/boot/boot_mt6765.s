@@ -35,11 +35,26 @@ _start:
     bl _clear_bss
 
     /* Initialize early console (UART) */
-    bl _init_early_console
+    bl early_console_init
 
     /* Print boot message */
     adr x0, _boot_msg
-    bl _early_puts
+    bl early_console_puts
+
+    /* Print boot parameters */
+    adr x0, _dtb_msg
+    bl early_console_puts
+    mov x0, x19
+    bl early_console_put_hex
+    adr x0, _newline
+    bl early_console_puts
+
+    /* Initialize MMU */
+    adr x0, _mmu_msg
+    bl early_console_puts
+    bl _setup_mmu
+    adr x0, _ok_msg
+    bl early_console_puts
 
     /* Initialize GIC */
     bl _init_gic
@@ -151,3 +166,11 @@ _boot_args:
     .section .rodata
 _boot_msg:
     .string "UniXNU: Booting on MT6765...\n"
+_dtb_msg:
+    .string "  DTB address: "
+_mmu_msg:
+    .string "  Initializing MMU...\n"
+_ok_msg:
+    .string "  OK\n"
+_newline:
+    .string "\n"
