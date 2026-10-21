@@ -23,7 +23,7 @@ DTB = $(BUILD_DIR)/mt6765-dandelion.dtb
 KERNEL_ELF = $(BUILD_DIR)/boot_mt6765.elf
 
 # Source files
-BOOT_SRC = $(BOOT_DIR)/boot_mt6765.s
+BOOT_SRC = $(BOOT_DIR)/boot_mt6765.S
 MMU_SRC = $(MMU_DIR)/mmu_init.c
 EARLY_CON_SRC = $(BOOT_DIR)/early_console.c
 DTS_SRC = $(DTS_DIR)/mt6765-dandelion.dts
@@ -31,7 +31,8 @@ DTS_SRC = $(DTS_DIR)/mt6765-dandelion.dts
 # Flags
 CFLAGS = -Wall -O2 -ffreestanding -nostdinc -nostdlib -nostartfiles
 CFLAGS += -mcpu=cortex-a53 -march=armv8-a
-CFLAGS += -Ipatches/platform -Ipatches/memory -Ipatches/boot -Ipatches/mmu
+CFLAGS += -isystem $(shell $(CC) -print-file-name=include)
+CFLAGS += -Ipatches/platform -Ipatches/memory -Ipatches/boot -Ipatches/mmu -Ipatches/include
 ASFLAGS = -mcpu=cortex-a53
 LDFLAGS = -T patches/boot/linker.ld -nostdlib
 
@@ -43,9 +44,9 @@ all: $(KERNEL) $(DTB)
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-# Compile boot assembly
+# Compile boot assembly (use CC so C preprocessor runs on .S file)
 $(BUILD_DIR)/boot.o: $(BOOT_SRC) | $(BUILD_DIR)
-	$(AS) $(ASFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -x assembler-with-cpp -c -o $@ $<
 
 # Compile MMU
 $(BUILD_DIR)/mmu.o: $(MMU_SRC) | $(BUILD_DIR)

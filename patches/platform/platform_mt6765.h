@@ -23,7 +23,11 @@
 /* Memory configuration */
 #define PLATFORM_RAM_BASE       0x40000000ULL
 #define PLATFORM_RAM_SIZE       0xFCC00000ULL  /* ~4GB */
-#define PLATFORM_KERNEL_BASE    0x40080000ULL
+/*
+ * KERNEL_BASE must match XNU_KERNEL_BASE in chainloader.h.
+ * Chainloader loads the XNU binary to 0x40100000 and jumps there.
+ */
+#define PLATFORM_KERNEL_BASE    0x40100000ULL
 #define PLATFORM_KERNEL_SIZE    0x02000000ULL  /* 32MB */
 #define PLATFORM_KERNEL_END     (PLATFORM_KERNEL_BASE + PLATFORM_KERNEL_SIZE)
 
@@ -65,10 +69,14 @@
 /* Touch */
 #define PLATFORM_TOUCH_IRQ       17
 
-/* Boot parameters */
-#define PLATFORM_BOOTARGS_ADDR  0x40000100ULL  /* Boot arguments location */
-#define PLATFORM_DTB_ADDR       0x40001000ULL  /* Device tree location */
-#define PLATFORM_INITRD_ADDR    0x42000000ULL  /* Initrd location */
+/*
+ * Boot parameter addresses — must match chainloader.h exactly.
+ * Chainloader places DTB at 0x47000000 and bootargs at 0x40001000,
+ * then calls the kernel: x0 = DTB, x1 = bootargs.
+ */
+#define PLATFORM_BOOTARGS_ADDR  0x40001000ULL  /* Boot arguments location */
+#define PLATFORM_DTB_ADDR       0x47000000ULL  /* Device tree location */
+#define PLATFORM_INITRD_ADDR    0x48000000ULL  /* Initrd location (after DTB) */
 
 /* Cache configuration */
 #define PLATFORM_CACHE_LINE_SIZE    64

@@ -4,7 +4,29 @@
 
 This is the device repository for UniXNU on the Xiaomi Redmi 9A, targeting iOS 16 on the MediaTek MT6765 SoC.
 
-## 📱 Device Information
+## 📊 Project Status
+
+**Last Updated**: 2026-10-21
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Hardware Analysis | ✅ Complete | All hardware info collected |
+| Drivers | ✅ Complete | 8 core drivers implemented |
+| Boot Code | ✅ Complete | Chainloader + test kernel |
+| Direct Boot | ❌ Failed | Kernel crashes, no UART to debug |
+| UEFI Port | ⚠️ In Progress | Basic framework created |
+| Real Device Test | ❌ Blocked | No UART, can't debug |
+
+**Overall Progress**: ~55% (basic infrastructure complete, but blocked by lack of UART)
+
+**Key Challenge**: No UART access makes debugging impossible. We've tried the direct boot approach but kernels crash immediately with no way to see why.
+
+**Current Strategy**: Following UniXNU's approach - port Mu-Silicium UEFI for MT6765, then integrate UniXNU. This is a long-term project (6-12 months) that requires UART for debugging.
+
+📄 See [Technical Analysis](docs/TECHNICAL_ANALYSIS.md) for detailed analysis  
+📄 See [Roadmap](ROADMAP.md) for project plan
+
+---
 
 | Component | Specification |
 |---|---|

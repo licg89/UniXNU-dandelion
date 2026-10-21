@@ -12,8 +12,8 @@ MEMORY_MAP = {
     'ram_base': 0x40000000,
     'ram_size': 0xFCC00000,  # ~4GB
 
-    # Kernel window
-    'kernel_base': 0x40080000,
+    # Kernel window (must match XNU_KERNEL_BASE in chainloader.h)
+    'kernel_base': 0x40100000,
     'kernel_size': 0x02000000,  # 32MB
 
     # Payload (ramdisk + DTB)

@@ -1,0 +1,44 @@
+# External repositories (cloned for reference)
+Mu-Silicium-ref/
+ios-sweet-ref/
+
+# Build artifacts
+build/
+*.o
+*.elf
+*.bin
+downloads/*.img
+downloads/*.zip
+
+# UEFI build outputs
+Mu-Silicium-ref/Build/
+Mu-Silicium-ref/Conf/
+Mu-Silicium-ref/Mu_Basecore/BaseTools/Source/C/bin/
+Mu-Silicium-ref/Mu_Basecore/BaseTools/Source/C/libs/
+Mu-Silicium-ref/Mu_Basecore/BaseTools/Source/C/obj/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/

@@ -19,13 +19,13 @@
  */
 
 /* Kernel code and data */
-#define KERNEL_TEXT_BASE        PLATFORM_KERNEL_BASE          /* 0x40080000 */
+#define KERNEL_TEXT_BASE        PLATFORM_KERNEL_BASE          /* 0x40100000 */
 #define KERNEL_TEXT_SIZE        0x01000000                    /* 16MB code */
-#define KERNEL_DATA_BASE        (KERNEL_TEXT_BASE + KERNEL_TEXT_SIZE)  /* 0x41080000 */
+#define KERNEL_DATA_BASE        (KERNEL_TEXT_BASE + KERNEL_TEXT_SIZE)  /* 0x41100000 */
 #define KERNEL_DATA_SIZE        0x00800000                    /* 8MB data */
-#define KERNEL_BSS_BASE         (KERNEL_DATA_BASE + KERNEL_DATA_SIZE)  /* 0x41880000 */
+#define KERNEL_BSS_BASE         (KERNEL_DATA_BASE + KERNEL_DATA_SIZE)  /* 0x41900000 */
 #define KERNEL_BSS_SIZE         0x00200000                    /* 2MB BSS */
-#define KERNEL_END              (KERNEL_BSS_BASE + KERNEL_BSS_SIZE)    /* 0x41A80000 */
+#define KERNEL_END              (KERNEL_BSS_BASE + KERNEL_BSS_SIZE)    /* 0x41B00000 */
 
 /* Page tables */
 #define PAGE_TABLE_BASE         PLATFORM_TTBR0_BASE           /* 0x44000000 */
@@ -38,17 +38,17 @@
 #define BOOT_STACK_TOP          (BOOT_STACK_BASE + BOOT_STACK_SIZE)    /* 0x44840000 */
 
 /* Device tree */
-#define DTB_BASE                PLATFORM_DTB_ADDR             /* 0x40001000 */
-#define DTB_SIZE                0x00040000                    /* 256KB */
+#define DTB_BASE                PLATFORM_DTB_ADDR             /* 0x47000000 */
+#define DTB_SIZE                0x00100000                    /* 1MB */
 
 /* Boot arguments */
-#define BOOTARGS_BASE           PLATFORM_BOOTARGS_ADDR        /* 0x40000100 */
+#define BOOTARGS_BASE           PLATFORM_BOOTARGS_ADDR        /* 0x40001000 */
 #define BOOTARGS_SIZE           0x00001000                    /* 4KB */
 
 /* Initrd (root filesystem) */
-#define INITRD_BASE             PLATFORM_INITRD_ADDR          /* 0x42000000 */
-#define INITRD_SIZE             0x10000000                    /* 256MB max */
-#define INITRD_END              (INITRD_BASE + INITRD_SIZE)   /* 0x52000000 */
+#define INITRD_BASE             PLATFORM_INITRD_ADDR          /* 0x48000000 */
+#define INITRD_SIZE             0x08000000                    /* 128MB max */
+#define INITRD_END              (INITRD_BASE + INITRD_SIZE)   /* 0x50000000 */
 
 /* Kernel heap */
 #define KERNEL_HEAP_BASE        0x52000000ULL
@@ -72,19 +72,33 @@
  * Memory Map Layout
  *
  * 0x40000000 +-------------------+
- *            | Boot args         | 4KB
+ *            | (chainloader)     | loaded by LK, overwritten/reused
  * 0x40001000 +-------------------+
- *            | Device tree       | 256KB
- * 0x40080000 +-------------------+
- *            | Kernel text       | 16MB
- * 0x41080000 +-------------------+
+ *            | Boot args         | 4KB  (PLATFORM_BOOTARGS_ADDR)
+ * 0x40100000 +-------------------+
+ *            | Kernel text       | 16MB (PLATFORM_KERNEL_BASE)
+ * 0x41100000 +-------------------+
  *            | Kernel data       | 8MB
- * 0x41880000 +-------------------+
+ * 0x41900000 +-------------------+
  *            | Kernel BSS        | 2MB
- * 0x41A80000 +-------------------+
+ * 0x41B00000 +-------------------+
  *            | (free)            |
- * 0x42000000 +-------------------+
- *            | Initrd            | 256MB
+ * 0x42000000 +-------------------+  (DTB lives at 0x47000000)
+ *            | (free)            |
+ * 0x44000000 +-------------------+
+ *            | Page tables       | 4MB  (16KB × N tables)
+ * 0x44400000 +-------------------+
+ *            | (free)            |
+ * 0x44800000 +-------------------+
+ *            | Boot stack        | 256KB
+ * 0x44840000 +-------------------+
+ *            | (free)            |
+ * 0x47000000 +-------------------+
+ *            | Device tree (DTB) | 1MB  (from chainloader)
+ * 0x48000000 +-------------------+
+ *            | Initrd            | 128MB
+ * 0x50000000 +-------------------+
+ *            | (free)            |
  * 0x52000000 +-------------------+
  *            | Kernel heap       | 512MB
  * 0x72000000 +-------------------+

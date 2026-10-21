@@ -6,8 +6,8 @@ ENTRY(_start)
 
 SECTIONS
 {
-    /* Load at 0x40100000 (where chainloader loads XNU) */
-    . = 0x40100000;
+    /* Load at 0x40080000 (where LK loads kernel on this device) */
+    . = 0x40080000;
 
     /* Text section */
     .text : {

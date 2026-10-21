@@ -12,12 +12,12 @@
 
 ```
 硬件驱动: ████████░░ 80% (8/10 核心驱动完成)
-内核适配: ██████░░░░ 60% (MMU+早期控制台完成)
-启动链:   ████████░░ 80% (链式加载器+eMMC读取完成!)
+内核适配: ████████░░ 75% (启动汇编、MMU、GIC、定时器、SMP 全部实现)
+启动链:   █████████░ 90% (完整启动流程：MMU→GIC→Timer→SMP→kernel_main)
 测试:     ░░░░░░░░░░  0% (等待硬件测试)
 ```
 
-**总进度: 约 48%**
+**总进度: 约 55%**
 
 ---
 
@@ -424,6 +424,39 @@ UniXNU-dandelion/
 ---
 
 ## 📝 更新日志
+
+### 2026-10-21 (更新4 — 启动汇编和MMU全面实现)
+- ✅ **完整重写 `patches/boot/boot_mt6765.s`**
+  - 启动栈设置 (SP = 0x44840000)
+  - BSS段清零
+  - 早期控制台初始化及启动消息打印
+  - MMU页表创建（2MB块映射）
+  - D-Cache清洗（set/way循环，CLIDR+CCSIDR）
+  - MMU启用（MAIR=0xFF004400, TCR=0x80823519）
+  - GICv2中断控制器完整初始化
+  - ARM通用定时器初始化
+  - SMP辅核保持循环（spin-table机制）
+  - _kernel_main桩函数
+- ✅ **完整重写 `patches/mmu/mmu_init.c`**
+  - 移除stdio.h/string.h依赖（freestanding环境）
+  - 实现 `mmu_build_page_tables()` — 2MB块映射IO和RAM
+  - Identity-map IO区域 0x10000000-0x17FFFFFF (Device-nGnRnE)
+  - Identity-map RAM区域 0x40000000-0x5FFFFFFF (Normal-WB)
+  - 保留 `mmu_init()` / `mmu_map_region()` 用于完整内核运行后细粒度映射
+- ✅ **修复 `patches/mmu/mmu_mt6765.h`**
+  - 移除重复 #define
+  - 添加 stdint.h/stdbool.h 包含
+  - 修正 MMU_DESC_BLOCK=0x1（有效块描述符）
+  - 新增 MMU_BLOCK_DEVICE / MMU_BLOCK_NORMAL 便捷宏
+- ✅ **统一内存地址定义（与 chainloader.h 对齐）**
+  - PLATFORM_KERNEL_BASE: 0x40080000 → 0x40100000
+  - PLATFORM_DTB_ADDR: 0x40001000 → 0x47000000
+  - PLATFORM_BOOTARGS_ADDR: 0x40000100 → 0x40001000
+  - PLATFORM_INITRD_ADDR: 0x42000000 → 0x48000000
+  - 同步更新: linker.ld, board.toml, scripts/, tests/
+- ✅ 添加 `_kernel_main` 桩函数（避免链接错误）
+- **总进度: 55%** (从48%提升)
+- 下一步: 尝试编译验证 → QEMU 测试 → 真机测试
 
 ### 2026-10-21 (更新3)
 - ✅ 实现eMMC读取功能

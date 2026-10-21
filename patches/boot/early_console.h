@@ -10,7 +10,7 @@
 #ifndef _EARLY_CONSOLE_H_
 #define _EARLY_CONSOLE_H_
 
-#include <stdint.h>
+#include "unixnu_types.h"
 
 /* UART0 base address (physical) */
 #define EARLY_UART_BASE     0x11002000ULL

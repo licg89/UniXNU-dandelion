@@ -88,13 +88,12 @@
         always-on;
     };
 
-    interrupt-controller@10221000 {
+    gic: interrupt-controller@10221000 {
         compatible = "arm,gic-400";
-        reg = <0x0 0x10221000 0x0 0x1000>,
-              <0x0 0x10222000 0x0 0x1000>;
+        reg = <0x0 0x10221000 0x0 0x1000>,  /* GICD */
+              <0x0 0x10222000 0x0 0x1000>;  /* GICC */
         #interrupt-cells = <3>;
         interrupt-controller;
-        interrupts = <1 9 0xf04>;
     };
 
     serial@11002000 {

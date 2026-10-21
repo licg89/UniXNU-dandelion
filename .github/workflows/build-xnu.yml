@@ -1,0 +1,64 @@
+name: Build XNU Kernel
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'xnu/**'
+      - '.github/workflows/build-xnu.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'xnu/**'
+  workflow_dispatch:
+
+jobs:
+  build-xnu:
+    name: Build XNU Kernel for MT6765
+    runs-on: macos-14
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        brew install cmake ninja llvm dtc
+
+    - name: Setup XNU build environment
+      run: |
+        # This is a placeholder - we'll need to adapt based on ios-sweet approach
+        # or UniXNU's build system
+        echo "XNU build environment setup"
+        echo "This workflow will be completed when we have XNU patches for MT6765"
+
+    - name: Build XNU kernel
+      run: |
+        # Placeholder for actual XNU build
+        # This will need to:
+        # 1. Download XNU source from Apple
+        # 2. Apply MT6765 patches
+        # 3. Build with appropriate flags
+        # 4. Generate kernel.macho
+        echo "XNU build step - to be implemented"
+        echo "Reference: ios-sweet project uses GitHub Actions with macOS runners"
+
+    - name: Upload kernel
+      uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: xnu-kernel-mt6765
+        path: |
+          xnu/out/kernel.macho
+          xnu/out/kernel.development.mt6765
+        if-no-files-found: warn
+
+    - name: Upload build logs
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: xnu-build-logs
+        path: |
+          xnu/out/*.log
+          xnu/BUILD_LOG.txt
+        if-no-files-found: warn

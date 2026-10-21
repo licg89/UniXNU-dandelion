@@ -2,18 +2,18 @@
  * Linker Script for XNU Boot on MT6765
  *
  * Memory layout:
- * 0x40080000 - Kernel entry (_start)
- * 0x40081000 - Text section
- * 0x40100000 - Data section
- * 0x40180000 - BSS section
+ * 0x40100000 - Kernel entry (_start)     ← matches XNU_KERNEL_BASE in chainloader.h
+ * 0x401xxxxx - Text section
+ * 0x41100000 - Data section
+ * 0x41900000 - BSS section
  */
 
 ENTRY(_start)
 
 SECTIONS
 {
-    /* Kernel starts at 0x40080000 */
-    . = 0x40080000;
+    /* Kernel starts at 0x40100000 — must match XNU_KERNEL_BASE in chainloader.h */
+    . = 0x40100000;
 
     /* Text section (code) */
     .text : {

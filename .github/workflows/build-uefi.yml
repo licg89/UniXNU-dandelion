@@ -1,0 +1,126 @@
+name: Build UEFI for dandelion
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'Mu-Silicium-ref/**'
+      - '.github/workflows/build-uefi.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'Mu-Silicium-ref/**'
+  workflow_dispatch:
+
+jobs:
+  build-uefi:
+    name: Build MT6765 UEFI Firmware
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          git \
+          build-essential \
+          python3 \
+          python3-pip \
+          python3-venv \
+          nasm \
+          iasl \
+          gcc-aarch64-linux-gnu \
+          binutils-aarch64-linux-gnu \
+          uuid-dev \
+          lld \
+          clang \
+          llvm \
+          curl \
+          wget \
+          unzip \
+          cpio
+
+    - name: Install Python dependencies
+      working-directory: Mu-Silicium-ref
+      run: |
+        python3 -m pip install --upgrade pip
+        pip3 install -r pip-requirements.txt
+
+    - name: Initialize git submodules
+      working-directory: Mu-Silicium-ref
+      run: |
+        git submodule update --init --recursive
+
+    - name: Build UEFI firmware
+      working-directory: Mu-Silicium-ref
+      run: |
+        python3 build_uefi.py -d dandelion -r RELEASE
+
+    - name: Upload UEFI firmware
+      uses: actions/upload-artifact@v4
+      with:
+        name: dandelion-uefi-firmware
+        path: |
+          Mu-Silicium-ref/Build/dandelionPkg/RELEASE_*/FV/SILICIUM_UEFI.fd
+          Mu-Silicium-ref/Mu-dandelion-0.img
+        if-no-files-found: warn
+
+    - name: Upload build logs
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: build-logs
+        path: |
+          Mu-Silicium-ref/Build/dandelionPkg/RELEASE_*/BUILD_LOG.txt
+          Mu-Silicium-ref/Build/dandelionPkg/RELEASE_*/BUILD_REPORT.TXT
+        if-no-files-found: warn
+
+    - name: Create boot image
+      if: success()
+      run: |
+        # Find the firmware file
+        FD_FILE=$(find Mu-Silicium-ref/Build -name "SILICIUM_UEFI.fd" | head -1)
+        if [ -f "$FD_FILE" ]; then
+          echo "Found firmware: $FD_FILE"
+          # Create boot image (this will need to be adapted based on actual output)
+          # For now, just copy the firmware
+          mkdir -p output
+          cp "$FD_FILE" output/SILICIUM_UEFI.fd
+        else
+          echo "Firmware file not found"
+          exit 1
+        fi
+
+    - name: Upload boot image
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: dandelion-boot-image
+        path: output/
+        if-no-files-found: warn
+
+  build-summary:
+    name: Build Summary
+    runs-on: ubuntu-22.04
+    needs: build-uefi
+    if: always()
+
+    steps:
+    - name: Check build status
+      run: |
+        if [ "${{ needs.build-uefi.result }}" == "success" ]; then
+          echo "✅ UEFI build succeeded!"
+        else
+          echo "❌ UEFI build failed"
+          exit 1
+        fi

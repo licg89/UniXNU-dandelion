@@ -15,8 +15,8 @@ class MMUState:
         self.enabled = False
 
 # Simulated constants
-SIM_KERNEL_BASE = 0x40080000
-SIM_DTB_BASE = 0x40001000
+SIM_KERNEL_BASE = 0x40100000
+SIM_DTB_BASE = 0x47000000
 SIM_PAGE_TABLE_BASE = 0x44000000
 
 mmu_state = MMUState()
@@ -111,9 +111,9 @@ def sim_boot_sequence():
 
     # Step 4: Map kernel regions
     print("[BOOT] Step 4: Map kernel regions")
-    sim_map_region(0x40080000, 0x40080000, 0x01000000, "Kernel text")
-    sim_map_region(0x41080000, 0x41080000, 0x00800000, "Kernel data")
-    sim_map_region(0x41880000, 0x41880000, 0x00200000, "Kernel BSS")
+    sim_map_region(0x40100000, 0x40100000, 0x01000000, "Kernel text")
+    sim_map_region(0x41100000, 0x41100000, 0x00800000, "Kernel data")
+    sim_map_region(0x41900000, 0x41900000, 0x00200000, "Kernel BSS")
     sim_map_region(0x44000000, 0x44000000, 0x00400000, "Page tables")
     sim_map_region(0x44800000, 0x44800000, 0x00040000, "Boot stack")
     sim_map_region(0x10000000, 0x10000000, 0x05000000, "Device memory")
@@ -165,7 +165,7 @@ def sim_test_page_tables():
     print()
 
     # Test address splitting for 39-bit VA
-    test_addr = 0x40080000
+    test_addr = 0x40100000
     pgd_idx = (test_addr >> 30) & 0x1FF
     pud_idx = (test_addr >> 21) & 0x1FF
     pmd_idx = (test_addr >> 12) & 0x1FF
@@ -202,9 +202,9 @@ def sim_test_memory_map():
     print()
 
     print("[TEST] Kernel regions:")
-    print("[TEST]   Text:  0x40080000 - 0x41080000 (16MB)")
-    print("[TEST]   Data:  0x41080000 - 0x41880000 (8MB)")
-    print("[TEST]   BSS:   0x41880000 - 0x41A80000 (2MB)")
+    print("[TEST]   Text:  0x40100000 - 0x41100000 (16MB)")
+    print("[TEST]   Data:  0x41100000 - 0x41900000 (8MB)")
+    print("[TEST]   BSS:   0x41900000 - 0x41B00000 (2MB)")
     print("[TEST]   Total: 26MB")
     print()
 
