@@ -1,0 +1,97 @@
+name: Build UniXNU
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-chainloader:
+    name: Build Chainloader & Test Kernel
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install ARM toolchain
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu make
+
+    - name: Build test kernel
+      run: |
+        cd bootloader/test_kernel
+        make
+        ls -lh test_kernel.bin
+
+    - name: Build chainloader
+      run: |
+        cd bootloader/chainloader
+        make
+        ls -lh chainloader.bin
+
+    - name: Package boot.img
+      run: |
+        python3 scripts/mkbootimg.py \
+          bootloader/chainloader/chainloader.bin \
+          xnu_chainloader.img
+        ls -lh xnu_chainloader.img
+
+    - name: Upload test kernel
+      uses: actions/upload-artifact@v4
+      with:
+        name: test_kernel
+        path: bootloader/test_kernel/test_kernel.bin
+        retention-days: 30
+
+    - name: Upload chainloader
+      uses: actions/upload-artifact@v4
+      with:
+        name: chainloader
+        path: bootloader/chainloader/chainloader.bin
+        retention-days: 30
+
+    - name: Upload boot.img
+      uses: actions/upload-artifact@v4
+      with:
+        name: boot_img
+        path: xnu_chainloader.img
+        retention-days: 30
+
+    - name: Upload all binaries
+      uses: actions/upload-artifact@v4
+      with:
+        name: all_binaries
+        path: |
+          bootloader/test_kernel/test_kernel.bin
+          bootloader/chainloader/chainloader.bin
+          xnu_chainloader.img
+        retention-days: 30
+
+  build-scripts:
+    name: Verify Scripts
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Verify Python scripts
+      run: |
+        python3 -m py_compile scripts/mkbootimg.py
+        python3 -m py_compile scripts/flash_emmc.py
+        python3 -m py_compile tests/sim_chainloader.py
+        echo "✓ All Python scripts are valid"
+
+    - name: Run simulation test
+      run: |
+        python3 tests/sim_chainloader.py
+
+    - name: Verify shell scripts
+      run: |
+        bash -n scripts/build_chainloader.sh
+        bash -n scripts/setup_xnu_build.sh
+        echo "✓ All shell scripts are valid"
