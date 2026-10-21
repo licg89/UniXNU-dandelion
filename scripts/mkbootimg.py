@@ -43,7 +43,8 @@ def create_boot_img(kernel_path, output_path, base_addr=0x40000000,
     id_data = struct.pack('<8I', 0, 0, 0, 0, 0, 0, 0, 0)
 
     # Pack header
-    header = struct.pack('<8sIIIIIIII16s512s',
+    # Format: magic(8s) + 9 uint32(I) + name(16s) + cmdline(512s)
+    header = struct.pack('<8sIIIIIIIII16s512s',
                         magic,
                         kernel_size,
                         kernel_addr,
