@@ -71,13 +71,13 @@ jobs:
 
         # Link system nasm
         ln -sf /usr/bin/nasm Mu_Basecore/BaseTools/Bin/mu_nasm_extdep/Linux-x86/nasm
-        echo "20016.1.1" > Mu_Basecore/BaseTools/Bin/mu_nasm_extdep/version.txt
+        echo "version: 20016.1.1" > Mu_Basecore/BaseTools/Bin/mu_nasm_extdep/extdep_state.yaml
 
         # Download onecrypto
         cd Mu_Basecore/CryptoPkg/Binaries/onecrypto-bin_extdep
         wget -q https://github.com/microsoft/mu_crypto_release/releases/download/v1.1.2-OneCrypto/OneCrypto-Accelerated.zip -O onecrypto.zip
-        unzip -q onecrypto.zip
-        echo "1.1.2" > extdep_state.yaml
+        unzip -q -o onecrypto.zip
+        echo "version: 1.1.2" > extdep_state.yaml
         cd ../../../..
 
         # Build BaseTools from source
