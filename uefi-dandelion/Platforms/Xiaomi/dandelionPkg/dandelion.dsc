@@ -78,9 +78,9 @@
 
 [Components]
   #
-  # ACPI Tables
+  # ACPI Tables (暂时禁用，后续添加)
   #
-  dandelion/AcpiTables.inf
+  # dandelion/AcpiTables.inf
 
   #
   # Input
