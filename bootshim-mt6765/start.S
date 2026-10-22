@@ -18,61 +18,47 @@ _head:
 _start:
     msr daifset, #0xf
 
-    /* Try to disable watchdog at multiple possible MTK WDT addresses */
-    /* Try 0x1021C000 */
-    movz x1, #0xC000
-    movk x1, #0x1021, lsl #16
-    mov w2, #0x11
-    str w2, [x1]
-
-    /* Try 0x10007000 */
-    movz x1, #0x7000
-    movk x1, #0x1000, lsl #16
-    str w2, [x1]
-
-    /* Try 0x11007000 */
-    movz x1, #0x7000
-    movk x1, #0x1100, lsl #16
-    str w2, [x1]
-
+    /* Write debug marker to persistent_ram (0x47c90000) */
+    movz x9, #0x0000
+    movk x9, #0x47c9, lsl #16
+    mov w10, #0xDEAD
+    strh w10, [x9]
     dsb sy
 
-    mov x19, x0
-    mov x20, x1
-    mov x21, x2
-    mov x22, x3
-    mov x23, sp
-    mrs x2, CurrentEL
-    cmp x2, #8
-    b.eq 1f
-    /* EL1 or other: don't execute msr spsel (UNDEFINED in EL1) */
-    adr x1, _stack_top
-    mov sp, x1
-    adr x1, vectors
-    msr vbar_el1, x1
-    b 3f
-1:  /* EL2: can use msr spsel */
+    /* Disable MTK watchdog at 0x10007000 (toprgu) */
+    movz x1, #0x7000
+    movk x1, #0x1000, lsl #16
+    mov w2, #0x11
+    str w2, [x1]
+    dsb sy
+
+    /* We're at EL2 (confirmed from kernel log) */
     msr spsel, #1
     adr x1, _stack_top
     mov sp, x1
     adr x1, vectors
     msr vbar_el2, x1
-3:  isb
+    isb
+
+    /* Clear BSS */
     adr x1, _bss_start
     adr x2, _bss_end
 4:  cmp x1, x2
     b.hs 5f
     str xzr, [x1], #8
     b 4b
-5:  /* Feed watchdog periodically while looping */
-    movz x9, #0xC000
-    movk x9, #0x1021, lsl #16
-    mov w10, #0x11
-wdt_loop:
-    str w10, [x9]      /* Feed WDT */
+
+5:  /* Write progress marker */
+    movz x9, #0x0002
+    movk x9, #0x47c9, lsl #16
+    mov w10, #0xBEEF
+    strh w10, [x9]
     dsb sy
+
+    /* Infinite loop */
+test_loop:
     wfe
-    b wdt_loop
+    b test_loop
 halt:
     wfe
     b halt
