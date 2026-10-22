@@ -51,6 +51,9 @@ _start:
 test_loop:
     wfe
     b test_loop
+halt:
+    wfe
+    b halt
 
 /* Enter the EL1h state required by XNU start_first_cpu; x0 retains the FDT.
  * Called only with EL2 MMU and caches off, as checked by shim_main.
