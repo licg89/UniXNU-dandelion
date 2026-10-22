@@ -195,43 +195,66 @@ __attribute__((noreturn)) void exception_report(uint64_t slot)
 __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
                                         uint64_t x2, uint64_t x3, uint64_t old_sp)
 {
-    (void)old_sp;  /* Unused parameter */
-    uint64_t el = READ_SYSREG(CurrentEL);
-    puts_uart("\n=== MT6765 BootShim with FDT ===\n");
-    value("CurrentEL", el);
-    value("entry_x0", x0);  /* Usually FDT address */
-    value("entry_x1", x1);
-    value("entry_x2", x2);
-    value("entry_x3", x3);
+    (void)old_sp;
+    (void)x1; (void)x2; (void)x3;
 
-    /* Parse FDT from x0 */
-    puts_uart("\n--- FDT Parsing ---\n");
-    struct fdt_info fdt_info;
-    if (x0 >= 0x40000000 && x0 < 0x80000000) {
-        puts_uart("Trying to parse FDT from x0...\n");
-        int ret = fdt_inspect((const void *)(uintptr_t)x0, 0x100000, &fdt_info);
-        if (ret == 0) {
-            puts_uart("FDT parsed successfully!\n");
-            value("FDT_bytes", fdt_info.bytes);
-            value("memory_count", fdt_info.memory_count);
-            for (unsigned i = 0; i < fdt_info.memory_count && i < 4; i++) {
-                value("memory_base", fdt_info.memory[i].base);
-                value("memory_size", fdt_info.memory[i].size);
-            }
-            value("reserved_count", fdt_info.reserved_count);
-            for (unsigned i = 0; i < fdt_info.reserved_count && i < 8; i++) {
-                value("reserved_base", fdt_info.reserved[i].base);
-                value("reserved_size", fdt_info.reserved[i].size);
-            }
-        } else {
-            puts_uart("FDT parse failed\n");
+    puts_uart("\n=== MT6765 Framebuffer Scanner ===\n");
+    puts_uart("Testing multiple FB addresses...\n");
+    puts_uart("Watch screen for color changes!\n\n");
+
+    /* Test different framebuffer addresses */
+    /* Each address shows a different color for 3 seconds */
+    /* If address is invalid, device will crash and reboot */
+
+    uint64_t test_addrs[] = {
+        0x40000000,  /* Test 1: Will show RED if valid */
+        0x50000000,  /* Test 2: Will show GREEN if valid */
+        0x60000000,  /* Test 3: Will show BLUE if valid */
+        0x70000000,  /* Test 4: Will show WHITE if valid */
+        0x80000000,  /* Test 5: Will show YELLOW if valid */
+    };
+    uint32_t colors[] = {
+        0x00FF0000,  /* RED */
+        0x0000FF00,  /* GREEN */
+        0x000000FF,  /* BLUE */
+        0x00FFFFFF,  /* WHITE */
+        0x00FFFF00,  /* YELLOW */
+    };
+    const char* color_names[] = {"RED", "GREEN", "BLUE", "WHITE", "YELLOW"};
+
+    for (int i = 0; i < 5; i++) {
+        uint64_t fb_addr = test_addrs[i];
+        uint32_t color = colors[i];
+
+        puts_uart("Testing address: 0x");
+        for (int shift = 60; shift >= 0; shift -= 4) {
+            unsigned int digit = (unsigned int)(fb_addr >> shift) & 15;
+            putc_uart((char)(digit < 10 ? '0' + digit : 'a' + digit - 10));
         }
-    } else {
-        puts_uart("x0 not in valid range for FDT\n");
+        puts_uart(" (");
+        puts_uart(color_names[i]);
+        puts_uart(")...\n");
+
+        /* Try to write to framebuffer */
+        volatile uint32_t *fb = (volatile uint32_t *)fb_addr;
+
+        /* Fill screen with color */
+        for (int j = 0; j < 720 * 100; j++) {  /* Small rectangle to test */
+            fb[j] = color;
+        }
+
+        puts_uart("Written! Waiting 3 seconds...\n");
+        puts_uart("If you see ");
+        puts_uart(color_names[i]);
+        puts_uart(" on screen, this is the correct address!\n\n");
+
+        /* Wait 3 seconds */
+        for (volatile int k = 0; k < 300000000; k++);
     }
 
-    puts_uart("\n=== Diagnostic Complete ===\n");
-    puts_uart("Looping... (watchdog will reset)\n");
+    puts_uart("\n=== All tests complete ===\n");
+    puts_uart("If no color appeared, none of the addresses are correct.\n");
+    puts_uart("Looping forever...\n");
 
     /* Loop forever */
     for (;;) __asm__ volatile("wfe");
