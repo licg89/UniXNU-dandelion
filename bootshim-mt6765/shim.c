@@ -198,25 +198,64 @@ __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
     (void)old_sp;
     (void)x0; (void)x1; (void)x2; (void)x3;
 
-    /* MINIMAL TEST: Just output to UART and loop forever */
-    /* No memory access that could crash */
+    puts_uart("\n=== MT6765 Memory Scanner ===\n");
+    puts_uart("Testing memory addresses (read-only)...\n\n");
 
-    puts_uart("\n=== MT6765 BootShim STARTED ===\n");
-    puts_uart("If you see this in UART, bootshim is running!\n");
-    puts_uart("Now entering infinite loop (no crash expected)...\n");
-    puts_uart("Watchdog will reset device in ~30 seconds.\n\n");
+    /* Test different memory addresses - READ ONLY */
+    /* If address is invalid, will crash and reboot */
+    uint64_t test_addrs[] = {
+        0x40000000,  /* DRAM start */
+        0x41000000,
+        0x42000000,
+        0x43000000,
+        0x44000000,
+        0x45000000,
+        0x46000000,
+        0x47000000,
+        0x48000000,
+        0x49000000,
+        0x4A000000,
+        0x4B000000,
+        0x4C000000,
+        0x4D000000,
+        0x4E000000,
+        0x4F000000,
+        0x50000000,
+        0x60000000,
+        0x70000000,
+        0x80000000,
+    };
 
-    /* Loop forever - device should NOT reboot unless watchdog triggers */
-    for (int count = 0; ; count++) {
-        if (count % 10000000 == 0) {
-            puts_uart("Still alive... count=");
-            for (int shift = 28; shift >= 0; shift -= 4) {
-                unsigned int digit = (unsigned int)(count >> shift) & 15;
-                putc_uart((char)(digit < 10 ? '0' + digit : 'a' + digit - 10));
-            }
-            puts_uart("\n");
+    for (int i = 0; i < 20; i++) {
+        uint64_t addr = test_addrs[i];
+        volatile uint32_t *ptr = (volatile uint32_t *)addr;
+
+        puts_uart("Testing 0x");
+        for (int shift = 60; shift >= 0; shift -= 4) {
+            unsigned int digit = (unsigned int)(addr >> shift) & 15;
+            putc_uart((char)(digit < 10 ? '0' + digit : 'a' + digit - 10));
         }
+        puts_uart("... ");
+
+        /* Try to read - if crashes, address is invalid */
+        volatile uint32_t val = *ptr;
+
+        puts_uart("OK value=0x");
+        for (int shift = 28; shift >= 0; shift -= 4) {
+            unsigned int digit = (unsigned int)(val >> shift) & 15;
+            putc_uart((char)(digit < 10 ? '0' + digit : 'a' + digit - 10));
+        }
+        puts_uart("\n");
+
+        /* Small delay */
+        for (volatile int k = 0; k < 1000000; k++);
     }
+
+    puts_uart("\n=== All addresses readable ===\n");
+    puts_uart("Now entering infinite loop...\n");
+
+    /* Loop forever */
+    for (;;) __asm__ volatile("wfe");
 }
 
 __attribute__((noreturn)) void shim_el1(uint64_t dtb)
