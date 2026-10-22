@@ -14,10 +14,10 @@ static struct fdt_info observed_fdt;
 #define UART_LSR (UART_BASE + 0x14)
 #define UART_TX_READY (1u << 5)
 
-/* Framebuffer for display output */
-#define FB_ENABLED 1
+/* Framebuffer - DISABLED until we find correct address */
+#define FB_ENABLED 0
 #if FB_ENABLED
-#define FB_BASE ((uintptr_t)0x80000000)  /* Try LK's default address */
+#define FB_BASE ((uintptr_t)0x80000000)
 #define FB_WIDTH 720
 #define FB_HEIGHT 1600
 #define FB_STRIDE (720 * 4)
@@ -79,8 +79,22 @@ static void fb_puts(const char *s)
 
 /* Display diagnostic header on screen */
 #if FB_ENABLED
+static int fb_check_valid(void)
+{
+    /* Try to read from framebuffer address - if it crashes, we'll know */
+    volatile uint32_t *fb = (volatile uint32_t *)(FB_BASE);
+    volatile uint32_t test = fb[0];  /* This might crash if address is invalid */
+    (void)test;
+    return 1;  /* If we get here, address is valid */
+}
+
 static void fb_init(void)
 {
+    /* Check if framebuffer address is accessible */
+    if (!fb_check_valid()) {
+        return;  /* Framebuffer not accessible, skip */
+    }
+
     volatile uint32_t *fb = (volatile uint32_t *)(FB_BASE);
     for (int i = 0; i < FB_WIDTH * FB_HEIGHT; i++) {
         fb[i] = 0x00000000;
