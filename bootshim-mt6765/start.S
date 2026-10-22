@@ -18,11 +18,23 @@ _head:
 _start:
     msr daifset, #0xf
 
-    /* Disable watchdog timer FIRST - MTK WDT at 0x1021C000 */
+    /* Try to disable watchdog at multiple possible MTK WDT addresses */
+    /* Try 0x1021C000 */
     movz x1, #0xC000
     movk x1, #0x1021, lsl #16
     mov w2, #0x11
     str w2, [x1]
+
+    /* Try 0x10007000 */
+    movz x1, #0x7000
+    movk x1, #0x1000, lsl #16
+    str w2, [x1]
+
+    /* Try 0x11007000 */
+    movz x1, #0x7000
+    movk x1, #0x1100, lsl #16
+    str w2, [x1]
+
     dsb sy
 
     mov x19, x0
@@ -52,10 +64,15 @@ _start:
     b.hs 5f
     str xzr, [x1], #8
     b 4b
-5:  /* TEST: Just loop forever, don't call shim_main */
-test_loop:
+5:  /* Feed watchdog periodically while looping */
+    movz x9, #0xC000
+    movk x9, #0x1021, lsl #16
+    mov w10, #0x11
+wdt_loop:
+    str w10, [x9]      /* Feed WDT */
+    dsb sy
     wfe
-    b test_loop
+    b wdt_loop
 halt:
     wfe
     b halt
