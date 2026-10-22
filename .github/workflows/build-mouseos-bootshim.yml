@@ -1,0 +1,36 @@
+name: Build MouseOS BootShim for MT6765
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-bootshim:
+    name: Build MouseOS BootShim
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install cross-compiler
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
+    - name: Build BootShim
+      run: |
+        cd /tmp
+        git clone --depth 1 https://github.com/mouseos/edk2-mt6765.git
+        cd edk2-mt6765/BootShim
+        make UEFI_BASE=0x50000000 UEFI_SIZE=0x00200000
+        ls -lh
+        cp BootShim.bin $GITHUB_WORKSPACE/
+        cp BootShim.elf $GITHUB_WORKSPACE/
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: mouseos-bootshim
+        path: |
+          BootShim.bin
+          BootShim.elf
