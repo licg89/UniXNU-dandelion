@@ -207,63 +207,90 @@ __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
                                         uint64_t x2, uint64_t x3, uint64_t old_sp)
 {
     (void)old_sp;
-    (void)x0; (void)x1; (void)x2; (void)x3;
+    (void)x1; (void)x2; (void)x3;
 
-    puts_uart("\n=== MT6765 Memory Scanner ===\n");
-    puts_uart("Testing memory addresses (read-only)...\n\n");
+    puts_uart("\n=== MT6765 FDT Framebuffer Finder ===\n");
+    puts_uart("Parsing FDT to find framebuffer address...\n\n");
 
-    /* Test different memory addresses - READ ONLY */
-    /* If address is invalid, will crash and reboot */
-    uint64_t test_addrs[] = {
-        0x40000000,  /* DRAM start */
-        0x41000000,
-        0x42000000,
-        0x43000000,
-        0x44000000,
-        0x45000000,
-        0x46000000,
-        0x47000000,
-        0x48000000,
-        0x49000000,
-        0x4A000000,
-        0x4B000000,
-        0x4C000000,
-        0x4D000000,
-        0x4E000000,
-        0x4F000000,
-        0x50000000,
-        0x60000000,
-        0x70000000,
-        0x80000000,
-    };
+    /* Parse FDT from x0 (passed by LK) */
+    struct fdt_info fdt_info;
+    int fdt_valid = 0;
 
-    for (int i = 0; i < 20; i++) {
-        uint64_t addr = test_addrs[i];
-        volatile uint32_t *ptr = (volatile uint32_t *)addr;
-
-        puts_uart("Testing 0x");
+    if (x0 >= 0x40000000 && x0 < 0x80000000) {
+        puts_uart("Trying FDT at x0=0x");
         for (int shift = 60; shift >= 0; shift -= 4) {
-            unsigned int digit = (unsigned int)(addr >> shift) & 15;
+            unsigned int digit = (unsigned int)(x0 >> shift) & 15;
             putc_uart((char)(digit < 10 ? '0' + digit : 'a' + digit - 10));
         }
-        puts_uart("... ");
+        puts_uart("...\n");
 
-        /* Try to read - if crashes, address is invalid */
-        volatile uint32_t val = *ptr;
+        int ret = fdt_inspect((const void *)(uintptr_t)x0, 0x100000, &fdt_info);
+        if (ret == 0) {
+            fdt_valid = 1;
+            puts_uart("FDT parsed successfully!\n");
+            value("FDT_bytes", fdt_info.bytes);
+            value("memory_count", fdt_info.memory_count);
+            for (unsigned i = 0; i < fdt_info.memory_count && i < 8; i++) {
+                value("memory_base", fdt_info.memory[i].base);
+                value("memory_size", fdt_info.memory[i].size);
+            }
+            value("reserved_count", fdt_info.reserved_count);
+            for (unsigned i = 0; i < fdt_info.reserved_count && i < 16; i++) {
+                value("reserved_base", fdt_info.reserved[i].base);
+                value("reserved_size", fdt_info.reserved[i].size);
+            }
 
-        puts_uart("OK value=0x");
-        for (int shift = 28; shift >= 0; shift -= 4) {
-            unsigned int digit = (unsigned int)(val >> shift) & 15;
-            putc_uart((char)(digit < 10 ? '0' + digit : 'a' + digit - 10));
+            /* Look for framebuffer in reserved memory */
+            puts_uart("\n=== Looking for framebuffer ===\n");
+            puts_uart("Reserved regions that might be framebuffer:\n");
+            for (unsigned i = 0; i < fdt_info.reserved_count && i < 16; i++) {
+                uint64_t base = fdt_info.reserved[i].base;
+                uint64_t size = fdt_info.reserved[i].size;
+                /* Framebuffer is typically large (>1MB) and in DRAM range */
+                if (size >= 0x100000 && base >= 0x40000000 && base < 0x80000000) {
+                    puts_uart("  Possible FB: base=0x");
+                    for (int shift = 60; shift >= 0; shift -= 4) {
+                        unsigned int digit = (unsigned int)(base >> shift) & 15;
+                        putc_uart((char)(digit < 10 ? '0' + digit : 'a' + digit - 10));
+                    }
+                    puts_uart(" size=0x");
+                    for (int shift = 60; shift >= 0; shift -= 4) {
+                        unsigned int digit = (unsigned int)(size >> shift) & 15;
+                        putc_uart((char)(digit < 10 ? '0' + digit : 'a' + digit - 10));
+                    }
+                    puts_uart("\n");
+                }
+            }
+        } else {
+            puts_uart("FDT parse failed\n");
         }
-        puts_uart("\n");
-
-        /* Small delay */
-        for (volatile int k = 0; k < 1000000; k++);
+    } else {
+        puts_uart("x0 not in valid range for FDT\n");
     }
 
-    puts_uart("\n=== All addresses readable ===\n");
-    puts_uart("Now entering infinite loop...\n");
+    if (!fdt_valid) {
+        puts_uart("\nFDT not available, trying hardcoded addresses...\n");
+        /* Try some common MTK framebuffer addresses */
+        uint64_t test_addrs[] = {0x47000000, 0x48000000, 0x49000000, 0x4A000000, 0x4B000000};
+        for (int i = 0; i < 5; i++) {
+            volatile uint32_t *ptr = (volatile uint32_t *)test_addrs[i];
+            puts_uart("Testing 0x");
+            for (int shift = 60; shift >= 0; shift -= 4) {
+                unsigned int digit = (unsigned int)(test_addrs[i] >> shift) & 15;
+                putc_uart((char)(digit < 10 ? '0' + digit : 'a' + digit - 10));
+            }
+            volatile uint32_t val = *ptr;
+            puts_uart(" = 0x");
+            for (int shift = 28; shift >= 0; shift -= 4) {
+                unsigned int digit = (unsigned int)(val >> shift) & 15;
+                putc_uart((char)(digit < 10 ? '0' + digit : 'a' + digit - 10));
+            }
+            puts_uart("\n");
+        }
+    }
+
+    puts_uart("\n=== Diagnostic complete ===\n");
+    puts_uart("Entering infinite loop...\n");
 
     /* Loop forever */
     for (;;) __asm__ volatile("wfe");
