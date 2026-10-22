@@ -17,6 +17,14 @@ _head:
 .global _start
 _start:
     msr daifset, #0xf
+
+    /* Disable watchdog timer FIRST - MTK WDT at 0x1021C000 */
+    movz x1, #0xC000
+    movk x1, #0x1021, lsl #16
+    mov w2, #0x11
+    str w2, [x1]
+    dsb sy
+
     mov x19, x0
     mov x20, x1
     mov x21, x2
