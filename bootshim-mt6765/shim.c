@@ -6,6 +6,17 @@
 #include "fdt.h"
 #include "handoff.h"
 
+/* Freestanding memcpy implementation */
+void *memcpy(void *dest, const void *src, uint64_t n)
+{
+    uint8_t *d = (uint8_t *)dest;
+    const uint8_t *s = (const uint8_t *)src;
+    for (uint64_t i = 0; i < n; i++) {
+        d[i] = s[i];
+    }
+    return dest;
+}
+
 __attribute__((noreturn)) void enter_el1(uint64_t dtb);
 static struct fdt_info observed_fdt;
 
