@@ -1,0 +1,36 @@
+{
+  "model": "Redmi 9A",
+  "codename": "dandelion",
+  "soc": "MT6765",
+  "cpu": "cortex-a53",
+  "cores": 8,
+  "uart_physical_address": "0x11002000",
+  "uart_baud_inherited_from_lk": 921600,
+  "boot_partition_bytes": 67108864,
+  "kernel_load_address": "0x40080000",
+  "initial_stage": "Source-built bootshim diagnostic; hardware verification pending",
+  "partition_changes_required_for_diagnostic": false,
+  "boot_image": {
+    "page_bytes": 2048,
+    "kernel_addr": "0x40080000",
+    "ramdisk_addr": "0x48000000",
+    "second_addr": "0x40f00000",
+    "tags_addr": "0x47000000",
+    "header_version": 0,
+    "mtk_header_fill": 255,
+    "kernel_gzip_alignment": 512,
+    "cmdline": "bootopt=64S3,32N2,64N2"
+  },
+  "xnu_handoff": {
+    "physical_base": "0x40000000",
+    "managed_size": "0x08000000",
+    "cmdline": "-v serial=3 debug=0x14e keepsyms=1 cpus=1 -noprogress"
+  },
+  "hardware_notes": {
+    "display": "NT36525B MIPI DSI 720x1600",
+    "touch": "Novatek",
+    "emmc": "MTK MSDC at 0x11230000",
+    "gic": "GICv2 at 0x10221000",
+    "framebuffer": "0x48000000 (needs verification)"
+  }
+}

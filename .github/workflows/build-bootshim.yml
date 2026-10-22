@@ -1,0 +1,50 @@
+name: Build BootShim for MT6765
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'bootshim-mt6765/**'
+      - '.github/workflows/build-bootshim.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'bootshim-mt6765/**'
+  workflow_dispatch:
+
+jobs:
+  build-bootshim:
+    name: Build MT6765 BootShim
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install cross-compiler
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu python3
+
+    - name: Build bootshim
+      working-directory: bootshim-mt6765
+      run: |
+        ./build.sh
+        ls -lh ../out/bootshim/
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: bootshim-mt6765
+        path: |
+          out/bootshim/Image
+          out/bootshim/build.json
+          out/bootshim/symbols.txt
+        if-no-files-found: error
+
+    - name: Build summary
+      if: success()
+      run: |
+        echo "✅ BootShim build succeeded!"
+        echo "Image size: $(ls -lh out/bootshim/Image | awk '{print $5}')"
+        cat out/bootshim/build.json
