@@ -34,8 +34,10 @@ jobs:
     - name: Apply MT6765 patches
       run: |
         cd Mu-Silicium-ref
-        # Apply patch to fix unused variable warnings in MsdcDxe
-        git apply ../patches/mu-silicium/fix-msdc-unused-var.patch || echo "Patch already applied or not needed"
+        # Fix unused variable warnings in MsdcDxe.c
+        sed -i '114a\  (void)Private;  // Suppress unused variable warning' Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.c
+        sed -i '168a\  (void)Private;  // Suppress unused variable warning' Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.c
+        echo "Applied MsdcDxe fixes"
 
     - name: Set up Python
       uses: actions/setup-python@v5
