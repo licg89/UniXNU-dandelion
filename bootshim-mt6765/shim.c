@@ -49,8 +49,6 @@ static void fb_putchar(char c, int x, int y, uint32_t color)
         }
     }
 }
-#else
-static void fb_putchar(char c, int x, int y, uint32_t color) { (void)c; (void)x; (void)y; (void)color; }
 #endif
 
 /* Draw a string to framebuffer */
