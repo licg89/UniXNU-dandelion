@@ -198,66 +198,25 @@ __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
     (void)old_sp;
     (void)x0; (void)x1; (void)x2; (void)x3;
 
-    puts_uart("\n=== MT6765 Framebuffer Scanner ===\n");
-    puts_uart("Testing multiple FB addresses...\n");
-    puts_uart("Watch screen for color changes!\n\n");
+    /* MINIMAL TEST: Just output to UART and loop forever */
+    /* No memory access that could crash */
 
-    /* Test different framebuffer addresses */
-    /* Each address shows a different color for 3 seconds */
-    /* If address is invalid, device will crash and reboot */
+    puts_uart("\n=== MT6765 BootShim STARTED ===\n");
+    puts_uart("If you see this in UART, bootshim is running!\n");
+    puts_uart("Now entering infinite loop (no crash expected)...\n");
+    puts_uart("Watchdog will reset device in ~30 seconds.\n\n");
 
-    uint64_t test_addrs[] = {
-        0x40000000,  /* Test 1: Will show RED if valid */
-        0x50000000,  /* Test 2: Will show GREEN if valid */
-        0x60000000,  /* Test 3: Will show BLUE if valid */
-        0x70000000,  /* Test 4: Will show WHITE if valid */
-        0x80000000,  /* Test 5: Will show YELLOW if valid */
-    };
-    uint32_t colors[] = {
-        0x00FF0000,  /* RED */
-        0x0000FF00,  /* GREEN */
-        0x000000FF,  /* BLUE */
-        0x00FFFFFF,  /* WHITE */
-        0x00FFFF00,  /* YELLOW */
-    };
-    const char* color_names[] = {"RED", "GREEN", "BLUE", "WHITE", "YELLOW"};
-
-    for (int i = 0; i < 5; i++) {
-        uint64_t fb_addr = test_addrs[i];
-        uint32_t color = colors[i];
-
-        puts_uart("Testing address: 0x");
-        for (int shift = 60; shift >= 0; shift -= 4) {
-            unsigned int digit = (unsigned int)(fb_addr >> shift) & 15;
-            putc_uart((char)(digit < 10 ? '0' + digit : 'a' + digit - 10));
+    /* Loop forever - device should NOT reboot unless watchdog triggers */
+    for (int count = 0; ; count++) {
+        if (count % 10000000 == 0) {
+            puts_uart("Still alive... count=");
+            for (int shift = 28; shift >= 0; shift -= 4) {
+                unsigned int digit = (unsigned int)(count >> shift) & 15;
+                putc_uart((char)(digit < 10 ? '0' + digit : 'a' + digit - 10));
+            }
+            puts_uart("\n");
         }
-        puts_uart(" (");
-        puts_uart(color_names[i]);
-        puts_uart(")...\n");
-
-        /* Try to write to framebuffer */
-        volatile uint32_t *fb = (volatile uint32_t *)fb_addr;
-
-        /* Fill screen with color */
-        for (int j = 0; j < 720 * 100; j++) {  /* Small rectangle to test */
-            fb[j] = color;
-        }
-
-        puts_uart("Written! Waiting 3 seconds...\n");
-        puts_uart("If you see ");
-        puts_uart(color_names[i]);
-        puts_uart(" on screen, this is the correct address!\n\n");
-
-        /* Wait 3 seconds */
-        for (volatile int k = 0; k < 300000000; k++);
     }
-
-    puts_uart("\n=== All tests complete ===\n");
-    puts_uart("If no color appeared, none of the addresses are correct.\n");
-    puts_uart("Looping forever...\n");
-
-    /* Loop forever */
-    for (;;) __asm__ volatile("wfe");
 }
 
 __attribute__((noreturn)) void shim_el1(uint64_t dtb)
