@@ -129,9 +129,6 @@ static void puts_uart(const char *s)
 
 static void value(const char *label, uint64_t v)
 {
-    char buf[64];
-    int pos = 0;
-
     /* Output to UART */
     puts_uart(label);
     puts_uart("=0x");
@@ -141,7 +138,10 @@ static void value(const char *label, uint64_t v)
     }
     puts_uart("\n");
 
+#if FB_ENABLED
     /* Output to framebuffer */
+    char buf[64];
+    int pos = 0;
     for (int i = 0; label[i] && pos < 40; i++) {
         buf[pos++] = label[i];
     }
@@ -155,6 +155,7 @@ static void value(const char *label, uint64_t v)
     buf[pos++] = '\n';
     buf[pos] = '\0';
     fb_puts(buf);
+#endif
 }
 
 void handoff_trace(const char *label, uint64_t v) { value(label, v); }
