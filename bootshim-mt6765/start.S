@@ -22,36 +22,35 @@ _start:
     mov x21, x2
     mov x22, x3
     mov x23, sp
-    msr spsel, #1
-    adr x1, _stack_top
-    mov sp, x1
-    adr x1, vectors
     mrs x2, CurrentEL
     cmp x2, #8
     b.eq 1f
     cmp x2, #4
     b.eq 2f
-    /* If not EL1 or EL2, just continue anyway (don't halt) */
-    /* This might happen on some MTK devices */
     b 2f
-1:  msr vbar_el2, x1
-    b 2f
-2:  isb
+1:  msr spsel, #1
+    adr x1, _stack_top
+    mov sp, x1
+    adr x1, vectors
+    msr vbar_el2, x1
+    b 3f
+2:  msr spsel, #1
+    adr x1, _stack_top
+    mov sp, x1
+    adr x1, vectors
+    msr vbar_el1, x1
+3:  isb
     adr x1, _bss_start
     adr x2, _bss_end
-3:  cmp x1, x2
-    b.hs 4f
+4:  cmp x1, x2
+    b.hs 5f
     str xzr, [x1], #8
-    b 3b
-4:  mov x0, x19
-    mov x1, x20
-    mov x2, x21
-    mov x3, x22
-    mov x4, x23
-    bl shim_main
-halt:
+    b 4b
+5:  /* TEST: Just loop forever, don't call shim_main */
+    /* This tests if start.S itself causes the crash */
+test_loop:
     wfe
-    b halt
+    b test_loop
 
 /* Enter the EL1h state required by XNU start_first_cpu; x0 retains the FDT.
  * Called only with EL2 MMU and caches off, as checked by shim_main.
