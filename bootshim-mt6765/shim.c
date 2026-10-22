@@ -195,6 +195,7 @@ __attribute__((noreturn)) void exception_report(uint64_t slot)
 __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
                                         uint64_t x2, uint64_t x3, uint64_t old_sp)
 {
+    (void)old_sp;  /* Unused parameter */
     uint64_t el = READ_SYSREG(CurrentEL);
     puts_uart("\n=== MT6765 BootShim with FDT ===\n");
     value("CurrentEL", el);
