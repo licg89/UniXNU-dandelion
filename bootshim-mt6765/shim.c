@@ -196,7 +196,7 @@ __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
                                         uint64_t x2, uint64_t x3, uint64_t old_sp)
 {
     (void)old_sp;
-    (void)x1; (void)x2; (void)x3;
+    (void)x0; (void)x1; (void)x2; (void)x3;
 
     puts_uart("\n=== MT6765 Framebuffer Scanner ===\n");
     puts_uart("Testing multiple FB addresses...\n");
