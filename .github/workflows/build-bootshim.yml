@@ -29,7 +29,15 @@ jobs:
     - name: Build bootshim
       working-directory: bootshim-mt6765
       run: |
-        ./build.sh
+        echo "=== Starting build ==="
+        ls -la
+        echo "=== Running build.sh ==="
+        bash -x ./build.sh 2>&1 || {
+          echo "=== Build failed ==="
+          echo "Exit code: $?"
+          exit 1
+        }
+        echo "=== Build completed ==="
         ls -lh ../out/bootshim/
 
     - name: Upload artifacts
