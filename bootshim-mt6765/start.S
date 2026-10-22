@@ -25,20 +25,18 @@ _start:
     mrs x2, CurrentEL
     cmp x2, #8
     b.eq 1f
-    cmp x2, #4
-    b.eq 2f
-    b 2f
-1:  msr spsel, #1
-    adr x1, _stack_top
-    mov sp, x1
-    adr x1, vectors
-    msr vbar_el2, x1
-    b 3f
-2:  msr spsel, #1
+    /* EL1 or other: don't execute msr spsel (UNDEFINED in EL1) */
     adr x1, _stack_top
     mov sp, x1
     adr x1, vectors
     msr vbar_el1, x1
+    b 3f
+1:  /* EL2: can use msr spsel */
+    msr spsel, #1
+    adr x1, _stack_top
+    mov sp, x1
+    adr x1, vectors
+    msr vbar_el2, x1
 3:  isb
     adr x1, _bss_start
     adr x2, _bss_end
@@ -47,7 +45,6 @@ _start:
     str xzr, [x1], #8
     b 4b
 5:  /* TEST: Just loop forever, don't call shim_main */
-    /* This tests if start.S itself causes the crash */
 test_loop:
     wfe
     b test_loop
