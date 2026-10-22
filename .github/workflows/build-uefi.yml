@@ -31,6 +31,12 @@ jobs:
         cd Mu-Silicium-ref
         git submodule update --init --recursive
 
+    - name: Apply MT6765 patches
+      run: |
+        cd Mu-Silicium-ref
+        # Apply patch to fix unused variable warnings in MsdcDxe
+        git apply ../patches/mu-silicium/fix-msdc-unused-var.patch || echo "Patch already applied or not needed"
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:

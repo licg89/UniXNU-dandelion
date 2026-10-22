@@ -1,0 +1,20 @@
+diff --git a/Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.c b/Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.c
+index 1234567..abcdefg 100644
+--- a/Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.c
++++ b/Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.c
+@@ -112,6 +112,7 @@ MsdcGetSlotCount (
+   }
+
+   Private = MSDC_PRIVATE_FROM_THIS (This);
++  (void)Private;  // Suppress unused variable warning
+
+   if (*Slot == 0xFF) {
+     *Slot = 0;
+@@ -165,6 +166,7 @@ MsdcGetMediaInfo (
+   }
+
+   Private = MSDC_PRIVATE_FROM_THIS (This);
++  (void)Private;  // Suppress unused variable warning
+
+   if (MediaInfo == NULL) {
+     return EFI_INVALID_PARAMETER;
