@@ -106,6 +106,10 @@ static void fb_init(void)
 static void fb_init(void) { /* Framebuffer disabled */ }
 #endif
 
+/* UART output - DISABLED for minimal testing */
+#define UART_ENABLED 0
+
+#if UART_ENABLED
 static void putc_uart(char c)
 {
     /* Preserve the UART setup inherited from LK, including its baud rate. */
@@ -124,6 +128,10 @@ static void puts_uart(const char *s)
         putc_uart(*s++);
     }
 }
+#else
+static void putc_uart(char c) { (void)c; }
+static void puts_uart(const char *s) { (void)s; }
+#endif
 
 static void value(const char *label, uint64_t v)
 {
