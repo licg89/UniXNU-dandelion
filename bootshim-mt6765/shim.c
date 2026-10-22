@@ -14,17 +14,16 @@ static struct fdt_info observed_fdt;
 #define UART_LSR (UART_BASE + 0x14)
 #define UART_TX_READY (1u << 5)
 
-/* Framebuffer for display output (no UART debugging) */
-/* DISABLED for initial testing - framebuffer address needs verification */
-#define FB_ENABLED 0
+/* Framebuffer for display output */
+#define FB_ENABLED 1
 #if FB_ENABLED
-#define FB_BASE ((uintptr_t)0x48000000)  /* Needs verification from LK */
+#define FB_BASE ((uintptr_t)0x80000000)  /* Try LK's default address */
 #define FB_WIDTH 720
 #define FB_HEIGHT 1600
 #define FB_STRIDE (720 * 4)
 #define FB_SIZE (FB_STRIDE * FB_HEIGHT)
 
-static int fb_y = 20;  /* Current text Y position */
+static int fb_y = 20;
 #endif
 
 /* Draw a single character to framebuffer */
@@ -35,10 +34,9 @@ static void fb_putchar(char c, int x, int y, uint32_t color)
 
     volatile uint32_t *fb = (volatile uint32_t *)(FB_BASE);
 
-    /* Simple 8x16 block rendering - just fill rectangles for visibility */
+    /* Simple 8x16 block rendering */
     for (int row = 0; row < 16; row++) {
         for (int col = 0; col < 8; col++) {
-            /* Simple pattern: filled for printable chars */
             if (c >= ' ' && c <= '~') {
                 int px = x + col;
                 int py = y + row;
@@ -66,44 +64,34 @@ static void fb_puts(const char *s)
             }
         }
         if (fb_y >= FB_HEIGHT - 20) {
-            /* Screen full - scroll by clearing */
             fb_y = 20;
-            /* Clear screen */
             volatile uint32_t *fb = (volatile uint32_t *)(FB_BASE);
             for (int i = 0; i < FB_WIDTH * FB_HEIGHT; i++) {
-                fb[i] = 0x00000000;  /* Black */
+                fb[i] = 0x00000000;
             }
         }
-        /* Draw character - white text on black background */
         fb_putchar(*s, x, fb_y, 0x00FFFFFF);
         x += 10;
         s++;
     }
 }
-#else
-static void fb_puts(const char *s) { (void)s; }
 #endif
 
 /* Display diagnostic header on screen */
 #if FB_ENABLED
 static void fb_init(void)
 {
-    /* Clear screen to black */
     volatile uint32_t *fb = (volatile uint32_t *)(FB_BASE);
     for (int i = 0; i < FB_WIDTH * FB_HEIGHT; i++) {
         fb[i] = 0x00000000;
     }
 
-    /* Show header */
-    fb_puts("=== MT6765 BootShim Diagnostic ===\n");
-    fb_puts("Device: Xiaomi Redmi 9A (dandelion)\n");
-    fb_puts("SoC: MediaTek MT6765 (Helio G25)\n");
-    fb_puts("CPU: Cortex-A53 x8\n");
-    fb_puts("==================================\n\n");
+    fb_puts("=== MT6765 BootShim v3 ===");
+    fb_puts("FB: 0x80000000");
+    fb_puts("Device: Redmi 9A");
+    fb_puts("Testing framebuffer...");
     fb_y += 10;
 }
-#else
-static void fb_init(void) { /* Framebuffer disabled */ }
 #endif
 
 /* UART output - DISABLED for minimal testing */
