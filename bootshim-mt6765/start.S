@@ -34,7 +34,8 @@ _start:
     dsb sy
 
     /* Try writing to WDT_SWRST register (offset 0x14) */
-    mov w2, #0x12092019  /* Magic value for reset disable */
+    movz w2, #0x2019
+    movk w2, #0x1209, lsl #16  /* Magic value 0x12092019 for reset disable */
     str w2, [x1, #0x14]
     dsb sy
 
