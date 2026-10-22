@@ -23,12 +23,6 @@ static struct fdt_info observed_fdt;
 
 static int fb_y = 20;  /* Current text Y position */
 
-/* Simple 8x16 font for framebuffer output */
-static const uint8_t font_8x16[128][16] = {
-    /* Basic ASCII font - only digits and letters needed for diagnostics */
-    [0 ... 127] = {0}  /* Initialize all to zero */
-};
-
 /* Draw a single character to framebuffer */
 static void fb_putchar(char c, int x, int y, uint32_t color)
 {
