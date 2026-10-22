@@ -15,6 +15,9 @@ static struct fdt_info observed_fdt;
 #define UART_TX_READY (1u << 5)
 
 /* Framebuffer for display output (no UART debugging) */
+/* DISABLED for initial testing - framebuffer address needs verification */
+#define FB_ENABLED 0
+#if FB_ENABLED
 #define FB_BASE ((uintptr_t)0x48000000)  /* Needs verification from LK */
 #define FB_WIDTH 720
 #define FB_HEIGHT 1600
@@ -22,8 +25,10 @@ static struct fdt_info observed_fdt;
 #define FB_SIZE (FB_STRIDE * FB_HEIGHT)
 
 static int fb_y = 20;  /* Current text Y position */
+#endif
 
 /* Draw a single character to framebuffer */
+#if FB_ENABLED
 static void fb_putchar(char c, int x, int y, uint32_t color)
 {
     if (x < 0 || x >= FB_WIDTH - 8 || y < 0 || y >= FB_HEIGHT - 16) return;
@@ -44,8 +49,12 @@ static void fb_putchar(char c, int x, int y, uint32_t color)
         }
     }
 }
+#else
+static void fb_putchar(char c, int x, int y, uint32_t color) { (void)c; (void)x; (void)y; (void)color; }
+#endif
 
 /* Draw a string to framebuffer */
+#if FB_ENABLED
 static void fb_puts(const char *s)
 {
     int x = 20;
@@ -73,8 +82,12 @@ static void fb_puts(const char *s)
         s++;
     }
 }
+#else
+static void fb_puts(const char *s) { (void)s; }
+#endif
 
 /* Display diagnostic header on screen */
+#if FB_ENABLED
 static void fb_init(void)
 {
     /* Clear screen to black */
@@ -91,6 +104,9 @@ static void fb_init(void)
     fb_puts("==================================\n\n");
     fb_y += 10;
 }
+#else
+static void fb_init(void) { /* Framebuffer disabled */ }
+#endif
 
 static void putc_uart(char c)
 {
