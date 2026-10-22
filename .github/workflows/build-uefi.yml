@@ -4,11 +4,13 @@ on:
   push:
     branches: [ main, develop ]
     paths:
+      - 'uefi-dandelion/**'
       - 'Mu-Silicium-ref/**'
       - '.github/workflows/build-uefi.yml'
   pull_request:
     branches: [ main ]
     paths:
+      - 'uefi-dandelion/**'
       - 'Mu-Silicium-ref/**'
   workflow_dispatch:
 
