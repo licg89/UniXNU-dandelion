@@ -18,50 +18,35 @@ _head:
 _start:
     msr daifset, #0xf
 
-    /* Write debug marker to persistent_ram (0x47c90000) */
-    movz x9, #0x0000
-    movk x9, #0x47c9, lsl #16
-    mov w10, #0xDEAD
-    strh w10, [x9]
-    dsb sy
-
     /* Disable MTK watchdog at 0x10007000 (toprgu) */
+    /* Try different values to disable */
     movz x1, #0x7000
     movk x1, #0x1000, lsl #16
-    mov w2, #0x11
+
+    /* Try writing 0 to disable */
+    mov w2, #0
     str w2, [x1]
     dsb sy
 
-    /* We're at EL2 (confirmed from kernel log) */
+    /* Try writing to WDT_MODE register (offset 0) */
+    mov w2, #0x11  /* Disable bit */
+    str w2, [x1]
+    dsb sy
+
+    /* Try writing to WDT_SWRST register (offset 0x14) */
+    mov w2, #0x12092019  /* Magic value for reset disable */
+    str w2, [x1, #0x14]
+    dsb sy
+
+    /* We're at EL2 (confirmed) */
     msr spsel, #1
     adr x1, _stack_top
     mov sp, x1
-    adr x1, vectors
-    msr vbar_el2, x1
-    isb
 
-    /* Clear BSS */
-    adr x1, _bss_start
-    adr x2, _bss_end
-4:  cmp x1, x2
-    b.hs 5f
-    str xzr, [x1], #8
-    b 4b
-
-5:  /* Write progress marker */
-    movz x9, #0x0002
-    movk x9, #0x47c9, lsl #16
-    mov w10, #0xBEEF
-    strh w10, [x9]
-    dsb sy
-
-    /* Infinite loop */
+    /* Infinite loop - do nothing else */
 test_loop:
     wfe
     b test_loop
-halt:
-    wfe
-    b halt
 
 /* Enter the EL1h state required by XNU start_first_cpu; x0 retains the FDT.
  * Called only with EL2 MMU and caches off, as checked by shim_main.
