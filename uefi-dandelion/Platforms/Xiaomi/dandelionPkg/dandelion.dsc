@@ -78,9 +78,10 @@
 
 [Components]
   #
-  # ACPI Tables
+  # ACPI Tables - Disabled for initial bring-up
+  # TODO: Create dandelion ACPI tables in Silicium-ACPI repository
   #
-  dandelion/AcpiTables.inf
+  # dandelion/AcpiTables.inf
 
   #
   # Input
