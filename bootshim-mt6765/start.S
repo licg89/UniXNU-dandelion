@@ -30,10 +30,12 @@ _start:
     cmp x2, #8
     b.eq 1f
     cmp x2, #4
-    b.ne halt
-    msr vbar_el1, x1
+    b.eq 2f
+    /* If not EL1 or EL2, just continue anyway (don't halt) */
+    /* This might happen on some MTK devices */
     b 2f
 1:  msr vbar_el2, x1
+    b 2f
 2:  isb
     adr x1, _bss_start
     adr x2, _bss_end
