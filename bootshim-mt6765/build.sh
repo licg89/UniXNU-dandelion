@@ -19,15 +19,18 @@ if "${prefix}readelf" -r "$out/shim.o" "$out/fdt.o" "$out/adt.o" "$out/handoff.o
 fi
 
 # Try PE/COFF format first (for MTK LK), fallback to binary
-if "${prefix}objcopy" --help 2>&1 | grep -q "pe-aarch64"; then
+# MTK LK expects PE/COFF format like the original kernel
+if "${prefix}objcopy" --help 2>&1 | grep -q "pe-aarch64\|efi-app"; then
     echo "Building PE/COFF format for MTK LK..."
     "${prefix}gcc" "${flags[@]}" -static -T "$src/shim.ld" -Wl,--build-id=none \
+        -Wl,--subsystem,efi-app-aarch64 \
         -Wl,-N "$out/start.o" "$out/shim.o" "$out/fdt.o" "$out/adt.o" "$out/handoff.o" "$out/rng.o" -o "$out/shim.elf"
     "${prefix}objcopy" -O pe-aarch64 "$out/shim.elf" "$out/Image" 2>/dev/null || {
         echo "PE/COFF failed, using binary format..."
         "${prefix}objcopy" -O binary "$out/shim.elf" "$out/Image"
     }
 else
+    echo "PE/COFF not supported by objcopy, using binary format..."
     "${prefix}gcc" "${flags[@]}" -static -T "$src/shim.ld" -Wl,--build-id=none \
         -Wl,-N "$out/start.o" "$out/shim.o" "$out/fdt.o" "$out/adt.o" "$out/handoff.o" "$out/rng.o" -o "$out/shim.elf"
     "${prefix}objcopy" -O binary "$out/shim.elf" "$out/Image"
