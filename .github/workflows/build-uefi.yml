@@ -106,6 +106,9 @@ jobs:
         # Copy device configuration
         mkdir -p Mu-Silicium-ref/Resources/Configs
         cp uefi-dandelion/Resources/Configs/dandelion.toml Mu-Silicium-ref/Resources/Configs/
+        # Create empty DTB file (will be improved later)
+        mkdir -p Mu-Silicium-ref/Resources/DTBs
+        touch Mu-Silicium-ref/Resources/DTBs/dandelion.dtb
 
     - name: Build UEFI firmware
       working-directory: Mu-Silicium-ref
