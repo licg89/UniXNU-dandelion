@@ -14,6 +14,90 @@ static struct fdt_info observed_fdt;
 #define UART_LSR (UART_BASE + 0x14)
 #define UART_TX_READY (1u << 5)
 
+/* Framebuffer for display output (no UART debugging) */
+#define FB_BASE ((uintptr_t)0x48000000)  /* Needs verification from LK */
+#define FB_WIDTH 720
+#define FB_HEIGHT 1600
+#define FB_STRIDE (720 * 4)
+#define FB_SIZE (FB_STRIDE * FB_HEIGHT)
+
+static int fb_y = 20;  /* Current text Y position */
+
+/* Simple 8x16 font for framebuffer output */
+static const uint8_t font_8x16[128][16] = {
+    /* Basic ASCII font - only digits and letters needed for diagnostics */
+    [0 ... 127] = {0}  /* Initialize all to zero */
+};
+
+/* Draw a single character to framebuffer */
+static void fb_putchar(char c, int x, int y, uint32_t color)
+{
+    if (x < 0 || x >= FB_WIDTH - 8 || y < 0 || y >= FB_HEIGHT - 16) return;
+
+    volatile uint32_t *fb = (volatile uint32_t *)(FB_BASE);
+
+    /* Simple 8x16 block rendering - just fill rectangles for visibility */
+    for (int row = 0; row < 16; row++) {
+        for (int col = 0; col < 8; col++) {
+            /* Simple pattern: filled for printable chars */
+            if (c >= ' ' && c <= '~') {
+                int px = x + col;
+                int py = y + row;
+                if (px < FB_WIDTH && py < FB_HEIGHT) {
+                    fb[py * FB_WIDTH + px] = color;
+                }
+            }
+        }
+    }
+}
+
+/* Draw a string to framebuffer */
+static void fb_puts(const char *s)
+{
+    int x = 20;
+    while (*s) {
+        if (*s == '\n' || x >= FB_WIDTH - 20) {
+            fb_y += 20;
+            x = 20;
+            if (*s == '\n') {
+                s++;
+                continue;
+            }
+        }
+        if (fb_y >= FB_HEIGHT - 20) {
+            /* Screen full - scroll by clearing */
+            fb_y = 20;
+            /* Clear screen */
+            volatile uint32_t *fb = (volatile uint32_t *)(FB_BASE);
+            for (int i = 0; i < FB_WIDTH * FB_HEIGHT; i++) {
+                fb[i] = 0x00000000;  /* Black */
+            }
+        }
+        /* Draw character - white text on black background */
+        fb_putchar(*s, x, fb_y, 0x00FFFFFF);
+        x += 10;
+        s++;
+    }
+}
+
+/* Display diagnostic header on screen */
+static void fb_init(void)
+{
+    /* Clear screen to black */
+    volatile uint32_t *fb = (volatile uint32_t *)(FB_BASE);
+    for (int i = 0; i < FB_WIDTH * FB_HEIGHT; i++) {
+        fb[i] = 0x00000000;
+    }
+
+    /* Show header */
+    fb_puts("=== MT6765 BootShim Diagnostic ===\n");
+    fb_puts("Device: Xiaomi Redmi 9A (dandelion)\n");
+    fb_puts("SoC: MediaTek MT6765 (Helio G25)\n");
+    fb_puts("CPU: Cortex-A53 x8\n");
+    fb_puts("==================================\n\n");
+    fb_y += 10;
+}
+
 static void putc_uart(char c)
 {
     /* Preserve the UART setup inherited from LK, including its baud rate. */
@@ -35,6 +119,10 @@ static void puts_uart(const char *s)
 
 static void value(const char *label, uint64_t v)
 {
+    char buf[64];
+    int pos = 0;
+
+    /* Output to UART */
     puts_uart(label);
     puts_uart("=0x");
     for (int shift = 60; shift >= 0; shift -= 4) {
@@ -42,6 +130,21 @@ static void value(const char *label, uint64_t v)
         putc_uart((char)(digit < 10 ? '0' + digit : 'a' + digit - 10));
     }
     puts_uart("\n");
+
+    /* Output to framebuffer */
+    for (int i = 0; label[i] && pos < 40; i++) {
+        buf[pos++] = label[i];
+    }
+    buf[pos++] = '=';
+    buf[pos++] = '0';
+    buf[pos++] = 'x';
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        unsigned int digit = (unsigned int)(v >> shift) & 15;
+        buf[pos++] = (char)(digit < 10 ? '0' + digit : 'a' + digit - 10);
+    }
+    buf[pos++] = '\n';
+    buf[pos] = '\0';
+    fb_puts(buf);
 }
 
 void handoff_trace(const char *label, uint64_t v) { value(label, v); }
@@ -73,8 +176,14 @@ __attribute__((noreturn)) void exception_report(uint64_t slot)
 __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
                                         uint64_t x2, uint64_t x3, uint64_t old_sp)
 {
+    /* Initialize framebuffer display first (for no-UART debugging) */
+    fb_init();
+    fb_puts("BootShim starting...\n");
+
     uint64_t el = READ_SYSREG(CurrentEL);
     puts_uart("\nXNU_DANDELION_SHIM_DIAGNOSTIC_V1\n");
+
+    fb_puts("UART diagnostic output:\n");
     value("CurrentEL", el);
     value("entry_x0", x0);
     value("entry_x1", x1);
@@ -92,6 +201,9 @@ __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
     if (el == 8) value("SCTLR_EL2", READ_SYSREG(SCTLR_EL2));
     else value("SCTLR_EL1", READ_SYSREG(SCTLR_EL1));
     puts_uart("SHIM_DIAGNOSTIC_DONE\n");
+    fb_puts("\n=== Diagnostic Complete ===\n");
+    fb_puts("Check UART for full output\n");
+    fb_puts("Waiting... (watchdog may reset)\n");
     if (el == 8) {
         /* Do not discard live mappings or dirty cache data inherited from LK. */
         if (READ_SYSREG(SCTLR_EL2) & ((1u << 0) | (1u << 2) | (1u << 12))) {
