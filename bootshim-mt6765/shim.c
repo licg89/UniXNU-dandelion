@@ -108,8 +108,8 @@ static void fb_init(void)
 }
 #endif
 
-/* UART output - DISABLED for minimal testing */
-#define UART_ENABLED 0
+/* UART output - ENABLED for FDT debugging */
+#define UART_ENABLED 1
 
 #if UART_ENABLED
 static void putc_uart(char c)
@@ -195,51 +195,45 @@ __attribute__((noreturn)) void exception_report(uint64_t slot)
 __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
                                         uint64_t x2, uint64_t x3, uint64_t old_sp)
 {
-    /* Initialize framebuffer display first (for no-UART debugging) */
-    fb_init();
-    fb_puts("BootShim starting...\n");
-
     uint64_t el = READ_SYSREG(CurrentEL);
-    puts_uart("\nXNU_DANDELION_SHIM_DIAGNOSTIC_V1\n");
-
-    fb_puts("UART diagnostic output:\n");
+    puts_uart("\n=== MT6765 BootShim with FDT ===\n");
     value("CurrentEL", el);
-    value("entry_x0", x0);
+    value("entry_x0", x0);  /* Usually FDT address */
     value("entry_x1", x1);
     value("entry_x2", x2);
     value("entry_x3", x3);
-    value("entry_sp", old_sp);
-    value("MIDR_EL1", READ_SYSREG(MIDR_EL1));
-    value("MPIDR_EL1", READ_SYSREG(MPIDR_EL1));
-    value("ID_AA64ISAR0_EL1", READ_SYSREG(ID_AA64ISAR0_EL1));
-    value("ID_AA64ISAR1_EL1", READ_SYSREG(ID_AA64ISAR1_EL1));
-    value("ID_AA64PFR0_EL1", READ_SYSREG(ID_AA64PFR0_EL1));
-    value("ID_AA64MMFR0_EL1", READ_SYSREG(ID_AA64MMFR0_EL1));
-    value("CNTFRQ_EL0", READ_SYSREG(CNTFRQ_EL0));
-    value("CNTVCT_EL0", READ_SYSREG(CNTVCT_EL0));
-    if (el == 8) value("SCTLR_EL2", READ_SYSREG(SCTLR_EL2));
-    else value("SCTLR_EL1", READ_SYSREG(SCTLR_EL1));
-    puts_uart("SHIM_DIAGNOSTIC_DONE\n");
-    fb_puts("\n=== Diagnostic Complete ===\n");
-    fb_puts("Check UART for full output\n");
-    fb_puts("Waiting... (watchdog may reset)\n");
-    if (el == 8) {
-        /* Do not discard live mappings or dirty cache data inherited from LK. */
-        if (READ_SYSREG(SCTLR_EL2) & ((1u << 0) | (1u << 2) | (1u << 12))) {
-            puts_uart("EL1_TRANSITION_REFUSED_MMU_OR_CACHE_ON\n");
-            stop();
+
+    /* Parse FDT from x0 */
+    puts_uart("\n--- FDT Parsing ---\n");
+    struct fdt_info fdt_info;
+    if (x0 >= 0x40000000 && x0 < 0x80000000) {
+        puts_uart("Trying to parse FDT from x0...\n");
+        int ret = fdt_inspect((const void *)(uintptr_t)x0, 0x100000, &fdt_info);
+        if (ret == 0) {
+            puts_uart("FDT parsed successfully!\n");
+            value("FDT_bytes", fdt_info.bytes);
+            value("memory_count", fdt_info.memory_count);
+            for (unsigned i = 0; i < fdt_info.memory_count && i < 4; i++) {
+                value("memory_base", fdt_info.memory[i].base);
+                value("memory_size", fdt_info.memory[i].size);
+            }
+            value("reserved_count", fdt_info.reserved_count);
+            for (unsigned i = 0; i < fdt_info.reserved_count && i < 8; i++) {
+                value("reserved_base", fdt_info.reserved[i].base);
+                value("reserved_size", fdt_info.reserved[i].size);
+            }
+        } else {
+            puts_uart("FDT parse failed\n");
         }
-        value("HCR_EL2_before", READ_SYSREG(HCR_EL2));
-        value("CNTHCTL_EL2_before", READ_SYSREG(CNTHCTL_EL2));
-        puts_uart("ENTER_EL1\n");
-        enter_el1(x0);
+    } else {
+        puts_uart("x0 not in valid range for FDT\n");
     }
-    if (el == 4) {
-        extern void shim_el1(uint64_t dtb);
-        shim_el1(x0);
-    }
-    /* Leave the inherited watchdog untouched. A later reset is possible. */
-    stop();
+
+    puts_uart("\n=== Diagnostic Complete ===\n");
+    puts_uart("Looping... (watchdog will reset)\n");
+
+    /* Loop forever */
+    for (;;) __asm__ volatile("wfe");
 }
 
 __attribute__((noreturn)) void shim_el1(uint64_t dtb)
