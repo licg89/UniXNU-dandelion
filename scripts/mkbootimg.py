@@ -79,16 +79,27 @@ def create_boot_img(kernel_path, output_path, base_addr=0x40000000,
     print(f"  Kernel address: 0x{kernel_addr:08X}")
 
 if __name__ == '__main__':
-    if len(sys.argv) < 3:
-        print(f"Usage: {sys.argv[0]} <kernel.bin> <output.img>")
-        print(f"Example: {sys.argv[0]} chainloader.bin xnu_chainloader.img")
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Create Android boot.img')
+    parser.add_argument('kernel', help='Kernel binary path')
+    parser.add_argument('output', help='Output boot.img path')
+    parser.add_argument('--base', type=lambda x: int(x, 0), default=0x40000000,
+                       help='Base address (default: 0x40000000)')
+    parser.add_argument('--kernel_offset', type=lambda x: int(x, 0), default=0x00080000,
+                       help='Kernel offset (default: 0x00080000)')
+    parser.add_argument('--cmdline', default='xnu_chainloader',
+                       help='Kernel cmdline (default: xnu_chainloader)')
+    parser.add_argument('--pagesize', type=int, default=2048,
+                       help='Page size (default: 2048)')
+
+    args = parser.parse_args()
+
+    if not os.path.exists(args.kernel):
+        print(f"ERROR: Kernel not found: {args.kernel}")
         sys.exit(1)
 
-    kernel_path = sys.argv[1]
-    output_path = sys.argv[2]
-
-    if not os.path.exists(kernel_path):
-        print(f"ERROR: Kernel not found: {kernel_path}")
-        sys.exit(1)
-
-    create_boot_img(kernel_path, output_path)
+    create_boot_img(args.kernel, args.output,
+                   base_addr=args.base,
+                   page_size=args.pagesize,
+                   cmdline=args.cmdline)
