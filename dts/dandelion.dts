@@ -399,6 +399,7 @@
 		};
 
 		cpu-map {
+			status = "disabled";   /* not a CPU: one reg per /cpus child */
 
 			cluster0 {
 
