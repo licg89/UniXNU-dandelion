@@ -397,47 +397,7 @@
 			cpu-idle-states = <0x06 0x07 0x08 0x09 0x0a 0x0b 0x0c>;
 			phandle = <0x15>;
 		};
-
-		cpu-map {
-
-			cluster0 {
-
-				core0 {
-					cpu = <0x0e>;
-				};
-
-				core1 {
-					cpu = <0x0f>;
-				};
-
-				core2 {
-					cpu = <0x10>;
-				};
-
-				core3 {
-					cpu = <0x11>;
-				};
-			};
-
-			cluster1 {
-
-				core0 {
-					cpu = <0x12>;
-				};
-
-				core1 {
-					cpu = <0x13>;
-				};
-
-				core2 {
-					cpu = <0x14>;
-				};
-
-				core3 {
-					cpu = <0x15>;
-				};
-			};
-		};
+;
 
 		idle-states {
 			entry-method = "arm,psci";
