@@ -81,5 +81,5 @@ unixnu = "../UniXNU"
 
 [payload.adt]
 # TODO: the board's identity seed, as the framework requires.
-chip_id = "TODO"
+chip_id = "6765"   # hex; the board identity this port uses
 unique_chip_id = "required"
