@@ -40,6 +40,7 @@ jobs:
         with:
           repository: licg89/uefi-dandelion   # this board's firmware checkout
           path: uefi-dandelion
+          token: ${{ secrets.UNIXNU_TOKEN }}   # private firmware repo: GITHUB_TOKEN only covers this repository
           submodules: recursive   # the firmware volume builds from the checkout's submodules
       - name: tools
         run: |
