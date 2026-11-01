@@ -8,7 +8,7 @@ summary = "Xiaomi Redmi 9A (dandelion), MediaTek MT6762G/MT6765. Rebuilt on UniX
 
 [[area]]
 id = "configuration"
-status = "planned"
+status = "verified"
 components = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink", "DarwinBoot"]
 paths = ["board.toml", "feeds.toml", "configs/**", ".gitmodules", ".github/**", ".gitignore"]
 inputs = ["Identify the configuration hardware, resources and existing component interfaces for this board."]
@@ -18,7 +18,12 @@ findings = ["Collect the first configuration observation, its cause when establi
 completion = ["All source pins resolve; every selected component has a record; status shows the intended overrides and patch order."]
 limits = ["Hardware inputs and implementation are pending for this example board."]
 next_action = ["Inventory the required configuration inputs before implementation."]
-evidence = []
+evidence = [
+  "scripts/package.sh --check --os ipados-17.7.11-21H461 => 'check done: 59 patches, configuration dandelion_defconfig, OS ipados-17.7.11-21H461'",
+  "unixnu status => arch profiles/arch/arm64, soc out/feeds/UniXNU-mt6765-common-c057b7ad, os profiles/os/ipados-17.7.11-21H461, device UniXNU-dandelion",
+  "unixnu status => component ArmCpu arm64, component ArmDTPlatform arm64, component DarwinBoot firmware, component XnuPrelink tool",
+  "The framework fetched and unpacked the IPSW itself: out/ipsw/21H461/{kernelcache.decompressed,DeviceTree.j120ap.im4p,044-76040-038.dmg.trustcache,044-76034-038.dmg.trustcache}",
+]
 
 [[area]]
 id = "firmware"
