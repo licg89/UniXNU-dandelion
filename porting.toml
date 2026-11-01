@@ -1,10 +1,10 @@
 schema_version = 1
 
 [device]
-name = "example"
-soc = "SM8550"
+name = "dandelion"
+soc = "MT6765"
 os_profile = "ipados-17.7.11-21H461"
-summary = "Device template. Complete each area with board-specific inputs and evidence."
+summary = "Xiaomi Redmi 9A (dandelion), MediaTek MT6762G/MT6765. Rebuilt on UniXNU after a hand-rolled MACHINE=dandelion port: ArmCpu and ArmDTPlatform replace the hand-written GIC, timer and platform expert."
 
 [[area]]
 id = "configuration"
