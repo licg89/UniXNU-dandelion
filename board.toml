@@ -18,7 +18,7 @@ example = false
 name = "dandelion"
 soc = "MT6765"
 soc_source = "mt6765"
-os_profile = "ios-16.5-20F66"  # TODO: confirm against the IPSW the user supplies
+os_profile = "ipados-17.7.11-21H461"  # TODO: confirm against the IPSW the user supplies
 description = "Xiaomi Redmi 9A (dandelion), MT6762G/MT6765"
 kit = "dandelion"
 
