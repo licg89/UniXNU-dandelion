@@ -27,7 +27,7 @@ kit = "dandelion"
 #         dandelion-gic-mode.patch and zz-dandelion-cntp-timer.patch.
 # ArmDTPlatform: the device-tree platform expert - replaces the generic-platform-expert
 #         fallback this port had to patch into IOKit.
-include = ["ArmDTPlatform", "ArmCpu", "XnuPrelink", "DarwinBoot"]
+include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink", "DarwinBoot"]
 
 [kernel]
 defconfig = "dandelion_defconfig"
