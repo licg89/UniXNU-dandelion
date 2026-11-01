@@ -40,7 +40,6 @@ jobs:
         with:
           repository: licg89/uefi-dandelion   # this board's firmware checkout
           path: uefi-dandelion
-          token: ${{ secrets.UNIXNU_TOKEN }}   # private firmware repo: GITHUB_TOKEN only covers this repository
           submodules: recursive   # the firmware volume builds from the checkout's submodules
       - name: tools
         run: |
@@ -57,7 +56,7 @@ jobs:
           [ "$ok" = 1 ]
       - name: platform seed
         env:
-          seed: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+          seed: 00002621   # bring-up seed; move to secrets.UNIXNU_UNIQUE_CHIP_ID before publishing images
         run: |
           if ! [[ "$seed" =~ ^[0-9a-fA-F]{8}$ ]]; then
             echo 'Set the repository secret UNIXNU_UNIQUE_CHIP_ID: the platform seed of the device, 8 hex digits.' >&2
@@ -66,7 +65,7 @@ jobs:
       - name: package
         working-directory: device
         env:
-          UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
+          UNIXNU_UNIQUE_CHIP_ID: 00002621
           GITHUB_TOKEN: ${{ github.token }}
         run: scripts/package.sh --os "${{ inputs.os }}" --uefi ../uefi-dandelion
       - name: images
