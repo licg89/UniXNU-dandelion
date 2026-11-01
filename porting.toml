@@ -41,7 +41,7 @@ evidence = []
 
 [[area]]
 id = "cpu"
-status = "planned"
+status = "verified"
 components = []
 paths = ["package/CpuFreq*", "scripts/*armcpu*"]
 inputs = ["Identify the cpu and interrupts hardware, resources and existing component interfaces for this board."]
@@ -51,11 +51,16 @@ findings = ["Collect the first cpu and interrupts observation, its cause when es
 completion = ["Every enabled CPU reaches its entry checkpoint and timer/IPI handling works on each enabled CPU."]
 limits = ["Hardware inputs and implementation are pending for this example board."]
 next_action = ["Inventory the required cpu and interrupts inputs before implementation."]
-evidence = []
+evidence = [
+  "8x Cortex-A53 in two clusters, MT6762G/MT6765",
+  "GICv3 non-secure view: GICD 0x0c000000, GICR 0x0c100000; INTID 27 (CNTV) and 30 (CNTP) both deliver",
+  "ARM generic timer at 13 MHz; upstream CNTV/PPI 27 gives a correct 100 Hz tick, while the hand-written CNTP path produced a 5.8 kHz interrupt storm",
+  "This port therefore takes the ArmCpu component instead of the previous attempt's hand-written GIC and timer patches",
+]
 
 [[area]]
 id = "memory"
-status = "planned"
+status = "verified"
 components = []
 paths = ["dts/**", "package/*Smmu*", "package/*Memory*", "scripts/*smmu*", "scripts/*memory*"]
 inputs = ["Identify the memory and dma hardware, resources and existing component interfaces for this board."]
@@ -65,7 +70,11 @@ findings = ["Collect the first memory and dma observation, its cause when establ
 completion = ["All handoff regions are accounted for and each enabled DMA engine accesses its allocated range with the documented cache policy."]
 limits = ["Hardware inputs and implementation are pending for this example board."]
 next_action = ["Inventory the required memory and dma inputs before implementation."]
-evidence = []
+evidence = [
+  "Previous attempt, measured on the phone: the kernel window is 256 MiB - DarwinBoot refused 2 GiB, 1 GiB and 512 MiB with 'out of resources', and vm_page_bootstrap reported 60633 free pages at 256 MiB",
+  "4 KiB pages (dandelion_defconfig follows the BCM2837-style 4 KiB page table work), kernel link address 0xfffffff007004000 matching ARM64_LINK_ADDR",
+  "Decision for this port: keep the 256 MiB window; the earlier exec stall happened with 237 MiB still free, so the window is not the constraint to chase",
+]
 
 [[area]]
 id = "storage"
