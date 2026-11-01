@@ -1,0 +1,33 @@
+##
+#  Copyright (c) 2011-2015, ARM Limited. All rights reserved.
+#  Copyright (c) 2014, Linaro Limited. All rights reserved.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+#
+#  MT6765 replacement for SiliciumNullPkg/Library/PlatformPeiLibNull: same
+#  FV HOB, plus the M2 watchdog progress beacon (see PlatformPei.c).
+##
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = PlatformPeiLib
+  FILE_GUID                      = 6C1F4A52-1B4E-4F0B-9E52-7A3C0D9B1E11
+  MODULE_TYPE                    = SEC
+  VERSION_STRING                 = 1.0
+  LIBRARY_CLASS                  = PlatformPeiLib
+
+[Sources]
+  PlatformPei.c
+
+[Packages]
+  ArmPkg/ArmPkg.dec
+  MdePkg/MdePkg.dec
+  SiliciumPkg/SiliciumPkg.dec
+
+[LibraryClasses]
+  HobLib
+  IoLib
+  MemoryMapHelperLib
+  PcdLib
+
+[FixedPcd]
+  gArmTokenSpaceGuid.PcdFvBaseAddress
+  gArmTokenSpaceGuid.PcdFvSize

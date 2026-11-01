@@ -1,0 +1,39 @@
+##
+#  dandelionPkg package declaration.
+#
+#  The package only exports things this platform invented; everything else comes
+#  from MdePkg / MdeModulePkg / MediaTekPkg.  Keeping it a real package (rather
+#  than an empty .dec) is what lets a module say "I consume
+#  gDandelionLogProtocolGuid" and have AutoGen emit the GUID, instead of every
+#  module carrying its own copy of the value in a header.
+#
+#  Copyright (c) Microsoft Corporation.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+[Defines]
+  DEC_SPECIFICATION              = 0x00010005
+  PACKAGE_NAME                   = dandelionPkg
+  PACKAGE_GUID                   = 2E7A5C10-9B3D-4C58-A1E4-6D0F2B7C8E91
+  PACKAGE_VERSION                = 1.0
+
+[Includes]
+  Include
+
+#
+# gDandelionLogProtocolGuid: the console's text log, readable by any driver.
+#
+# Why a protocol instead of a shared buffer at a fixed address: the log has to be
+# readable by whoever wants it (the payload loader today, the DarwinBoot handoff
+# tomorrow) without either side guessing where it lives in memory.
+#
+[Protocols]
+  gDandelionLogProtocolGuid      = { 0x5B1C7E20, 0x3A4D, 0x4F19, { 0x8C, 0x62, 0x1D, 0x94, 0xB7, 0x35, 0x6A, 0xF0 } }
+
+#
+# gDandelionLogTableGuid: EFI configuration table carrying the log for a payload.
+#
+# Registered by PayloadBootDxe just before it starts anything, so the payload can
+# read the firmware's own log with no protocol dependency at all.
+#
+[Guids]
+  gDandelionLogTableGuid         = { 0x9D4E2A61, 0x77B8, 0x42C3, { 0xA5, 0x0F, 0x3E, 0x81, 0xC6, 0x24, 0x5B, 0x9D } }

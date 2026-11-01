@@ -1,0 +1,33 @@
+##
+#  Copyright (c) 2011-2012, ARM Limited. All rights reserved.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+#
+#  Derived from MT6768Pkg/Library/PlatformSecLib/PlatformSecLib.inf.
+#  BASE_NAME and FILE_GUID are intentionally kept identical to upstream: that
+#  is what MT6789Pkg does as well (all three MTK packages share these GUIDs),
+#  and only one MediaTek SoC package is ever linked into a given platform.
+#  A platform must not include MT6768Pkg and MT6765Pkg at the same time.
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = PlatformSecLib
+  FILE_GUID                      = 2C33C03B-D643-4792-8A90-EEF53A555C7D
+  MODULE_TYPE                    = SEC
+  VERSION_STRING                 = 1.0
+  LIBRARY_CLASS                  = PlatformSecLib
+
+[Sources]
+  PlatformSec.c
+
+[Sources.AArch64]
+  AArch64/PlatformHelper.S
+
+[Packages]
+  ArmPkg/ArmPkg.dec
+  MdePkg/MdePkg.dec
+  SiliciumPkg/SiliciumPkg.dec
+
+[LibraryClasses]
+  IoLib
+  MemoryMapHelperLib

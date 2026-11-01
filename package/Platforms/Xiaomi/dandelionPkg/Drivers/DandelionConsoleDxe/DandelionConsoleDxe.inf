@@ -1,0 +1,49 @@
+##
+#  Framebuffer console for dandelion: 8x16 glyphs, real 2944-byte stride.
+#  Replaces GraphicsConsoleDxe, which shears every row by 16 pixels on this
+#  panel even though the GOP reports the correct 736-pixel pitch.
+#
+#  Copyright (c) Microsoft Corporation.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = DandelionConsoleDxe
+  FILE_GUID                      = B7E1F4A2-3C6D-4E58-9A21-5D0C8F7E2B13
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = DandelionConsoleDxeEntryPoint
+
+[Sources]
+  DandelionConsoleDxe.c
+  DandelionFont.h
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  dandelionPkg/dandelion.dec
+
+[LibraryClasses]
+  BaseMemoryLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Protocols]
+  gEfiDevicePathProtocolGuid        ## PRODUCES
+  gEfiSimpleTextOutProtocolGuid     ## PRODUCES
+  #
+  # The text log ring: everything printed through this console, in order, so a
+  # payload can read the firmware's own log instead of a photograph of 68 rows.
+  #
+  gDandelionLogProtocolGuid         ## PRODUCES
+
+[Guids]
+  gEfiConsoleOutDeviceGuid          ## PRODUCES
+
+#
+# No dependencies: the framebuffer is set up by LK before the kernel segment
+# runs, so the console can exist as soon as the dispatcher starts.  This also
+# means BDS messages are ours from the very first line.
+#
+[Depex]
+  TRUE

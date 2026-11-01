@@ -1,0 +1,30 @@
+##
+#  Minimal UEFI application used as the M5 payload: proves that PayloadBootDxe
+#  can find, load and start an image.  Embedded in the FV so it exists even when
+#  there is no block device.
+#
+#  Copyright (c) Microsoft Corporation.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = PayloadHello
+  #
+  # PayloadBootDxe.c declares this GUID (mPayloadFileGuid) to find the image in
+  # the firmware volume.  Keep the two in step.
+  #
+  FILE_GUID                      = 7E1B3A5C-2C4D-4F6A-9B10-DA9D0E110001
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = PayloadHelloEntryPoint
+
+[Sources]
+  PayloadHello.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiBootServicesTableLib
+  UefiApplicationEntryPoint
+  DebugLib

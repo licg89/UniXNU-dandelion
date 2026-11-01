@@ -1,0 +1,181 @@
+##
+#  Xiaomi Redmi 9A (dandelion, MT6762G / MT6765) platform.
+#
+#  Derived from Platforms/Xiaomi/lancelotPkg/lancelot.fdf (MT6768 / MT6769T).
+#  Only the ACPI table module reference changed (lancelot -> dandelion) and the
+#  FvMain FV name GUID.
+#
+#  Copyright (c) 2018, Linaro Limited. All rights reserved.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+################################################################################
+#
+# FD Section
+# The [FD] Section is made up of the definition statements and a
+# description of what goes into  the Flash Device Image.  Each FD section
+# defines one flash "device" image.  A flash device image may be one of
+# the following: Removable media bootable image (like a boot floppy
+# image,) an Option ROM image that will be "flashed" into an add-in
+# card,) a System "Flash"  image (that would be burned into a system's
+# flash) or an Update ("Capsule") image that will be used to update and
+# existing system flash.
+#
+################################################################################
+
+[FD.SILICIUM_UEFI]
+BaseAddress   = $(FD_BASE)|gArmTokenSpaceGuid.PcdFdBaseAddress # The base address of the FLASH Device.
+Size          = $(FD_SIZE)|gArmTokenSpaceGuid.PcdFdSize        # The size in bytes of the FLASH Device
+ErasePolarity = 1
+
+# This one is tricky, it must be: BlockSize * NumBlocks = Size
+BlockSize     = 0x1000
+NumBlocks     = $(FD_BLOCKS)
+
+################################################################################
+#
+# Following are lists of FD Region layout which correspond to the locations of different
+# images within the flash device.
+#
+# Regions must be defined in ascending order and may not overlap.
+#
+# A Layout Region start with a eight digit hex offset (leading "0x" required) followed by
+# the pipe "|" character, followed by the size of the region, also in hex with the leading
+# "0x" characters. Like:
+# Offset|Size
+# PcdOffsetCName|PcdSizeCName
+# RegionType <FV, DATA, or FILE>
+#
+################################################################################
+
+0x00000000|$(FD_SIZE)
+gArmTokenSpaceGuid.PcdFvBaseAddress|gArmTokenSpaceGuid.PcdFvSize
+FV = FVMAIN_COMPACT
+
+################################################################################
+#
+# FV Section
+#
+# [FV] section is used to define what components or modules are placed within a flash
+# device file.  This section also defines order the components and modules are positioned
+# within the image.  The [FV] section consists of define statements, set statements and
+# module statements.
+#
+################################################################################
+
+[FV.FvMain]
+FvNameGuid         = BEEE0789-87CF-4DE0-9CBA-6BEC58FB447B
+BlockSize          = 0x1000
+NumBlocks          = 0        # This FV gets compressed so make it just big enough
+FvAlignment        = 8        # FV alignment and FV attributes setting.
+ERASE_POLARITY     = 1
+MEMORY_MAPPED      = TRUE
+STICKY_WRITE       = TRUE
+LOCK_CAP           = TRUE
+LOCK_STATUS        = TRUE
+WRITE_DISABLED_CAP = TRUE
+WRITE_ENABLED_CAP  = TRUE
+WRITE_STATUS       = TRUE
+WRITE_LOCK_CAP     = TRUE
+WRITE_LOCK_STATUS  = TRUE
+READ_DISABLED_CAP  = TRUE
+READ_ENABLED_CAP   = TRUE
+READ_STATUS        = TRUE
+READ_LOCK_CAP      = TRUE
+READ_LOCK_STATUS   = TRUE
+
+  !include Include/APRIORI.inc
+  !include Include/DXE.inc
+
+  # RAM Manager
+  INF SiliciumPkg/Drivers/RamManagerDxe/RamManagerDxe.inf
+
+  # SmBios
+  INF MdeModulePkg/Universal/SmbiosDxe/SmbiosDxe.inf
+  INF SiliciumPkg/Drivers/SmBiosTableDxe/SmBiosTableDxe.inf
+
+  # ACPI
+  INF MdeModulePkg/Universal/Acpi/AcpiTableDxe/AcpiTableDxe.inf
+  INF MdeModulePkg/Universal/Acpi/AcpiPlatformDxe/AcpiPlatformDxe.inf
+#  INF RuleOverride = ACPITABLE dandelion/AcpiTables.inf   # TODO: needs Silicium-ACPI/Platforms/Xiaomi/dandelion
+
+  # Device Tree
+  #INF EmbeddedPkg/Drivers/DtPlatformDxe/DtPlatformDxe.inf
+  #FILE FREEFORM = 25462CDA-221F-47DF-AC1D-259CFAA4E326 {
+  #  SECTION RAW = dandelionPkg/FdtBlob/mt6765-xiaomi-dandelion.dtb
+  #  SECTION UI = "DeviceTreeBlob"
+  #}
+
+  # Device tree for the payload (M6 groundwork).
+  #
+  # Embedded as a FREEFORM file under gFdtTableGuid, which is the GUID
+  # DarwinBoot and UniXNU already look for.  PayloadBootDxe republishes it as an
+  # EFI configuration table before starting anything, so a payload can describe
+  # the hardware without being able to read storage.
+  #
+  # The blob is a build input, not a build product: dandelion.dtb is the tree
+  # that line A already boots with, copied here so the firmware and the tree
+  # cannot drift apart.
+  #
+  FILE FREEFORM = B1B621D5-F19C-41A5-830B-D9152C69AAE0 {
+    SECTION RAW = dandelionPkg/FdtBlob/dandelion.dtb
+    SECTION UI = "dandelion.dtb"
+  }
+
+  #
+  # UniXNU.efi, as an FFS file under its own FILE_GUID.
+  #
+  # Not a module we build: UniXNUPkg is upstream (UniXNU/UniXNU), built out of
+  # tree by tools/build_unixnu.sh and copied in here.  It goes into the firmware
+  # volume because that is where UniXNUDxe looks for it -- its PCD
+  # PcdUniXNUApplicationFile is this exact GUID, and starting UniXNUDxe without
+  # it produced, on hardware:
+  #
+  #     UniXNUDxe: application 9B665204-A133-47A2-9396-9E2B370A4E25 not found in any FV
+  #     config error: driver \EFI\UniXNU\UniXNUDxe.efi: start failed: Not Found
+  #     drivers 0 loaded / 1 failed
+  #
+  # It is an application, not a driver: DXE never dispatches it, it is only ever
+  # found by GUID and started on purpose.
+  #
+  FILE APPLICATION = 9B665204-A133-47A2-9396-9E2B370A4E25 {
+    SECTION PE32 = dandelionPkg/UniXNU/UniXNU.efi
+    SECTION UI = "UniXNU.efi"
+  }
+
+  # M5 payload: a UEFI application that PayloadBootDxe LoadImage/StartImage's
+  # from the firmware volume.  This is how the load-and-start path gets verified
+  # on a board whose block device does not work yet -- and it stays useful
+  # afterwards as a "does the boot chain still work" self-test.
+  INF dandelionPkg/Applications/PayloadHello/PayloadHello.inf
+
+  !include MediaTekPkg/Extra.fdf.inc
+
+[FV.FVMAIN_COMPACT]
+FvAlignment        = 8
+ERASE_POLARITY     = 1
+MEMORY_MAPPED      = TRUE
+STICKY_WRITE       = TRUE
+LOCK_CAP           = TRUE
+LOCK_STATUS        = TRUE
+WRITE_DISABLED_CAP = TRUE
+WRITE_ENABLED_CAP  = TRUE
+WRITE_STATUS       = TRUE
+WRITE_LOCK_CAP     = TRUE
+WRITE_LOCK_STATUS  = TRUE
+READ_DISABLED_CAP  = TRUE
+READ_ENABLED_CAP   = TRUE
+READ_STATUS        = TRUE
+READ_LOCK_CAP      = TRUE
+READ_LOCK_STATUS   = TRUE
+
+  INF SiliciumPkg/Sec/Sec.inf
+
+  FILE FV_IMAGE = 9E21FD93-9C72-4c15-8C4B-E77F1DB2D792 {
+    SECTION GUIDED EE4E5898-3914-4259-9D6E-DC7BD79403CF PROCESSING_REQUIRED = TRUE {
+      SECTION FV_IMAGE = FVMAIN
+    }
+  }
+
+  !include SiliciumPkg/Common.fdf.inc

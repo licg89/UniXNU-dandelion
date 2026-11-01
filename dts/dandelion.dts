@@ -1,0 +1,16 @@
+/dts-v1/;
+/include/ "sm8550.dtsi"
+
+/ {
+    model = "REQUIRED_BOARD_MODEL";
+    compatible = "vendor,REQUIRED_BOARD", "qcom,sm8550";
+
+    // Replace address and size from the board memory map.
+    memory@0 {
+        device_type = "memory";
+        reg = <0 0 0 0>;
+    };
+};
+
+// Set CPU status, reserved memory, peripheral wiring, and firmware inputs
+// from this board's hardware documentation.

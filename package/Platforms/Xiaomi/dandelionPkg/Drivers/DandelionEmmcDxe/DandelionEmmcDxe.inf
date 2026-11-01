@@ -1,0 +1,38 @@
+##
+#  dandelion eMMC BlockIo, built on the controller state LK hands over.
+#
+#  No dependency, no library, no other driver in between: this one has to be the
+#  first thing that touches MSDC0, because everything that has ever been wrong
+#  with the eMMC data path came from resetting the controller or re-initialising
+#  the card.  See the file header of DandelionEmmcDxe.c and
+#  docs/ANALYSIS-INHERIT-VS-REINIT.md.
+#
+#  Copyright (c) Microsoft Corporation.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = DandelionEmmcDxe
+  FILE_GUID                      = 4B71D2C6-9E45-4A31-8C7D-DA9D0E110002
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = DandelionEmmcDxeEntryPoint
+
+[Sources]
+  DandelionEmmcDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+  BaseMemoryLib
+  MemoryAllocationLib
+
+[Protocols]
+  gEfiBlockIoProtocolGuid      ## PRODUCES
+  gEfiDevicePathProtocolGuid   ## PRODUCES
+
+[Depex]
+  TRUE

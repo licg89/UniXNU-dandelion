@@ -1,0 +1,74 @@
+schema_version = 2
+
+#
+# dandelion: Xiaomi Redmi 9A (MT6762G / MT6765, 8x Cortex-A53, Mali-G72 MP1).
+#
+# Filled from unixnu.com/zh/porting/steps and the measurements the previous attempt recorded
+# (dandelion-xnu docs/RESTART-UNIXNU.md).  Values marked TODO still need a device measurement
+# or a decision; nothing here is guessed silently.
+#
+# The previous attempt built its own MACHINE=dandelion, which meant writing the GIC, the timer
+# and the pmap from scratch - and then fighting them for days.  This board takes ArmCpu (ARM64
+# CPU, GIC and timer) and ArmDTPlatform (device-tree platform expert) as components instead,
+# which is the whole reason for rebuilding on this framework.
+#
+
+[board]
+example = false
+name = "dandelion"
+soc = "MT6765"
+soc_source = "mt6765"
+os_profile = "ios-16.5-20F66"  # TODO: confirm against the IPSW the user supplies
+description = "Xiaomi Redmi 9A (dandelion), MT6762G/MT6765"
+kit = "dandelion"
+
+[components]
+# ArmCpu: the ARM64 CPU, GIC and timer driver - replaces this port's hand-written
+#         dandelion-gic-mode.patch and zz-dandelion-cntp-timer.patch.
+# ArmDTPlatform: the device-tree platform expert - replaces the generic-platform-expert
+#         fallback this port had to patch into IOKit.
+include = ["ArmDTPlatform", "ArmCpu", "XnuPrelink", "DarwinBoot"]
+
+[kernel]
+defconfig = "dandelion_defconfig"
+
+# The packaging script selects the defconfig of each OS profile from [package.defconfig].
+config_fragments = ["arch:configs/common.config", "soc:configs/mt6765.config", "os:configs/ios.config"]
+patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches/xnu/series", "device:patches/xnu/series"]
+
+[device_tree]
+source = "device:dts/dandelion.dts"
+include_dirs = ["soc:dts"]
+
+[firmware]
+# The MediaTek UEFI platform this board already boots: Mu-Silicium's MT6765 packages, carried in
+# the previous repository under Silicon/MediaTek/MT6765Pkg and Platforms/Xiaomi/dandelionPkg.
+# Those move here as the firmware input; the dsc/fd paths follow their layout.
+config = "dandelion"
+dsc = "Platforms/Xiaomi/dandelionPkg/dandelion.dsc"
+fd = "Build/dandelionPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+packages = ["{uefi}", "{tree}/package", "{tree}/drivers/DarwinBoot", "{edk2}"]
+
+[bootimg]
+# dtb = "build/dandelion/dandelion.dtb"   # TODO: the firmware preflight script produces this
+
+[firmware.defines]
+DEVICE_MODEL = "dandelion"
+
+[payload]
+volume = "DANDELION"
+size_mib = 64                 # TODO: size against this device's flashinfo layout
+loader = "firmware"
+title = "UniXNU"
+kernel_args = ["-v", "serial=3"]
+
+[package]
+unixnu = "../UniXNU"
+
+[package.defconfig]
+"ios-16.5-20F66" = "dandelion_defconfig"
+
+[payload.adt]
+# TODO: the board's identity seed, as the framework requires.
+chip_id = "TODO"
+unique_chip_id = "required"
