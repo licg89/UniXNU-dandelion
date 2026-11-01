@@ -38,8 +38,8 @@ jobs:
           submodules: recursive
       - uses: actions/checkout@v4
         with:
-          repository: REPLACE/uefi-example   # this board's firmware checkout
-          path: uefi-example
+          repository: licg89/uefi-dandelion   # this board's firmware checkout
+          path: uefi-dandelion
           submodules: recursive   # the firmware volume builds from the checkout's submodules
       - name: tools
         run: |
@@ -67,7 +67,7 @@ jobs:
         env:
           UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
           GITHUB_TOKEN: ${{ github.token }}
-        run: scripts/package.sh --os "${{ inputs.os }}" --uefi ../uefi-example
+        run: scripts/package.sh --os "${{ inputs.os }}" --uefi ../uefi-dandelion
       - name: images
         uses: actions/upload-artifact@v4
         with:
