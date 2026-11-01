@@ -36,6 +36,18 @@ defconfig = "dandelion_defconfig"
 config_fragments = ["arch:configs/common.config", "soc:configs/mt6765.config", "os:configs/ipados.config"]
 patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches/xnu/series", "device:patches/xnu/series"]
 
+"archives" = [
+  "build-corecrypto-14.py",
+  "build-corecrypto-14.py --namespace",
+  "build-arm-driver.py ArmDTPlatform",
+  "build-arm-driver.py ArmCpu",
+  "build-arm-driver.py NativeAES",
+  "build-native-aes-bindings.py",
+  "build-mockfs-fixture.py",
+  "build-libpthread-kernel.py",
+  "build-link-stubs.py",
+]
+
 [device_tree]
 source = "device:dts/dandelion.dts"
 include_dirs = ["soc:dts"]
