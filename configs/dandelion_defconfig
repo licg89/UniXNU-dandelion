@@ -1,9 +1,35 @@
 # Kernel configuration: CONFIG_XNU_<NAME> becomes XNU_<NAME> for the kernel build script.
 # y and n are 1 and 0, a quoted string or a number is passed through, {tree} is the build tree.
+#
+# Modelled on the MT6833 bootstrap configuration (stanveyjiang/UniXNU-camellia), because it is
+# the closest working MediaTek bring-up: storage, owner-root policies, GPU, display kexts, input
+# and Wi-Fi stay disabled until IOKit initialises cleanly on the target.  What it adds over the
+# template, and why:
+#
+#   NATIVE_ARCH_TIMER   the ARM generic timer; without it the architecture timer path is absent
+#   SOURCE_MOCKFS       a root to boot from before the eMMC driver exists (milestone 3 replaces it)
+#   BUILD_ARCHIVES      build the kext archives the prelink step expects
+#   EXTRA_LD_ARCHIVES   the link stubs archive the bootstrap build needs
+#   TRUST_CACHE_RUNTIME / CS_HASH_CACHE / NATIVE_AES / NATIVE_PAN
+#                       the code-signing and panic paths that a prelinked kernel uses
 CONFIG_XNU_SOURCE_CORECRYPTO14=y
 CONFIG_XNU_SOURCE_PTHREAD=y
 CONFIG_XNU_ARM_DT_PLATFORM=y
 CONFIG_XNU_ARMCPU=y
+CONFIG_XNU_NATIVE_AES=y
+CONFIG_XNU_TRUST_CACHE_RUNTIME=y
+CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
+CONFIG_XNU_DT_PANIC_REGION=y
+CONFIG_XNU_NATIVE_ARCH_TIMER=y
+CONFIG_XNU_NATIVE_PAN=y
+CONFIG_XNU_SOURCE_MOCKFS=y
+CONFIG_XNU_BUILD_ARCHIVES=y
+
 CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
+CONFIG_XNU_EXTRA_LD_ARCHIVES="{tree}/build/link-stubs/libLinkStubs.a"
+CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
+
+# Not set until the matching driver exists for this board:
 # CONFIG_XNU_NATIVE_UFS is not set
 # CONFIG_XNU_NATIVE_ADRENO is not set
+# CONFIG_XNU_NATIVE_MALI is not set
