@@ -146,7 +146,11 @@ findings = ["Collect the first gpu observation, its cause when established, and 
 completion = ["GPU submissions complete, mapping/fence handling is correct, a known image renders, and the selected Metal client presents it."]
 limits = ["Hardware inputs and implementation are pending for this example board."]
 next_action = ["Inventory the required gpu inputs before implementation."]
-evidence = []
+evidence = [
+  "getprop reports Mali-G72 MP1 on MT6762G",
+  "components.toml offers exactly one GPU component, Adreno740 (hardware: Adreno 740, SM8550) - there is no Mali or panfrost component to select",
+  "So the GPU path needs a new component or a board-side driver; it cannot be satisfied by an existing selection, and milestone 5's display/input work does not depend on it",
+]
 
 [[area]]
 id = "network"
