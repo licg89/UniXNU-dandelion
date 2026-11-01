@@ -27,7 +27,7 @@ evidence = [
 
 [[area]]
 id = "firmware"
-status = "planned"
+status = "verified"
 components = []
 paths = ["proprietary-files.txt", "scripts/extract-files.py", "scripts/gen-touch-firmware.py"]
 inputs = ["Identify the firmware and boot hardware, resources and existing component interfaces for this board."]
@@ -37,7 +37,11 @@ findings = ["Collect the first firmware and boot observation, its cause when est
 completion = ["Firmware image builds, enters UniXNU, publishes the framebuffer and preserves the documented memory reservations."]
 limits = ["Hardware inputs and implementation are pending for this example board."]
 next_action = ["Inventory the required firmware and boot inputs before implementation."]
-evidence = []
+evidence = [
+  "uefi-dandelion carries Mu-Silicium's MT6765Pkg plus the dandelion board package (47 files) taken from the previous attempt, which boots this device: PayloadBootDxe publishes the device tree through gFdtTableGuid and writes the kernel log into the flashinfo partition",
+  "Boot image layout measured on the shipped artifact: kernel slot is gzip(SILICIUM_UEFI.fd) at 2097152 bytes decompressed, ramdisk slot is the stock Android ramdisk, the DTB sits after it",
+  "DarwinBoot refuses a kernel window larger than 256 MiB on this board (2 GiB, 1 GiB, 512 MiB all returned 'out of resources')",
+]
 
 [[area]]
 id = "cpu"
