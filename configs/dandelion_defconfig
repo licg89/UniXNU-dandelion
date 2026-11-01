@@ -26,7 +26,7 @@ CONFIG_XNU_SOURCE_MOCKFS=y
 CONFIG_XNU_BUILD_ARCHIVES=y
 
 CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
-CONFIG_XNU_EXTRA_LD_ARCHIVES="{tree}/build/link-stubs/libLinkStubs.a"
+CONFIG_XNU_EXTRA_LD_ARCHIVES="{tree}/build/link-stubs/libLinkStubs.a {tree}/build/mockfs-fixture/libmockfs_fixture.a"
 CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
 
 # Not set until the matching driver exists for this board:
