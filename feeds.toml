@@ -1,6 +1,6 @@
 [[source]]
 name = "mt6765"
 kind = "soc"
-# Local checkout during bring-up; becomes a GitHub URL when the repository is published.
-git = "file:///mnt/d/aios/_work/UniXNU-mt6765-common"
-commit = "c81a821b2a3dbbb8acbe2de28647852524f9aef4"
+# The SoC repository this board builds against.
+git = "https://github.com/licg89/UniXNU-mt6765-common"
+commit = "97d9303"
