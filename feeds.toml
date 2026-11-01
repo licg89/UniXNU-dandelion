@@ -3,4 +3,4 @@ name = "mt6765"
 kind = "soc"
 # The SoC repository this board builds against.
 git = "https://github.com/licg89/UniXNU-mt6765-common"
-commit = "97d9303"
+commit = "97d9303c1dc3e45d88f1a8a9fcf89fd0da574bc4"
