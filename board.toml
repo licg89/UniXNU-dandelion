@@ -45,7 +45,6 @@ patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches
   "build-native-aes-bindings.py",
   "build-mockfs-fixture.py",
   "build-libpthread-kernel.py",
-  "build-link-stubs.py",
 ]
 
 [device_tree]
