@@ -290,6 +290,7 @@
 	};
 
 	cpus {
+		timebase-frequency = <0xc65d40>;   /* 13 MHz, one cell: devicetree.py packs a u32 */
 		#address-cells = <0x01>;
 		#size-cells = <0x00>;
 
