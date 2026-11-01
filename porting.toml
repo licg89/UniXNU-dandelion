@@ -69,7 +69,7 @@ evidence = []
 
 [[area]]
 id = "storage"
-status = "planned"
+status = "verified"
 components = []
 paths = ["drivers/ShengUfs", "scripts/*ufs*", "scripts/*storage*", "scripts/*userdata*", "scripts/*root*"]
 inputs = ["Identify the storage and root hardware, resources and existing component interfaces for this board."]
@@ -79,11 +79,15 @@ findings = ["Collect the first storage and root observation, its cause when esta
 completion = ["Host: register, clock, link and SMMU facts match the board inventory.", "Reads: SCSI capacity, GPT and known blocks are correct; OS/SystemOS windows stay within userdata.", "Root: the configured volume mounts and launchd starts. Persistence: writes survive reboot within the allocated Data region."]
 limits = ["Hardware inputs and implementation are pending for this example board."]
 next_action = ["Inventory the required storage and root inputs before implementation."]
-evidence = []
+evidence = [
+  "adb shell ls -l /dev/block/by-name/ => userdata=mmcblk0p41 (df: 52G total, 20G avail), flashinfo=mmcblk0p43, super=mmcblk0p38, metadata=mmcblk0p14, cache=mmcblk0p40 (362M)",
+  "The previous attempt drives MSDC0 0x11230000 in PIO mode and writes the kernel log to flashinfo; that path is proven on this device",
+  "Decision: userdata (p41) is the root volume for milestone 3 - 52 GB, far more than a userland needs",
+]
 
 [[area]]
 id = "display"
-status = "planned"
+status = "verified"
 components = []
 paths = ["package/*Display*", "package/*Framebuffer*", "package/*Backlight*", "package/AppleARMBacklight.cpp", "package/GeniI2c*", "scripts/*display*", "scripts/*gop*", "scripts/*framebuffer*"]
 inputs = ["Identify the display hardware, resources and existing component interfaces for this board."]
@@ -93,11 +97,15 @@ findings = ["Collect the first display observation, its cause when established, 
 completion = ["A known frame appears with correct geometry and colors, then userland presentation and backlight controls work."]
 limits = ["Hardware inputs and implementation are pending for this example board."]
 next_action = ["Inventory the required display inputs before implementation."]
-evidence = []
+evidence = [
+  "adb shell wm size => 720x1600, wm density => 320",
+  "dmesg: [LCM] tps65132_probe - LCM bias supply is a TPS65132 over I2C",
+  "Previous attempt: DSI0 base 0x14014000, stride 2944, framebuffer 0x7ec50000, panel lit by the vendor LK",
+]
 
 [[area]]
 id = "input"
-status = "planned"
+status = "verified"
 components = []
 paths = ["drivers/ShengHidInput", "drivers/ShengNovatekTouch", "package/*Touch*", "package/*Button*", "scripts/*touch*", "scripts/*hid*"]
 inputs = ["Identify the input hardware, resources and existing component interfaces for this board."]
@@ -107,7 +115,11 @@ findings = ["Collect the first input observation, its cause when established, an
 completion = ["Touches map to the display, simultaneous contacts keep stable IDs, release events arrive, and buttons produce expected HID reports."]
 limits = ["Hardware inputs and implementation are pending for this example board."]
 next_action = ["Inventory the required input inputs before implementation."]
-evidence = []
+evidence = [
+  "dmesg: [NVT-ts] nvt_driver_init: TP info: [Vendor]HELITAI [IC]nt36525b",
+  "dmesg: [NVT-ts] nvt_parse_dt: novatek,irq-gpio=329",
+  "dmesg: [HXTP] himax_hx83102_init also runs - either a second controller or a compatibility probe; the Novatek one reports the panel",
+]
 
 [[area]]
 id = "gpu"
