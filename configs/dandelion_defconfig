@@ -22,11 +22,10 @@ CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
 CONFIG_XNU_DT_PANIC_REGION=y
 CONFIG_XNU_NATIVE_ARCH_TIMER=y
 CONFIG_XNU_NATIVE_PAN=y
-CONFIG_XNU_SOURCE_MOCKFS=y
+# CONFIG_XNU_SOURCE_MOCKFS is not set   # vfs_conf.o then compiles with -DMOCKFS=0
 CONFIG_XNU_BUILD_ARCHIVES=y
 
 CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
-CONFIG_XNU_EXTRA_LD_ARCHIVES="{tree}/build/mockfs-fixture/libmockfs_fixture.a"
 CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
 
 # Not set until the matching driver exists for this board:
