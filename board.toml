@@ -58,7 +58,17 @@ include_dirs = ["soc:dts"]
 config = "dandelion"
 dsc = "Platforms/Xiaomi/dandelionPkg/dandelion.dsc"
 fd = "Build/dandelionPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
-packages = ["{uefi}", "{tree}/package", "{tree}/drivers/DarwinBoot", "{edk2}"]
+packages = [
+  "{uefi}",
+  "{uefi}/Platforms/Xiaomi",
+  "{tree}/package",
+  "{tree}/drivers/DarwinBoot",
+  "{edk2}",
+  "{uefi}/Common/Mu",
+  "{uefi}/Common/Mu_OEM_Sample",
+  "{uefi}/Silicon/MediaTek",
+  "{uefi}/Silicon/Silicium",
+]
 
 [bootimg]
 # dtb = "build/dandelion/dandelion.dtb"   # TODO: the firmware preflight script produces this
