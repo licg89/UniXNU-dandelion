@@ -71,7 +71,7 @@ packages = [
 ]
 
 [bootimg]
-dtb = "device:bootimg/dandelion.dtb"
+dtb = "../device-tree/hardware.dtb"   # the payload step compiles dts/dandelion.dts there
 
 [firmware.defines]
 DEVICE_MODEL = "dandelion"
