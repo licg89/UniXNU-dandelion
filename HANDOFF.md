@@ -319,3 +319,34 @@ ipc_kernel_map : 0xfffffff01c000000 - 0xfffffff01e000000 (32M)
 3. 若 UniXNU 只认加载它的那个卷，则需把内核放到该卷可达位置（受 16 MiB 限制，需要扩容方案）
 
 **不要在设备树或 board.toml 上再试窗口值**——窗口问题已定论（256 MiB，由 ESP 上 ADT 决定）。
+## 0.7 为什么必须让 payload 自包含（源码证据）
+
+`package/UniXNUPkg/Library/UniXNULib/Volume.c:408`：
+
+```c
+UniXNUResolveImagePath (IN EFI_HANDLE Volume, IN CONST CHAR16 *Path)
+{
+  if (StrnCmp (Path, L"\\fv:", 4) == 0) return ResolveFvFile (Path + 4);  // 只有 fv:<GUID> 能进固件卷
+  if (Volume == NULL) return NULL;
+  return FileDevicePath (Volume, Path);   // 其余路径只在"加载 UniXNU 的那个卷"上解析
+}
+```
+
+推论链：
+
+1. UniXNU 是从 **flashinfo 的 ESP** 被 PayloadBootDxe 加载的 → 它的 `Volume` 就是 ESP
+2. ESP 只有 **16 MiB**，新内核 **51 MB** → `Payloads/kernel.macho` 永远解析不到
+3. `fv:<GUID>` 只能进固件卷（`SILICIUM_UEFI.fd` 3 MiB）→ 也放不下
+
+**因此 payload 必须自包含**：`UniXNU.efi`、`UniXNUDxe.efi`、`UniXNURamDiskDxe.efi` 要和
+`Payloads/kernel.macho`（已在 payload 里）放进**同一个 payload FAT 的 `\EFI\UniXNU\`**。
+这样 PayloadBootDxe 的查找顺序 `FAT → flashinfo → FV` 会在第一步命中，UniXNU 的 `Volume`
+就是 payload 卷，内核就在它旁边。
+
+### 实现入口
+
+- payload FAT 由框架的 `payload` 步骤生成；当前内容只有 `EFI/UNIXNU/unixnu.toml` 和 `EFI/UNIXNU/Payloads/`
+- 需要确认 `payload.py` 是否支持带入额外文件（例如从设备 `package/` 或某个配置列表）
+- 三个 efi 都能从 `uefi-dandelion/Build/dandelionPkg/DEBUG_CLANGPDB/AARCH64/` 直接取得
+
+**这一步做完，跑的就是 51 MB 的新内核（`MACHINE=BCM2837`），而内核日志通道已验证可用。**
