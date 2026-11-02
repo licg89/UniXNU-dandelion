@@ -8,7 +8,7 @@
 	#size-cells = <0x02>;
 
 	chosen {
-		darwinboot-memory-size = <0x10000000>; /* 256 MiB: the only size DarwinBoot places on this phone */
+		darwinboot-memory-size = <0x20000000>; /* 512 MiB: DarwinBoot reports 530 MiB free at 0x4CE60000 */
 		bootargs = "console=tty0 console=ttyS0,921600n1 vmalloc=400M slub_debug=OFZPU page_owner=on swiotlb=noforce androidboot.hardware=mt6765 maxcpus=8 loop.max_part=7 firmware_class.path=/vendor/firmware";
 		kaslr-seed = <0x00 0x00>;
 		phandle = <0x2a>;
