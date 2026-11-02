@@ -75,7 +75,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
           path: |
-            UniXNU/out/example/*/*/boot/boot.img
-            UniXNU/out/example/*/*/payload/payload.img
-            UniXNU/out/example/*/*/kernel/kernel.macho
-            UniXNU/out/example/*/*/package.manifest.json
+            UniXNU/out/*/*/*/boot/boot.img
+            UniXNU/out/*/*/*/payload/payload.img
+            UniXNU/out/*/*/*/kernel/kernel.macho
+            UniXNU/out/*/*/*/package.manifest.json
