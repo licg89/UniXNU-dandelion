@@ -220,3 +220,67 @@ powershell -File tools\collect-log.ps1 -Serial QS55XCPRCA9LDA5T -Out out\fw.txt
 > - 仍然纯灰 → 只改一个变量：FD 基址（注意 BootShim 自覆盖），或用官方 QEMU 验证同一 FD。
 >
 > 每步都要贴证据（屏幕照片、`collect-log.ps1` 的输出、CI run id + 产物字节数），不要凭猜。
+
+---
+
+## 0.3 突破：内核交接成功（2026-11-03 00:30）
+
+日志证据（`tools/collect-log.ps1` 读 flashinfo）：
+
+```
+DARWINBOOT: window requested 10000000 default 30000000
+DARWINBOOT: ARM64 va=0xFFFFFFF007004000 pa=0x4D004000
+DARWINBOOT: inputs validated; exiting boot services
+DARWINBOOT: hand-off to the kernel
+kernel   va 0xFFFFFFF007004000  pa 0x4D004000
+args     pa 0x4DF08000  window 0x10000000 bytes
+entry words D2ABF7C9 5280002A B900012A D2AFD8A9
+```
+
+### 之前十几轮"改了没效果"的根因（三个，逐一查实）
+
+1. **设备从 `flashinfo` 的旧 ESP 加载 `UniXNU.efi` / `DarwinBoot.efi`**，不是从 boot.img 的
+   payload。旧 ESP 是 10 月 29 日的文件，所以固件改动、`WINDOW_SIZE` 补丁全都不执行。
+   → 修法：把新编的 `DarwinBoot.efi` 放进 ESP 源目录，用 `dandelion-xnu/tools/mk_unixnu_esp.py` 重打包。
+2. **窗口值来自 ESP 上 `kernel.macho.adt`**（不是设备树、也不是 `[payload.adt] owned_memory_size`）。
+   它在早先被手工改成 2 GiB，DarwinBoot 放不下（最大连续块 588 MiB）。
+   → 修法：把该属性的 8 字节值改回 `0x10000000`。
+3. **无法判断设备是否在跑新代码**。压缩 FV 里看不到字符串，日志时间戳也不可靠。
+   → 修法：在 `DarwinBoot.c` 的 `AllocateWindow` 前加 `Print("window requested %lx default %lx")`，
+   一次刷机就能确认（`default 30000000` 证明我们的二进制在跑）。
+
+### 方法论（写下来避免重犯）
+
+- 改任何东西之前，先确认**设备上运行的二进制是不是你改的那份**；用探针打印，不要用时间戳或字符串。
+- 设备加载路径要查清：`PayloadBoot: found \UniXNU.efi` 是按 FAT → flashinfo → FV 顺序找的，
+  看到这行就要知道它到底从哪个卷找到的。
+- 日志里 `device tree NNNN bytes published` 是**固件卷里的 DTB 尺寸**，与 boot.img 里的 DTB 无关。
+
+## 0.4 下一步：内核控制台（严格按 UniXNU 分层）
+
+内核已被跳转执行，但**没有任何输出通道**。框架的 `profiles/arch/arm64` 里没有 console/display
+补丁或配置项——按 UniXNU 的 `porting/drivers`，内核控制台由**板子自己**提供。
+
+| 路径 | 需要什么 | 已知条件 |
+|---|---|---|
+| UART 控制台 | SoC 仓库提供 UART 驱动 | 固件日志已探到 **`uart base 0x11002000`**，13 MHz，115200 |
+| framebuffer 控制台 | 显示驱动（DSI0 `0x14014000`，720×1600） | 面板参数已知，驱动未写 |
+
+**推荐先做 UART**，它属于 SoC 资源，应放在 `UniXNU-mt6765-common`：
+
+1. 在 `UniXNU-mt6765-common` 增加 UART 初始化与 `cnputc` 实现（可作为 `kits/Mt6765Platform` 或 SoC 补丁）
+2. 在 `soc:patches/xnu/series` 里挂一个把 XNU 的 `cnputc`/`AppleARMPlatform` 串口路径接到该 UART 的补丁
+3. 内核 `kernel_args` 已含 `serial=3`，配合该驱动即可输出
+
+之后每一步内核阶段（`vm_page_bootstrap`、`bsd_init`、`bsd_ast`）都能直接读到，里程碑 2 才算完整验收。
+
+## 0.5 本地构建（推荐，CI 约慢一倍）
+
+```bash
+cd ~/work/UniXNU-dandelion
+export UNIXNU_UNIQUE_CHIP_ID=00002621
+bash scripts/package.sh --os 17 --uefi ../uefi-dandelion
+# 改过固件源码时先 rm -rf ~/work/uefi-dandelion/Build
+# 产物：~/work/UniXNU/out/dandelion/ipados-17.7.11-21H461/dandelion/boot/boot.img
+# 实测：全量约 5–7 分钟；CI 12–15.5 分钟
+```
