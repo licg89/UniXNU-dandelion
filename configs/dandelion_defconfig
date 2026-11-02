@@ -22,7 +22,10 @@ CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
 CONFIG_XNU_DT_PANIC_REGION=y
 CONFIG_XNU_NATIVE_ARCH_TIMER=y
 CONFIG_XNU_NATIVE_PAN=y
-CONFIG_XNU_SOURCE_MOCKFS=n   # the OS fragment sets y; the defconfig is applied last
+# The OS fragment sets this to y; the defconfig is applied last, so n wins.
+# Without it vfs_conf.o is compiled with -DMOCKFS=1 and references symbols the
+# link does not always carry.
+CONFIG_XNU_SOURCE_MOCKFS=n
 CONFIG_XNU_BUILD_ARCHIVES=y
 
 CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
