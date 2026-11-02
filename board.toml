@@ -67,8 +67,6 @@ packages = [
   "{uefi}/Common/Mu",
   "{uefi}/Common/Mu_OEM_Sample",
   "{uefi}/Silicon/MediaTek",
-  "{uefi}/UniXNUPkg",
-  "{uefi}/DarwinBootPkg",
   "{uefi}/Silicon/Silicium",
 ]
 
