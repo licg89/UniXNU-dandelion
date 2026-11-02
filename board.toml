@@ -78,7 +78,7 @@ DEVICE_MODEL = "dandelion"
 
 [payload]
 volume = "DANDELION"
-size_mib = 48   # the payload needs 48 MiB; with the 3 MiB FD this still fits the 64 MiB partition
+size_mib = 56   # the files take 48 MiB and must fit strictly inside; 56 + 3 MiB FD still fits 64 MiB
 loader = "firmware"
 title = "UniXNU"
 kernel_args = ["-v", "serial=3"]
