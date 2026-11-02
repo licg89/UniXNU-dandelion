@@ -78,7 +78,7 @@ DEVICE_MODEL = "dandelion"
 
 [payload]
 volume = "DANDELION"
-size_mib = 64                 # TODO: size against this device's flashinfo layout
+size_mib = 32   # the boot partition is 64 MiB and also carries the FD and shim
 loader = "firmware"
 title = "UniXNU"
 kernel_args = ["-v", "serial=3"]
