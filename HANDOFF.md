@@ -284,3 +284,38 @@ bash scripts/package.sh --os 17 --uefi ../uefi-dandelion
 # 产物：~/work/UniXNU/out/dandelion/ipados-17.7.11-21H461/dandelion/boot/boot.img
 # 实测：全量约 5–7 分钟；CI 12–15.5 分钟
 ```
+
+## 0.6 内核日志通道已打通，差最后一步（2026-11-03 01:5x）
+
+`patches/xnu/device-emmc-log-console.patch`（来自旧项目的 `native-emmc-serial`）**成功应用到
+xnu-10063 并编译通过**，内核 `printf` 现在会写进 flashinfo 的 LBA 30000 块。读取方式：
+
+```powershell
+adb shell "su -c 'dd if=/dev/block/by-name/flashinfo of=/data/local/tmp/klog.bin bs=512 skip=30000 count=512'"
+adb pull /data/local/tmp/klog.bin out\klog.bin
+```
+
+读到的内容证明内核确实在跑：
+
+```
+arm_init: kernel_startup_bootstrap
+Darwin Kernel Version 22.6.0 ... runner:obj/DEVELOPMENT_ARM64_DANDELION
+vm_page_bootstrap: 60632 free pages, 4904 wired pages
+ipc_kernel_map : 0xfffffff01c000000 - 0xfffffff01e000000 (32M)
+> mach_ipc / machine_init / thread_machine_init_template
+```
+
+### 但那是**旧内核**
+
+`Darwin Kernel Version 22.6.0`（Darwin 22 = xnu-8796）与 `MACHINE=dandelion` 是旧项目的特征；
+新内核会打印 `MACHINE=BCM2837`。原因：ESP 只有 16 MiB，装不下 51 MB 新内核，而
+`UniXNU.toml` 的 `path = "Payloads/kernel.macho"` 需要 UniXNU 在 **ramdisk 卷**上解析。
+
+### 下一步（单点）
+
+1. 确认 `UniXNURamDiskDxe.efi` 是否被加载并挂出卷（`UniXNU.toml` 已加 `[[driver]]`）
+2. UniXNU 是否跨卷搜索 `Payloads/kernel.macho`；`[payload] volume = "DANDELION"` 就是给这个用的，
+   payload FAT 的卷标已验证是 `DANDELION`
+3. 若 UniXNU 只认加载它的那个卷，则需把内核放到该卷可达位置（受 16 MiB 限制，需要扩容方案）
+
+**不要在设备树或 board.toml 上再试窗口值**——窗口问题已定论（256 MiB，由 ESP 上 ADT 决定）。
