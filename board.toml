@@ -71,7 +71,7 @@ packages = [
 ]
 
 [bootimg]
-# dtb = "build/dandelion/dandelion.dtb"   # TODO: the firmware preflight script produces this
+dtb = "device:bootimg/dandelion.dtb"
 
 [firmware.defines]
 DEVICE_MODEL = "dandelion"
