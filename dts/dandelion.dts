@@ -441,6 +441,7 @@
 		};
 
 		idle-states {
+			status = "disabled";   /* not a CPU: one reg per enabled /cpus child */
 			entry-method = "arm,psci";
 
 			standby {
