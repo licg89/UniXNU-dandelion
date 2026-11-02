@@ -43,6 +43,7 @@ patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches
   "build-arm-driver.py ArmCpu",
   "build-arm-driver.py NativeAES",
   "build-native-aes-bindings.py",
+  "build-mockfs-fixture.py",
   "build-libpthread-kernel.py",
 ]
 
