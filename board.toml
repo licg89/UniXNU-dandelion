@@ -90,6 +90,7 @@ unixnu = "../UniXNU"
 "ios-16.5-20F66" = "dandelion_defconfig"
 
 [payload.adt]
+owned_memory_size = "0x20000000"   # 512 MiB; DarwinBoot refused the 2 GiB default
 # TODO: the board's identity seed, as the framework requires.
 chip_id = "6765"   # hex; the board identity this port uses
 unique_chip_id = "required"
