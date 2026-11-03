@@ -577,3 +577,84 @@ payload 开头，要么 payload 根本没被放到那里。
 2. 从 **boot 分区**用 BlockIo 读 payload（固件已有按 GPT 找分区的代码），但需要把 payload 放到某个 ≥64 MiB
    的未用分区（`userdata` 前 64 MiB 可行但会毁掉 Android 数据）；
 3. 缩 payload：内核 51 MB 是本体，除非裁 root / 换 OS 版本，否则下不来。
+
+---
+
+## 0.11 根因定论（2026-11-03 15:0x）：payload 在 RAM 里，只是高了 0x1F000；而固件看不见没声明的内存
+
+这一节是**分析结论**，不是又一次尝试。两个独立的事实叠在一起，把前几轮全部解释了。
+
+### 事实 A：固件只映射 `MemoryMapLib` 里列出的区间，别处一律 data abort
+
+源码证据（`Silicon/Silicium/SiliciumPkg/Library/MemoryInitPeiLib/MemoryInitPei.c:104-150`）：
+
+```c
+GetMemoryMap (&MemoryDescriptor, &MemoryDescriptorCount);       // ← gMemoryDescriptor[]
+for (i = 0; i < MemoryDescriptorCount; i++) {
+    AddHob (MemoryDescriptor[i]);
+    MemoryTable[Index].PhysicalBase = MemoryDescriptor[i].Address;   // ← 只有这些
+    ...
+}
+ArmConfigureMmu (MemoryTable, ...);                              // ← 页面表只覆盖这些
+```
+
+`Platforms/Xiaomi/dandelionPkg/Library/MemoryMapLib/MemoryMapLib.c` 里**没有** 0x40000000..0x41080000
+和 0x41380000..0x48000000。所以：
+
+| 地址 | 状态 | 后果 |
+|---|---|---|
+| `0x51B00000`（树说的 initrd） | 在 "DRAM Low Conv" 内 → 已映射 | 能读，能写日志 |
+| `0x47880000`（x0 = LK 的 DTB） | **没有声明 → 未映射** | 一读就 abort；这就是那两轮日志停在 x0 那一行、下一轮停在扫描第一块的原因 |
+| `0x40000000`（上一版扫描起点） | **没有声明 → 未映射** | 扫描第一条就 abort → 日志块只剩 722 B、随后看门狗复位落回 fastboot |
+
+推论：**任何越过 `gMemoryDescriptor` 的读取都会带走整次启动**，而 LK 交过来的设备树正好在没人声明的
+0x47880000。前两轮"驱动没被派发 / 驱动拒绝范围"的猜测都不成立，真相是我们**读不了**那段内存。
+
+### 事实 B：payload 就在 0x51B1F000，比设备树说的地址高 0x1F000（124 KiB）
+
+上一轮日志在 0x51B00000 起的 8 个偏移各打了 8 字节。拿这些字节去 payload 镜像里做**唯一指纹**匹配：
+
+| 日志里的地址 | 8 字节内容 | 在 payload 镜像中的偏移 | 反推 payload 基址 |
+|---|---|---|---|
+| `0x51B40000` | `01 74 00 00 02 74 00 00`（FAT 表项 0x7401→0x7402） | `0x21000` | **0x51B1F000** |
+| `0x51C00000` | `CF FA ED FE 0C 00 00 01`（Mach-O 64 + ARM64） | `0xE1000` | **0x51B1F000** |
+
+两个指纹在镜像里都**各自只出现一次**（0x21000 处是 FAT#1 中间的一段簇链；0xE1000 处是 kernel.macho 的头），
+两次反推出的基址完全一致 ⇒ 不是巧合。
+
+于是 0x51B00000..0x51B1F000 里那堆 `opp6` / `dbg_` / FDT token 就说得通了：那是 **LK 写在
+"声明的 ramdisk 地址"上的启动参数设备树**，真正的 payload 被它放在后面 0x1F000 处。
+旧项目 `dandelion-xnu/docs/HARDWARE_ANALYSIS.md:136` 早就写过这一条：
+
+> - LK **覆盖** ramdisk 区域为启动参数结构
+> - 无法在 ramdisk 中放置 payload
+
+它说的是前半句（区域开头被参数树占了），而后半句"无法放置"是**过度概括**：payload 其实完整地躺在
+0x1F000 之后，只是没人去那儿看。
+
+### 因此
+
+- `no SimpleFileSystem handle` / `FAT NONE` / `did not mount as FAT` 全部是"地址错了 0x1F000"的结果，
+  与 `UniXNURamDiskDxe`、APRIORI 顺序、`x0` 内容都无关（DP 顺序那一轮之所以"无效"，是因为驱动在
+  PayloadBoot 之后根本没派发；而把它移到前面那一轮，是驱动读了未映射的 x0 直接 abort）；
+- payload 并没有被固件分配覆盖（+0x21000、+0x100000 两处都与镜像逐字节一致），之前"DXE 分配砸了
+  payload"的担心可以先放下；
+- 0x1F000 很可能等于 LK 那棵参数树的大小（向上取整），所以**每刷一次 boot.img 都该实测一次**，
+  不能当成常量写死。
+
+### 正确的修法（三处，都是小改）
+
+1. `PayloadBootDxe::FindFatVolume()` 的扫描区间改成**只扫已映射区**：`0x4CE60000 .. 0x5D000000`
+   （"DRAM Low Conv" + 我们新加的 "Boot Ramdisk" 保留区；0x5D000000 以上未验证）。起点绝不能再用
+   0x40000000——那是未映射的，等于自杀。
+2. 卷地址以**扫描结果**为准（本轮应命中 0x51B1F000），设备树里的 `/chosen` 只当线索；日志里同时打印
+   两者，下次就知道 0x1F000 有没有变。
+3. `MemoryMapLib.c` 的 "Boot Ramdisk" 保留区向右多留 1 MiB（`0x51B00000 + 0x3900000`），
+   这样 payload 整体偏移 ≤1 MiB 时也不会被 DXE 分配砸到。**不要**把 0x40000000..0x48000000 声明成
+   Conv（会被 DXE 分配）；如果只是想读 x0 那棵树，声明成 `Reserv` 即可。
+
+### 还能顺带修掉的一个盲区
+
+`MemoryMapLib` 里缺 0x40000000..0x48000000 这一整段（内核镜像在 0x40080000、LK 的 DTB 在
+0x47880000）。把它声明成 `Reserv`（不参与分配）后，固件才第一次"看得见"加载器留下的东西——包括
+x0 那棵树的 `/chosen/linux,initrd-start/end`，那才是 LK 认可的权威值。
