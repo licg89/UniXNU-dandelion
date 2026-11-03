@@ -1028,3 +1028,55 @@ pages=0x000000000000bbf4  free=0x000000000000b259
 
 在这之前值得先确认的一件事：内核**自己的控制台**现在应该通了（`CONFIG_XNU_EMMC_SERIAL=y` +
 ADT 的 `emmc-log` 节点）。如果 `klog@LBA 30000` 有内容，后面所有阶段都能直接读文本，不用再拍照。
+
+---
+
+## 0.18 内核控制台通了：整段内核启动日志可读（2026-11-04 00:4x）
+
+`flashinfo@LBA 30000`（512 扇区）现在有 **7699 字节**文本，完整记录从 pmap 到挂根设备的过程。
+（这就是 `patches/xnu/device-emmc-log-console.patch` + ADT 的 `emmc-log` 节点 + `sgn:CONFIG_XNU_EMMC_SERIAL=y`
+三件事都到位之后的第一次可用输出。）
+
+关键片段：
+
+```
+Darwin Kernel Version 23.6.0: Tue Nov  3 23:39:27 CST 2026; root:ios-obj/DEVELOPMENT_ARM64_BCM2837
+pmap_startup() init/release time: 5711 microsec
+vm_page_bootstrap: 48116 free pages, 17420 wired pages
+…（zone/map 表全部打出来了）
+AMFI: queried model name from device tree: iPad7,1
+Security policy loaded: Apple Mobile File Integrity (AMFI)
+AMFI: PMGRAON latched to: ffffffff          ← 我们的 PMGR 桥接库生效了
+AMFI: Enabling developer mode since protected data is not available
+apfs_module_start:3232: load: com.apple.filesystems.apfs, v2236.140.6
+Still waiting for root device
+```
+
+两条要记住的：
+
+- `debug_log_init: Error!! gPanicBase is still not initialized`（出现两次）——所以 panic 只走屏幕，
+  不进 panic log；以后一切以 eMMC 控制台日志为准。
+- 结尾 `Still waiting for root device` + IOKit 在等 `IOMedia`（Content = Apple_HFS）——阶段 6 的标准状态。
+
+完整日志已存档：`out/klog10.txt`（262 KB 块，7699 B 有效文本）。
+
+### 阶段 6 的现实：这块板没有可用的存储组件
+
+组件目录（`components.toml`）里与块设备有关的只有：
+
+| 组件 | 用途 | 我们能不能用 |
+|---|---|---|
+| `ShengUfs` | UFS 存储（Qualcomm） | 不能，dandelion 是 eMMC（MediaTek MSDC0） |
+| `VirtioMmioBlock` | virtio-MMIO 块设备 | 不能，没有 virtio |
+| `RamBlock` | 负载里的 RAM Data 卷 + ADT 占位符 | 能，但只给**可写 Data**，不给根 |
+
+所以"挂根"这一步需要**新写一个 eMMC/SDHC 主机组件**（对标 `ShengUfs` 的规模：块设备、DMA/IOMMU、
+分区方案、`VerifiedRoot` 绑定），再按 `guide/userdata` 造 userdata 镜像并按 `porting/ufs` 的清单验证。
+这是下一个大阶段，不是一两轮能完的。
+
+### 建议的下一步顺序
+
+1. 先用 `--data-ramdisk` + `RamBlock` 拿到一个**可写 Data 卷**（validate：`/chosen/memory-map` 的
+   `RAMDisk` 占位 + `rd=md0`），确认 RamBlock 与内核的 ABI 通；
+2. 再写 eMMC 主机驱动（先只读、轮询、单块），目标是让 `IOMedia` 出现 userdata；
+3. 然后按 `guide/userdata` 造根卷镜像 + `root_match_volume_uuid`，走到 `launchd`。
