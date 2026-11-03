@@ -658,3 +658,63 @@ ArmConfigureMmu (MemoryTable, ...);                              // ← 页面�
 `MemoryMapLib` 里缺 0x40000000..0x48000000 这一整段（内核镜像在 0x40080000、LK 的 DTB 在
 0x47880000）。把它声明成 `Reserv`（不参与分配）后，固件才第一次"看得见"加载器留下的东西——包括
 x0 那棵树的 `/chosen/linux,initrd-start/end`，那才是 LK 认可的权威值。
+---
+
+## 0.12 通了：payload 卷挂上 → UniXNU 菜单 → 内核从 payload FAT 加载 → DarwinBoot 交接（2026-11-03 19:0x）
+
+### 真机日志（`flashinfo@30512`，`tools/ddnlog.py` 解出 5021 B）
+
+```
+PayloadBoot: tree says initrd start   0x51B00000        <- 构建设置（错的）
+PayloadBoot: bytes at the tree's range 0x0000CAC60A009C00  <- LK 的参数树，每轮都不一样
+PayloadBoot: previous stage said x0 is  0x47880000
+PayloadBoot: x0 tree total size        283783            <- 终于能读了（MemoryMapLib 补了映射）
+PayloadBoot: x0 tree initrd start     0x51B00000         <- LK 自己也说 0x51B00000（错 0x1F000）
+PayloadBoot: the tree's range does not hold a FAT boot sector
+PayloadBoot: found a FAT boot sector at 0x51B1F000       <- 扫描命中，= 0x51B00000 + 0x1F000
+PayloadBoot: using range 0x51B1F000 .. 0x5531F000
+PayloadBoot: file systems before 0 / after 1
+PayloadBoot: payload volume mounted
+DARWINBOOT: loader v2 installed EL1
+PayloadBoot: starting the UniXNU menu from the FV
+UniXNU  (UniXNU 0.1.0)  config: \EFI\UniXNU\unixnu.toml   <- 配置是从 payload FAT 上读到的
+> 1. UniXNU [xnu]  2. Restart  3. Power off
+Booting UniXNU in 3 s / 2 s / 1 s
+DARWINBOOT: window requested 10000000 default 30000000
+DARWINBOOT: ARM64 va=0xFFFFFFF00427C000 pa=0x5547C000 args=0x594A0000 entry=0x58614488
+DARWINBOOT: command line: -v serial=3
+DARWINBOOT: inputs validated; exiting boot services
+DARWINBOOT: hand-off to the kernel
+```
+
+`0xFFFFFFF00427C000` 是新内核的链接基址（旧内核是 `0xFFFFFFF007004000`），`-v` 来自 payload 的
+`unixnu.toml`，`config:` 那行证明 UniXNU 是在 payload FAT 上找到配置的 —— **51 MB 的新内核确实被读出来
+并交接了**。
+
+### 结论：0.11 的推断被真机逐项证实
+
+- `MemoryMapLib` 不声明就不映射：补上 `0x40000000..0x48000000`（Reserv）后，`x0` 那棵 283,783 字节的树
+  第一次读出来，它的 `/chosen` 与我们的构建设置**完全一致（都是 0x51B00000）** —— 也就是说 LK 自己也
+  不知道它把数据放到了 0x1F000 之后；
+- payload 确实在 **0x51B1F000**，与用两个唯一指纹反推的结论一致；固件扫描一次命中；
+- `UniXNURamDiskDxe` 已从 `DXE.inc` 移除（留在卷里只会在 0x51B00000 上多发布一个错的块设备）。
+
+### 新的唯一阻塞：内核没有任何输出，原因已定位
+
+`klog@LBA 30000` 全 0。原因不在内核本身：`patches/xnu/device-emmc-log-console.patch` 的早期控制台要求
+设备树里有
+
+```
+emmc-log { log-lba = <30000>; log-sectors = <512>; }
+```
+
+（补丁内部：`SecureDTFindEntry("name", "emmc-log", ...)` 然后取 `log-lba` / `log-sectors`），而
+`Platforms/Xiaomi/dandelionPkg/FdtBlob/dandelion.dtb`（127,203 B，二进制构建输入）里没有这个节点：
+
+```
+$ dtc -I dtb -O dts <fv.dtb> | grep -n 'emmc-log|log-lba|arm-io'   -> 无输出
+```
+
+所以内核即使跑起来了也一个字都写不出来。**下一步（一处改动）**：把 `dandelion.dtb` 用 dtc 反编译，加一个
+顶层 `emmc-log` 节点（`log-lba = <0x7530>` = 30000、`log-sectors = <0x200>` = 512），重编译回 FdtBlob，
+重新构建。之后 `klog.bin` 有字 = 内核在跑；仍全 0 = 才轮到查内核早期启动。
