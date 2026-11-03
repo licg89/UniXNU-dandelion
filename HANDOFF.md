@@ -1080,3 +1080,53 @@ Still waiting for root device
    `RAMDisk` 占位 + `rd=md0`），确认 RamBlock 与内核的 ABI 通；
 2. 再写 eMMC 主机驱动（先只读、轮询、单块），目标是让 `IOMedia` 出现 userdata；
 3. 然后按 `guide/userdata` 造根卷镜像 + `root_match_volume_uuid`，走到 `launchd`。
+
+---
+
+## 0.19 阶段 6 第一步：RamBlock 已进内核，但内核还是只看到“等根设备”（2026-11-04 01:1x）
+
+### 做了什么
+
+| 改动 | 位置 |
+|---|---|
+| 组件 `RamBlock` 加入 `include` | `board.toml` `[components]` |
+| `build-arm-driver.py RamBlock` 加入 `[kernel] archives` | `board.toml` |
+| Data seed（2 MiB 原始镜像） | `~/work/dandelion-data-seed.dbr`，经框架 `unixnu.local.toml` 的 `[build] data_ramdisk` 注入 |
+| 内核重建 | `kernel.macho` 51,384,320 B，`payload.json` 里 `data_ramdisk_sha256` 非空 |
+
+（先试了 256 MiB 种子：**构建直接拒绝** —— `the payload files take 305 MiB; raise size_mib (now 56)`。
+payload 就是 boot.img 的 ramdisk，而 boot 分区只有 64 MiB，所以这块板上"塞一个真 Data 卷"不可行；
+真 Data 必须来自持久存储，不是 payload。）
+
+### 结果
+
+内核日志（`flashinfo@LBA 30000`，7790 字节）结尾仍然是：
+
+```
+apfs_module_start:3232: load: com.apple.filesystems.apfs, v2236.140.6
+Waiting on <dict ID="0"><key>IOProviderClass</key><string ID="1">IOMedia</string><key>Content</key><string ID="2">Apple_HFS</string></dict>
+Still waiting for root device
+```
+
+而且**日志里没有任何 `NativeRamBlock` / `IOMedia` 行**——说明 RamBlock 要么没匹配上，
+要么它的输出级别被过滤了。下一次要查的是它的匹配条件（ADT 里的 `/chosen/memory-map` 占位符名
+`RAMDisk` vs `PackedRAMDisk`，以及它需要的启动参数），而不是继续加组件。
+
+### 结论：阶段 6 的真正门槛是存储驱动，不是 payload
+
+- 内核已经能跑完 MMU/CPU/GIC/AMFI/bsd_init，缺的是**一个能发布 userdata 的块设备**；
+- 组件目录里只有 `ShengUfs`（Qualcomm UFS）、`VirtioMmioBlock`、`RamBlock`，**没有 MediaTek eMMC**；
+- 所以下一步是写一个 eMMC/SDHC 主机组件（先只读、轮询、单块），对标 `ShengUfs` 的规模；
+  固件侧我们已经有 `DandelionEmmcDxe`/`StorageBeaconDxe` 的实现可以对照（同样的 MSDC0 寄存器序列）。
+
+### 今天的完整链路（供明天接着干）
+
+```
+LK → BootShim → SILICIUM_UEFI.fd（我们构建）
+  → PayloadBootDxe：发布 DT、发布 flashinfo 日志、发布 payload 卷（0x51B1F000）、发布 GOP、起 DarwinBoot
+  → UniXNU 菜单（FV 里的 app）→ 读 payload FAT 上的 unixnu.toml 与 kernel.macho（51 MB）
+  → DarwinBoot：256 MiB 窗口、video 0x7ec50000/2944、ExitBootServices、交接
+  → 内核：PAN 已按 A53 编译、GIC 在 ADT 里、AMFI 的 PMGR 由 ShengPlatformPower 垫片发布（sheng-pmgr=2）
+  → bsd_init → IOKitBSDInit → “Failed to mount root device”（缺存储驱动）
+内核控制台：flashinfo@LBA 30000（512 扇区），文本可读，见 out/klog11.txt
+```

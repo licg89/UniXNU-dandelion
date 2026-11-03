@@ -27,7 +27,7 @@ kit = "dandelion"
 #         dandelion-gic-mode.patch and zz-dandelion-cntp-timer.patch.
 # ArmDTPlatform: the device-tree platform expert - replaces the generic-platform-expert
 #         fallback this port had to patch into IOKit.
-include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink", "DarwinBoot"]
+include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink", "DarwinBoot", "RamBlock"]
 
 [kernel]
 defconfig = "dandelion_defconfig"
@@ -54,6 +54,13 @@ patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches
   # it, and refuses to build if the original instructions moved.
   #
   "build-platform-power.py",
+  #
+  # Stage 6, first step: a block device at all.  RamBlock publishes the payload's
+  # Data seed as a RAM-backed block device, and the ADT carries the RAMDisk
+  # placeholder in /chosen/memory-map.  Until this exists the kernel has nothing
+  # to mount and stops at "Still waiting for root device".
+  #
+  "build-arm-driver.py RamBlock",
 ]
 
 [device_tree]
