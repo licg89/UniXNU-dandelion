@@ -1,6 +1,7 @@
 # dandelion 移植交接（给另一台机器的 opencode）
 
-最后更新：**2026-11-02 18:20 (+08:00)**。这份文件是**唯一的事实来源**，按它就能接着干。
+最后更新：**2026-11-03 11:40 (+08:00)**。这份文件是**唯一的事实来源**，按它就能接着干。
+**先读 §0.9**（当前唯一阻塞点的根因与判读表）；§0.8 里"DEBUG 不进日志块"和"下一步加 initrd 探针"两条已作废。
 
 ---
 
@@ -402,3 +403,110 @@ B 更快，但只能证明"树和属性没问题"；A 才能证明驱动自己�
 `PayloadBootDxe` 目前能打印 `no SimpleFileSystem handle`，说明它已经枚举过
 `EFI_SIMPLE_FILE_SYSTEM_PROTOCOL` 且计数为 0 —— 也就是说 **payload FAT 完全没有以文件系统形式存在**。
 若 B 探针显示 initrd 属性正常，则问题必定在 ramdisk 驱动本身（未派发或拒绝范围）。
+
+---
+
+## 0.9 真正的阻塞点：派发顺序，不是驱动逻辑（2026-11-03 11:40）
+
+### 一句话
+
+`PayloadBoot: no SimpleFileSystem handle` 的根因是 **`UniXNURamDiskDxe` 排在 `PayloadBootDxe` 之后**。
+`PayloadBootDxe` 的入口点用 `gBS->StartImage()` 起 UniXNU，**不返回**（菜单在其中），所以排在它后面的任何驱动，
+在"找 payload"那一刻都还没有执行过；payload FAT 当然不存在。`76ffc3f` 把它"插到 PayloadBootDxe 之后"，
+方向正好相反，所以那一轮无效——这与"改了什么、日志一点没变"完全一致。
+
+证据（上一版 FV，两重独立，都不是时间戳）：
+
+| 证据 | 值 |
+|---|---|
+| `FVMAIN.Fv.txt` 文件偏移 | `3C7A9E10 StorageBeaconDxe @0x0E7E98` → `8A62C1D4 PayloadBootDxe @0x0EBEF8` → `75CA63AD UniXNURamDiskDxe @0x1232E0` |
+| 从 FV 里直接读回 APRIORI 数组 | 同样顺序（0x2c4 / 0x2d4 / 0x2e4） |
+| 日志 | `BLOCK OK n=44`（44 个 eMMC 分区，没有 ramdisk）+ `FAT NONE` + `no SimpleFileSystem handle` |
+
+### 三处更正（别再走这些路）
+
+1. **`tools/add_initrd_probe.py` 不能直接用**：它把片段插进 `PayloadBootEntryPoint()`，片段里用了 `Tree` /
+   `TreeSize` 两个标识符——该函数乃至整个 `PayloadBootDxe.c` 都没有这两个名字（"tree" 只出现在注释里），
+   插进去必然编译失败。
+2. **它探的也是错的树**：`UniXNURamDiskDxe` 读的是 SEC 存进 `gSiliciumEntryArgHobGuid` HOB 的 **x0**
+   （LK 交过来的那棵设备树），不是 `PayloadBootDxe` 从 FV 发布的那棵。所以
+   "探针打印 0x51b00000/0x55300000 就说明树正常、故障在驱动里"这个推断不成立。
+3. **不需要再为了"看不见"去改驱动**：`dandelion.dsc` 把 DXE_DRIVER / APPLICATION 的 `DebugLib` 指到
+   `UefiDebugLibConOut`，`DEBUG()` → ConOut → `DandelionConsoleDxe` 的环形缓冲 → 由 `PayloadBootDxe` 写进
+   flashinfo。日志里 `PayloadBoot: build Nov 2 2026 09:48:18` 本身就是 `DEBUG(DEBUG_ERROR)` 进了块的证据。
+   **只要驱动先于 `PayloadBootDxe` 执行，它的每一条 `UNIXNURAMDISK: …` 都会出现在 fw.bin 里。**
+   §0.8 里"DEBUG() 不进日志块"的结论作废。
+
+### 本轮改动：只动 `APRIORI.inc` 的派发顺序
+
+`uefi-dandelion`（Windows 克隆 `D:\aios\_work\uefi-dandelion`；WSL 构建树 `~/work/uefi-dandelion` 内容逐字节一致）：
+
+```
+  INF UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.inf   ← 从文件末尾移到这里
+  INF dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.inf
+  INF DarwinBootPkg/Driver/DarwinBoot.inf                      ← 新增
+  INF dandelionPkg/Drivers/PayloadBootDxe/PayloadBootDxe.inf
+```
+
+两处改动，各有一条独立的日志证据：
+
+| 改动 | 依据 | 日志证据 |
+|---|---|---|
+| ramdisk 驱动移到 `StorageBeaconDxe` 之前 | StorageBeacon 的三遍 `ConnectController(recursive)` 会把 BlockIo 绑成 DiskIo→Partition→Fat（eMMC 那 44 个就是这样来的），所以块设备必须先存在 | `BLOCK OK n=45`、`FAT OK`、`UNIXNURAMDISK: initrd block device 0x51b00000 size 0x3800000` |
+| `DarwinBoot.inf` 加进 APRIORI，放在 `PayloadBootDxe` 之前 | UniXNU 的 xnu 入口靠 `gBS->LocateProtocol(gUniXNULoaderProtocolGuid)` 找 loader（`UniXNULib/Boot.c:58`），DarwinBoot 是唯一实现者、却只在 DXE.inc 里 → 在 StartImage 不返回的这条 boot policy 下永远来不及派发，会停在 `xnu: no loader protocol installed` | `DARWINBOOT: loader v2 installed ELx` |
+
+第二处是为了"这一轮就能跑到内核"；否则下一轮会卡在菜单里，白烧一次刷机。
+
+### 为什么 payload 不用改
+
+- `UniXNUConfigLoad` 是"先试加载它的那个卷，再扫所有 SFS 卷"（`Config.c` 的 `TryVolume` 循环），
+  所以即使 `UniXNU.efi` 是从 FV 起的，它也会在 payload FAT 上读到 `\EFI\UniXNU\unixnu.toml`，
+  并把 `Config->Volume` 设成那块 FAT；随后 `[[entry]] path = "Payloads/kernel.macho"` 就落在这块 FAT 上
+  → 跑的是 51 MB 新内核。
+- 因此 §0.7 的"payload 必须自带三个 EFI"**不是必需的**（`payload.py` 里那段拷贝只在固件已构建时才生效；
+  全新构建时 payload 先于固件，本来也拷不到——这就是当前 payload 里只有 toml + Payloads 的原因，
+  而 `payload.py` 首行注释也写着"the loader (DarwinBoot) is part of the firmware volume"）。
+
+### 本轮产物
+
+| 文件 | 大小 | sha256 |
+|---|---|---|
+| `D:\aios\out3\boot-payload-first.img` | 59,492,352 | `a3841ad3a9ea97c1b343142d7dc076a4166d3f7c6b3ff64f53a66bf24e104a13` |
+| `D:\aios\out3\SILICIUM_UEFI-payload-first.fd` | 3,145,728 | `1973456450474f37cd0c7a9ec5e75a34aeec997b21909c9843e675ccf29e7efa` |
+| payload.img（boot.img 的 ramdisk，落在 0x51b00000） | 58,720,256 | `bc24eeadad5f613291174ec78ee209b651774a025409fec9a7dfbe23279991f7` |
+
+`boot.img` 头部复核：`kernel 0x40080000 / 769,087`、`ramdisk 0x51b00000 / 58,720,256`（末地址 0x55300000）、
+`header_version 0`、页面 2048。
+
+从**新 FV** 里读回的 APRIORI 顺序（这是判据，不是时间戳）：
+
+```
+0x174 DiskIoDxe   0x184 PartitionDxe   0x1b4 Fat   0x1c4 EnglishDxe
+0x2c4 UniXNURamDiskDxe   0x2d4 StorageBeaconDxe   0x2e4 DarwinBoot   0x2f4 PayloadBootDxe
+```
+
+### 刷机 / 读日志（§8 的两个 Android 镜像路径已过期，用这份）
+
+```powershell
+adb -s QS55XCPRCA9LDA5T reboot bootloader
+fastboot erase flashinfo          # 必须：否则旧 ESP 里的 \UniXNU.efi 会先被 TryFileSystem 命中
+fastboot flash boot D:\aios\out3\boot-payload-first.img
+fastboot reboot
+# 看屏幕 30 秒；挂住就长按电源 10 s 关机，再 电源 + 音量下 进 fastboot
+fastboot flash boot D:\aios\artifacts\boot_backup.img    # 67,108,864 B, sha256 98F5ED08… = LineageOS 的 boot
+fastboot reboot
+adb wait-for-device
+cd D:\aios\_work\UniXNU-dandelion
+powershell -File tools\collect-log.ps1 -Serial QS55XCPRCA9LDA5T -Out out\fw.txt
+adb shell "su -c 'dd if=/dev/block/by-name/flashinfo of=/data/local/tmp/klog.bin bs=512 skip=30000 count=512'"
+adb pull /data/local/tmp/klog.bin out\klog.bin
+```
+
+### 判读表
+
+| fw.txt 里出现 | 含义 | 下一步 |
+|---|---|---|
+| `BLOCK OK n=45` + `FAT OK` + `DARWINBOOT: loader v2 installed` | 三件事都成立 | 看 `klog.bin`：非空且带新内核签名（`MACHINE=BCM2837`）= 里程碑达成 |
+| 仍是 `BLOCK OK n=44` | ramdisk 驱动没发布块设备 | 紧跟的 `UNIXNURAMDISK: no entry argument HOB` / `x0 … is not a device tree` / `no initrd in /chosen` / `… is not a whole number of sectors` 会直接指出是哪一种 |
+| `n=45` 但 `FAT NONE` | 块设备在，RAM 里那份 payload 不是可读 FAT | 在 `MemoryMapLib.c` 给 `0x51B00000 / 0x03800000` 加保留区（官方 `uefi-firmware` 要求 initrd 区间在使用期间保持保留；它现在落在 `DRAM Low Conv` 里，DXE 可以分配它） |
+| 有 `DARWINBOOT: loader v2 installed` 但 `xnu: no loader protocol installed` | 顺序改动没生效 | 用上面的 APRIORI 读回脚本确认，不要看时间戳 |
