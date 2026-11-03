@@ -22,6 +22,15 @@ CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
 CONFIG_XNU_DT_PANIC_REGION=y
 CONFIG_XNU_NATIVE_ARCH_TIMER=y
 CONFIG_XNU_NATIVE_PAN=y
+#
+# The kernel console.  dandelion has no debug UART and the kernel hands nothing
+# to a framebuffer, so the only channel a dying kernel has is the eMMC block the
+# ADT's "emmc-log" node points at (dts/dandelion.dts).  Without this option
+# pe_serial.c compiles the console out and the kernel is silent by construction:
+# the built kernel.macho contained none of the patch's strings
+# ("emmc-log" / "log-lba" / "log-sectors") until it was set.
+#
+CONFIG_XNU_EMMC_SERIAL=y
 # The OS fragment sets this to y; the defconfig is applied last, so n wins.
 # Without it vfs_conf.o is compiled with -DMOCKFS=1 and references symbols the
 # link does not always carry.

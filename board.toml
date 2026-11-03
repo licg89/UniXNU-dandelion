@@ -82,6 +82,42 @@ size_mib = 56   # the files take 48 MiB and must fit strictly inside; 56 + 3 MiB
 loader = "firmware"
 title = "UniXNU"
 kernel_args = ["-v", "serial=3"]
+#
+# Stage 5 diagnostics.  The entry probe paints the two bars below DarwinBoot's
+# green one (unixnu.com/guide/debugging): blue once the kernel's entry code runs
+# with the MMU off, magenta when execution reaches the point before the MMU comes
+# on.  Both were observed on 2026-11-03, so the kernel's entry does run.
+#
+# The panic screen and the stage-3 reset probe do not fit in the same kernel:
+# with both requested, patch-xnu-entry-probe.py refuses ("the padding ends at
+# 0xfffffff007414ff0"), because the stage-3 code pushes the panic renderer past
+# the end of the cave.  So it is one question at a time, and the next question is
+# the MMU: with a reset delay the patched kernel waits this many seconds after
+# the MMU is on and then resets through PSCI, so a device that reboots by itself
+# after ~6 s got through the MMU enable.
+#
+panic_screen = false
+entry_probe_reset_delay = 6
+#
+# The full early sequence inside _arm_init, from the kernel's own disassembly:
+#
+#   arm_set_kernel_tbi, PE_set_kc_header, kernel_collection_adjust_mh_addrs,
+#   cpu_data_init, PE_init_platform, timer/WFE setup, SecureDT lookups,
+#   thread_bootstrap, cpu_bootstrap, rtclock_early_init,
+#   kernel_debug_string_early, kernel_startup_bootstrap, timer_call_init,
+#   cpu_init, processor_bootstrap, PE_parse_boot_argn, PE_get_default ...
+#   arm_vm_init            <- MMU on (stage 3 reset proved this is reached)
+#   patch_low_glo, PE_consistent_debug_inherit
+#   serial_init            <- where the eMMC console registers itself
+#   kernel_startup_initialize_upto, kprintf ...
+#
+# The MMU-on reset already fired, so the next single question is whether the
+# kernel gets *past* serial_init: if the device still reboots on its own after
+# the delay, serial_init returned -- and a kernel that returned from serial_init
+# but wrote nothing to the log block is a console problem, not a boot problem.
+#
+entry_probe_reset_after = "_serial_init"
+entry_probe_reset_in = "_arm_init"
 
 [package]
 unixnu = "../UniXNU"

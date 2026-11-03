@@ -13,6 +13,31 @@
 		phandle = <0x2a>;
 	};
 
+	/*
+	 * The kernel console.  dandelion has no debug UART, so the only channel a
+	 * dying kernel has is a reserved block on the eMMC: the port's
+	 * native-emmc-serial patch (patches/xnu/device-emmc-log-console.patch)
+	 * looks the node up with SecureDTFindEntry("name", "emmc-log") and takes
+	 * its addressing from these properties.
+	 *
+	 * unixnu,adt-name exports this node into the ADT as /arm-io/emmc-log
+	 * (scripts/unixnu/devicetree.py); the property itself is not exported.
+	 *
+	 * log-lba is an ABSOLUTE device sector, not a partition-relative one --
+	 * the kernel does not parse the GPT.  flashinfo starts at 0x7473FDF
+	 * (122,109,919) on this board, and the block starts 30,000 sectors in, so
+	 * it is byte-for-byte the handoff the firmware announces as
+	 * "emmc handoff lba 122139919 sectors 512".  log-sectors stops exactly
+	 * where the firmware's own DDNLOG01 block begins at +30,512.
+	 */
+	emmc-log@11230000 {
+		compatible = "dandelion,emmc-log";
+		reg = <0x00 0x11230000 0x00 0x10000>;
+		unixnu,adt-name = "emmc-log";
+		log-lba = <0x747b50f>;
+		log-sectors = <0x200>;
+	};
+
 	regulator_vibrator {
 		compatible = "regulator-vibrator";
 		min-volt = <0x231860>;

@@ -718,3 +718,68 @@ $ dtc -I dtb -O dts <fv.dtb> | grep -n 'emmc-log|log-lba|arm-io'   -> 无输出
 所以内核即使跑起来了也一个字都写不出来。**下一步（一处改动）**：把 `dandelion.dtb` 用 dtc 反编译，加一个
 顶层 `emmc-log` 节点（`log-lba = <0x7530>` = 30000、`log-sectors = <0x200>` = 512），重编译回 FdtBlob，
 重新构建。之后 `klog.bin` 有字 = 内核在跑；仍全 0 = 才轮到查内核早期启动。
+
+---
+
+## 0.13 今天的进度（2026-11-03 晚）：整条链跑到内核，内核入口已验证，卡在 `serial_init`
+
+### 现在真机上已经成立的事实（都有日志/照片）
+
+| # | 事实 | 证据 |
+|---|---|---|
+| 1 | payload 卷挂载成功 | `PayloadBoot: found a FAT boot sector at 0x51B1F000` / `payload volume mounted` / `file systems after 1` |
+| 2 | UniXNU 菜单出现，配置从 payload FAT 读 | `UniXNU 0.1.0  config: \EFI\UniXNU\unixnu.toml`；照片（logo + 三项菜单） |
+| 3 | 51 MB 新内核从 payload FAT 读出并交接 | `DARWINBOOT: ARM64 va=0xFFFFFFF00427C000 pa=0x5547C000`（新内核链接基址） |
+| 4 | 内核拿到真正的 framebuffer | `DARWINBOOT: video base=0x7ec50000 display=1 row=2944 width=720 height=1600 depth=32` |
+| 5 | **内核入口代码在跑** | 照片：绿条（DarwinBoot）+ 蓝条（阶段 1）+ 品红条（阶段 2）= 官方色条图例的"入口已执行 / 到达开 MMU 前" |
+| 6 | **MMU 已成功打开** | 阶段 3 复位探针：`entry_probe_reset_delay=6` 时设备自己反复重启（>6 s 后 PSCI 复位） |
+| 7 | 卡点在 `serial_init` | 阶段 4 复位探针放到 `_arm_init` 里 `serial_init` **之后**时，设备**不再自行重启** → 执行没从 `serial_init` 返回 |
+
+### 关键源码事实（用于下一步定位）
+
+`_arm_init`（`0xfffffff0079da8f0`）里 `arm_vm_init`（MMU）之后只剩三次调用：
+
+```
+bl _arm_vm_init            <- MMU 打开（阶段 3 复位已证明越过）
+bl _patch_low_glo
+bl _PE_consistent_debug_inherit   <- 源码里查 /chosen/consistent-debug-root，我们没有 → 返回 -1，无害
+bl _serial_init            <- 卡在这里
+bl _kernel_startup_initialize_upto / _kprintf ...
+```
+
+`pexpert/arm/pe_serial.c:serial_init()` 的结构：
+
+```c
+soc_base = pe_arm_get_soc_base_phys();
+if (soc_base == 0) { uart_initted = true; return 0; }   // 干净的返回
+... 我们的 emmc-log 代码块（SecureDTFindEntry → reg → ml_io_map → register_serial_functions）
+#ifdef PI3_UART / APPLE_UART / VMAPPLE_UART / DOCKCHANNEL_UART ... 都没匹配
+uart_initted = true;
+return gPESF != NULL;                                   // 也是干净的返回
+```
+
+尾部没有 panic，所以不是"找不到串口就 panic"，而是**在函数内部某处没了**。
+
+### 下一步（一次一问，A/B 单变量）
+
+**实验 A（推荐先做，最省事）**：把 `CONFIG_XNU_EMMC_SERIAL` 设回 `n`，复位探针仍放在 `serial_init` 之后。
+
+- 若设备**自己重启** → `serial_init` 正常返回 ⇒ 凶手就是我们那段 emmc-log 代码（`SecureDTFindEntry` / `ml_io_map` / `register_serial_functions`）；
+- 若仍**不动** → 与我们的补丁无关，问题在 `pe_arm_get_soc_base_phys()` 或 XNU 自身的 `serial_init` 路径（那时要看 ADT 的 `/arm-io` 是否合它口味）。
+
+这条 A/B 只改一个变量，而且两种结果都直接指向下一处改法。
+
+### 今天动到的文件（都提交了）
+
+- `uefi-dandelion`（`878e6b9`、`a7ca2b5`）：
+  - `MemoryMapLib.c`：补 `0x40000000..0x48000000` 映射（Reserv，只为能读 LK 的树）、`Boot Ramdisk` 保留区右扩 1 MiB；
+  - `PayloadBootDxe.c`：自己发布 payload 卷（扫描已映射区）、起 DarwinBoot、**发布 GOP**（面板真实 stride 2944）；
+  - `DXE.inc`：移出 `UniXNURamDiskDxe`；`SimpleFb.c`：stride 修正（当前未启用，留作备用）。
+- `UniXNU-dandelion`：
+  - `configs/dandelion_defconfig`：`CONFIG_XNU_EMMC_SERIAL=y`（**这个之前没开，内核里根本没有控制台代码** —— 这一点是用 `strings` 验的）；
+  - `dts/dandelion.dts`：加 `emmc-log` 节点（`reg`/`log-lba=0x747b50f`/`log-sectors=0x200`），ADT 里生成 `/arm-io/emmc-log`；
+  - `board.toml`：`[payload] panic_screen=false`、`entry_probe_reset_delay=6`、`entry_probe_reset_after="_serial_init"`、`entry_probe_reset_in="_arm_init"`。
+- 框架 fork（`~/work/UniXNU`，未提交到远端）：
+  - `scripts/unixnu/devicetree.py`：ADT 导出白名单加 `log-lba`/`log-sectors`/`clock-div`；
+  - `scripts/build-xnu-4k-baseline.sh`：把 `XNU_EMMC_SERIAL` 变成 `-DXNU_EMMC_SERIAL=`（之前只有环境变量，没有编译宏）。
+- 注：`panic_screen` 和 `entry_probe_reset_delay` **不能同时用**——阶段 3 的代码会把 panic 渲染器挤出 padding，脚本直接拒绝（"the padding ends at 0xfffffff007414ff0"）。
