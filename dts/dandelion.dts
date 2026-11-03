@@ -638,6 +638,27 @@
 		compatible = "microtrust,tester-v1";
 	};
 
+	/*
+	 * The GIC, as the OS sees it: /arm-io/intc in the ADT.
+	 *
+	 * The stock node below carries three reg pairs (distributor, redistributor
+	 * and the MediaTek sysirq window), but ArmCpu's mapGic() requires exactly
+	 * two -- it reads a uint64_t[4] and refuses anything else -- and it looks the
+	 * controller up as /arm-io/intc, which only exists if a node names itself
+	 * that with unixnu,adt-name.  Without it the CPU nub never registers, which
+	 * is what the kernel reported as
+	 *   "CPU configuration in device tree is invalid" @AppleARMCPU.cpp:111
+	 *
+	 * Values are the ones MemoryMapLib and MT6765Pkg already use: GICD
+	 * 0x0c000000 + 0x40000, GICR 0x0c100000 + 0x200000, 128 KiB stride.
+	 */
+	intc@c000000 {
+		compatible = "arm,gic-v3";
+		reg = <0x00 0x0c000000 0x00 0x00040000 0x00 0x0c100000 0x00 0x00200000>;
+		redistributor-stride = <0x20000>;
+		unixnu,adt-name = "intc";
+	};
+
 	interrupt-controller@0c000000 {
 		compatible = "arm,gic-v3";
 		#interrupt-cells = <0x03>;

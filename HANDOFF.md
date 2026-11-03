@@ -834,3 +834,93 @@ python3 scripts/qemu-entry/gdb-stop.py --esp out/esp --kernel <kernel.macho> --s
 再对着 `osfmk/arm64/arm_init.c` 的 `arm_vm_init` 逐段看是哪一步（`pmap_bootstrap`、physmap、io-ranges…）。
 一处可疑点先记着：ADT 的 `dram-base = 0x40000000`、`dram-size` 直接来自 stock DTS 的 `memory` 节点，
 而设备实际只有 2 GB 级别；如果 `dram-size` 报得过大，`pmap_bootstrap` 的 physmap 会越界。
+
+---
+
+## 0.15 阶段 5 连破三关：PAN 指令 → GIC 节点 → 现在是 AMFI 的 PMGR（2026-11-03 23:1x）
+
+### 关键：QEMU 入口 fixture 成了不用刷机的调试器
+
+`qemu-system-aarch64` + `package/Scripts/qemu-run.py` + 本机内核/ADT 能**逐字节复现真机**
+（同样的 `DARWINBOOT: hand-off`、同样的 `entry words`）。再给 QEMU 加 `-d int`，它会打印每一次异常：
+
+```
+Taking exception 1 [Undefined Instruction] on CPU 0
+...with ESR 0x0/0x2000000
+...with ELR 0xfffffff0079da1dc
+```
+
+`0xfffffff0079da1dc` 就是 `msr PAN, #1` —— **ARMv8.1 才有的指令**。
+
+### 根因一：内核按更新的 CPU 编译，跑在 ARMv8.0 的 A53 上
+
+`osfmk/arm/arm_init.c:518`：
+
+```c
+#if __ARM_PAN_AVAILABLE__
+	__builtin_arm_wsr("pan", 1);      /* → msr PAN, #1 */
+#endif
+	arm_vm_init(xmaxmem, args);
+```
+
+MT6762G 是 8×Cortex-A53，ARMv8.0-A，没有 PAN。执行到这条就是 UNDEF → 走异常 →
+`handle_debugger_trap` → `wfe` 死循环（没有控制台、没 panic 屏幕，所以之前"什么都没发生"）。
+这也解释了此前所有探针为什么在 `arm_vm_init` 之后就再也不触发。
+
+修法（框架 `scripts/build-xnu-4k-baseline.sh` + 设备 defconfig）：
+
+- `-mcpu=cortex-a53` 加入 `EXTRA_CFLAGS`；
+- `CONFIG_XNU_NATIVE_PAN=n`（否则 copyio/pcb 三个对象又被单独加回 `-march=armv8.1-a`）；
+- 验证：`grep` 内核里 `d500419f`（`msr PAN,#1` 的编码）**计数 0**。
+
+**效果**：内核第一次真正跑起来，panic 屏幕打出真实文本。
+
+### 根因二：ADT 里没有 GIC 节点
+
+第一条 panic：
+
+```
+"CPU configuration in device tree is invalid" @AppleARMCPU.cpp:111
+```
+
+对照 QEMU 已知可用的 ADT（`scripts/qemu-entry/make-dt.py --armvirt --armcpu` 生成）发现：
+它的 `/arm-io` 下有 `intc`（`compatible="arm,gic-v3"`、`reg` = 4 个 cell），我们**完全没有**。
+而 `ArmCpu::mapGic()` 就是 `IORegistryEntry::fromPath("/arm-io/intc")`，且要求
+`reg` 长度正好 32 字节（两对 address/size）。
+
+修法：`dts/dandelion.dts` 里加一个**只用于导出**的节点（原 stock GIC 节点带三对 reg，
+而且没有 `unixnu,adt-name`，所以从来没进 ADT）：
+
+```dts
+intc@c000000 {
+	compatible = "arm,gic-v3";
+	reg = <0x00 0x0c000000 0x00 0x00040000 0x00 0x0c100000 0x00 0x00200000>;
+	redistributor-stride = <0x20000>;
+	unixnu,adt-name = "intc";
+};
+```
+
+**效果**：CPU 相关的 panic 消失，内核继续往下走（下一张照片就是证据）。
+
+### 当前阻塞：AMFI 找不到 PMGR
+
+```
+"AMFI: No PMGR?\n" @ConfigurationSettings.cpp:235
+```
+
+这是"panic 给出 provider"那一类的标准情况（官方 troubleshooting：ADT 节点或内核开关）。
+框架里有个 PMGR 垫片开关 `XNU_SHENG_PMGR`（`build-xnu-4k-baseline.sh:348`），但它需要一个归档：
+
+```
+build-xnu-4k-baseline.sh: line 786: test -f "$PMGR_ARCHIVE" failed
+```
+
+也就是说要先在 `board.toml` 的 `[kernel] archives` 里加上对应组件（板子当前的 `include` 里
+只有 `ArmDTPlatform, ArmCpu, SoftwareAES, XnuPrelink, DarwinBoot`）。所以 defconfig 里
+`CONFIG_XNU_SHENG_PMGR` 先保持注释掉，否则整棵树编不过。
+
+### 下一步
+
+1. 找到 PMGR 垫片组件（组件目录里搜 "pmgr"/"sheng"），把它的 archive 加进 `[kernel] archives`；
+2. 或者走另一条：给 ADT 加一个 `pmgr` 节点（如果 AMFI 只是要一个能匹配的设备）；
+3. 每改一次，**先 QEMU 验**（`qemu-run.py` + 内核/ADT），只有 QEMU 里过了再刷机。

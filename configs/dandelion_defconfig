@@ -21,7 +21,7 @@ CONFIG_XNU_TRUST_CACHE_RUNTIME=y
 CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
 CONFIG_XNU_DT_PANIC_REGION=y
 CONFIG_XNU_NATIVE_ARCH_TIMER=y
-CONFIG_XNU_NATIVE_PAN=y
+CONFIG_XNU_NATIVE_PAN=n
 #
 # The kernel console.  dandelion has no debug UART and the kernel hands nothing
 # to a framebuffer, so the only channel a dying kernel has is the eMMC block the
@@ -30,7 +30,28 @@ CONFIG_XNU_NATIVE_PAN=y
 # the built kernel.macho contained none of the patch's strings
 # ("emmc-log" / "log-lba" / "log-sectors") until it was set.
 #
+#
+# TEMPORARY A/B (2026-11-03 evening): the entry-probe reset that sits behind
+# serial_init in _arm_init stopped firing, so execution does not return from
+# serial_init.  With the console compiled out, a reset proves serial_init itself
+# returns and the fault is in the emmc-log block; no reset proves it is XNU's own
+# path (pe_arm_get_soc_base_phys / the UART probes).  Set back to y afterwards.
+#
 CONFIG_XNU_EMMC_SERIAL=y
+#
+# AMFI's ConfigurationSettings panics with "No PMGR?" when the device tree carries
+# no power-manager node (measured 2026-11-03 on the phone: panic
+# @ConfigurationSettings.cpp:235, after the CPU/GIC problem was fixed).  This
+# board has a MediaTek PMIC rather than an Apple PMGR, so the framework's PMGR
+# shim is the candidate answer -- but turning it on needs the archive the shim
+# links against:
+#
+#   build-xnu-4k-baseline.sh: line 786: test -f "$PMGR_ARCHIVE" failed
+#
+# which means adding that component to [kernel] archives in board.toml first.
+# Leave it off until then so the tree keeps building.
+#
+# CONFIG_XNU_SHENG_PMGR=y
 # The OS fragment sets this to y; the defconfig is applied last, so n wins.
 # Without it vfs_conf.o is compiled with -DMOCKFS=1 and references symbols the
 # link does not always carry.
