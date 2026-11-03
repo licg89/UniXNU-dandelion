@@ -510,3 +510,70 @@ adb pull /data/local/tmp/klog.bin out\klog.bin
 | 仍是 `BLOCK OK n=44` | ramdisk 驱动没发布块设备 | 紧跟的 `UNIXNURAMDISK: no entry argument HOB` / `x0 … is not a device tree` / `no initrd in /chosen` / `… is not a whole number of sectors` 会直接指出是哪一种 |
 | `n=45` 但 `FAT NONE` | 块设备在，RAM 里那份 payload 不是可读 FAT | 在 `MemoryMapLib.c` 给 `0x51B00000 / 0x03800000` 加保留区（官方 `uefi-firmware` 要求 initrd 区间在使用期间保持保留；它现在落在 `DRAM Low Conv` 里，DXE 可以分配它） |
 | 有 `DARWINBOOT: loader v2 installed` 但 `xnu: no loader protocol installed` | 顺序改动没生效 | 用上面的 APRIORI 读回脚本确认，不要看时间戳 |
+
+---
+
+## 0.10 真机两轮的结果：FAT 不在树里说的那个地址（2026-11-03 14:10）
+
+### 已经做掉的架构改动（`PayloadBootDxe` 现在自己发布 payload 卷）
+
+APRIORI 里**不再有** `UniXNURamDiskDxe` 和 `DarwinBoot.inf`：前者被搬进 `PayloadBootDxe.c` 的
+`PublishPayloadVolume()`（从本固件发布的那棵设备树读 `/chosen/linux,initrd-*`，装只读 Block I/O，
+自己调 `ConnectController` 绑 DiskIoDxe+Fat），后者由 `StartImageFromFirmwareVolume()` 在
+`StartImage()` 之前从 FV 里起。理由：这条 boot policy 的入口点用 `StartImage` 起下一阶段且**不返回**，
+排在它后面的驱动永远派发不到（两轮 `no SimpleFileSystem handle` 的真因），排在前面的驱动又跑在任何
+日志块之前（那一轮 flashinfo 回来是**全零**）。
+
+新的固化日志链（每步之间都 flush，出故障也能定位到上一步）：
+
+```
+PayloadBoot: firmware log written to flash
+PayloadBoot: tree says initrd start/end/bytes    ← 本固件 DTB 的 /chosen（静态检查：0x51B00000..0x55300000，正确）
+PayloadBoot: bytes at the tree's range + 7 个偏移 dump
+PayloadBoot: previous stage said x0 is 0x…       ← SEC 的 gSiliciumEntryArgHobGuid（新）
+PayloadBoot: x0 tree total size / x0 tree initrd start,end
+PayloadBoot: scanned up to 0x…                   ← 分 4 块扫 0x40000000..0x5D000000，每块后 flush
+PayloadBoot: file systems before/after
+```
+
+### 两轮真机结果
+
+| 轮次 | 镜像 | 屏幕 | flashinfo |
+|---|---|---|---|
+| A | `boot-inline-volume.img`（`58d…`→`a38…`） | 黄条卡住 | 2017 B：`initrd start 0x51B00000 / end 0x55300000 / bytes 0x3800000`，紧接着 **`first 8 bytes at start = 0x00003370706F0100`** → 不是 FAT 引导扇区；`file systems before 0 / after 0` → 挂不上；随后正常回退 FV |
+| B | `boot-scan-volume.img` | 黄条卡住 | **722 B**，只到 `firmware log published` → 死在没有边界的扫描里（`0x40000000..0x70000000`），读到未映射内存，看门狗复位后 LK 落回 fastboot |
+
+**结论（本轮最重要的一条）**：`/chosen` 说的 `0x51B00000` 上**不是** payload。那 8 个字节
+`00 01 6F 70 70 33 00 00` 里含 ASCII `opp3`，正是设备树字符串表里的 `opp3`（本固件 DTB 的 `opp3` 在
+偏移 `0x33C`）——也就是说那片内存里躺着**设备树**，不是 FAT。要么 LK 把自己的 DTB 写在了那里并盖掉了
+payload 开头，要么 payload 根本没被放到那里。
+
+### 待验证的一轮（镜像已构好，等真机）
+
+`D:\aios\out3\boot-memdump.img`（59,494,400 B，sha256 `a91213f02e810411eaf0954fd6bbb58d4644599f99bd7601aac5f85bab174fb6`）
+
+它会在日志里回答三件事：
+
+1. `previous stage said x0 is 0x…` → LK 交过来的设备树在哪；
+2. `x0 tree initrd start/end` → **LK 自己**认为 payload 放在哪（这比我们 DTB 里写的那份可信）；
+3. `+0x00 / +0x08 / … / +0x800000` 那一串 dump + `scanned up to 0x…` → 0x51B00000 上到底是什么、
+   覆盖有多深、以及 0x40000000..0x5D000000 里还有没有 FAT（分块 flush，死在哪块一目了然）。
+
+判读：
+
+| 日志 | 含义 | 下一步 |
+|---|---|---|
+| `x0 tree initrd start` 也是 0x51B00000 | LK 认为它放好了 → 是 LK 自己的 DTB 盖掉了开头 | 换 ramdisk 地址（boot.img 头 0x14）到不与 LK 的 tags 冲突处，并把 DTB 的 `/chosen` 同步改掉 |
+| `x0 tree initrd start` 是别的地址且那里有 FAT | LK 把 payload 放别处 | 直接把 DTB 的 `/chosen` 改成那个地址（或让固件优先用 x0 树，代码已按此实现） |
+| 扫描找到 `found a FAT boot sector at 0x…` | payload 在，只是位置不是树说的 | 同上；并查为什么 LK 无视头部 0x14 |
+| 扫完 4 块都没有 | payload 不在 0x40000000..0x5D000000 | 换载体（见下） |
+
+### 如果 payload 真的没进 RAM
+
+`boot` 分区 64 MiB 已被 boot.img（59.5 MB）占满，`flashinfo` 只有 16 MiB，而内核 `kernel.macho`
+就有 51 MB。可选路径，按代价排序：
+
+1. 改 boot.img 头的 `ramdisk_addr`（0x14）到别的高地址，重试——最便宜，但要先知道 LK 把 DTB/tags 放哪；
+2. 从 **boot 分区**用 BlockIo 读 payload（固件已有按 GPT 找分区的代码），但需要把 payload 放到某个 ≥64 MiB
+   的未用分区（`userdata` 前 64 MiB 可行但会毁掉 Android 数据）；
+3. 缩 payload：内核 51 MB 是本体，除非裁 root / 换 OS 版本，否则下不来。
