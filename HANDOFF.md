@@ -350,3 +350,55 @@ UniXNUResolveImagePath (IN EFI_HANDLE Volume, IN CONST CHAR16 *Path)
 - 三个 efi 都能从 `uefi-dandelion/Build/dandelionPkg/DEBUG_CLANGPDB/AARCH64/` 直接取得
 
 **这一步做完，跑的就是 51 MB 的新内核（`MACHINE=BCM2837`），而内核日志通道已验证可用。**
+## 0.8 APRIORI 顺序修复无效，下一步加 initrd 探针（2026-11-03 上午）
+
+试过并**已排除**：
+
+| 假设 | 结果 |
+|---|---|
+| initrd 地址填错 | 排除。`boot.img` 头部 `ramdisk addr 0x51b00000 / size 58,720,256` → `0x55300000`，与设备树里 `linux,initrd-start/-end` 完全一致 |
+| DXE 派发顺序（ramdisk 驱动早于设备树发布） | 排除。已把 `UniXNURamDiskDxe` 插到 `APRIORI.inc` 里 `PayloadBootDxe` 之后（`76ffc3f`），结果不变 |
+| payload 缺 `UniXNU.efi` | 排除。payload FAT 里三个 EFI 都在 |
+| flashinfo 旧 ESP 干扰 | 排除。已 `fastboot erase flashinfo` |
+
+最新一次刷机（release `dandelion-apriori-ramdisk`，`boot-apriori.img`）后：
+
+```
+PayloadBoot: looking for a payload (FAT, then flashinfo, then FV)
+PayloadBoot: no SimpleFileSystem handle
+PayloadBoot: using the payload embedded in the FV
+PAYLOAD OK - the load/start path works
+```
+
+`klog.bin`（flashinfo LBA 30000）**完全为空** → 内核从未执行。
+
+### 下一步：让 ramdisk 驱动"可见"
+
+`UniXNURamDiskDxe.c` 的所有提示都是 `DEBUG((DEBUG_ERROR, …))`，不进 PayloadBootDxe 写的
+flashinfo 块，所以现在无法区分三种情况：
+
+1. 它根本没被 DXE dispatcher 派发
+2. 它跑了但 `gFdtTableGuid` 尚未安装（读不到 `/chosen/linux,initrd-*`）
+3. 它读到 initrd 但拒绝该范围
+
+**做法**（两种，任选其一，都只改我们能控的代码）：
+
+```c
+// A. 改 package/UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.c
+//    把每处 DEBUG((DEBUG_ERROR, ...)) 后面再加一句写 flashinfo 的调用，
+//    或直接改成 Print(...)（Print 走 ConOut，PayloadBootDxe 能捕获）
+//    —— 注意这需要重建 UniXNU.efi（framework 侧构建）并放回 payload
+
+// B. 改 Platforms/Xiaomi/dandelionPkg/Drivers/PayloadBootDxe/PayloadBootDxe.c
+//    在"looking for a payload"之前打印它能看到的 initrd 属性与 SimpleFileSystem 计数
+//    —— 只改我们的固件包，重建最快
+```
+
+B 更快，但只能证明"树和属性没问题"；A 才能证明驱动自己在干什么。
+建议先 B 再 A。
+
+### 关键提醒
+
+`PayloadBootDxe` 目前能打印 `no SimpleFileSystem handle`，说明它已经枚举过
+`EFI_SIMPLE_FILE_SYSTEM_PROTOCOL` 且计数为 0 —— 也就是说 **payload FAT 完全没有以文件系统形式存在**。
+若 B 探针显示 initrd 属性正常，则问题必定在 ramdisk 驱动本身（未派发或拒绝范围）。
