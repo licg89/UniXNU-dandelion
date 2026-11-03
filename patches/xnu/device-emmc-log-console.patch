@@ -1,0 +1,550 @@
+From: dandelion port <noreply@example.com>
+Subject: [PATCH] native-emmc-serial: polled-PIO eMMC console for boards without a UART
+
+Adds a console that writes into a reserved region of an eMMC partition instead
+of a UART, built only with XNU_EMMC_SERIAL=1 (CONFIG_XNU_EMMC_SERIAL=y).  It is
+selected by the arm-io child "emmc-log", which carries its own addressing:
+
+  reg          MSDC0 base and size, as for any other device
+  log-lba      first sector of the log block
+  log-sectors  sectors reserved for the log
+  clock-div    CKDIV the firmware left programmed (default 260)
+
+The block is written with polled PIO, one 512-byte sector per CMD24, flushed on
+every completed line so that the last line a dying kernel printed is on the
+medium.  A magic value written last distinguishes a completed header from a torn
+one.  Boards without the flag build the unchanged pe_serial.
+
+Why: a board with no debug UART cannot report a panic at all, and the usual
+answer (photograph the screen) does not scale and cannot survive a reset.  The
+log can be pulled back with `adb shell dd if=/dev/block/by-name/<partition>` and
+decoded on the host.
+
+diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
+index 997a4ab..665f59e 100644
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -591,6 +591,470 @@ SECURITY_READ_ONLY_LATE(static struct pe_serial_functions) pi3_uart_serial_funct
+ 
+ /*****************************************************************************/
+ 
++#if defined(XNU_EMMC_SERIAL) && XNU_EMMC_SERIAL
++/*
++ * Polled-PIO eMMC console for boards that have no debug UART.
++ *
++ * The console is written into a reserved region of an eMMC partition instead of
++ * a UART, so the log survives a panic or a watchdog reset: after the next boot
++ * into Android the region can be pulled with adb and decoded on the host.
++ *
++ * Selected from the device tree: an arm-io child named "emmc-log" with
++ *
++ *   reg          MSDC0 base and size, as for any other device
++ *   log-lba      first sector of the log block; the device repository
++ *                computes it from its partition table at build time
++ *   log-sectors  sectors reserved for the log
++ *   clock-div    CKDIV the firmware left programmed (default 260)
++ *
++ * Only the write direction exists: the firmware has already put the card in the
++ * transfer state and nothing here ever needs to read it back.
++ */
++
++#define EMMC_SECTOR              512
++#define EMMC_HEADER_EVERY        8
++
++#define EMMC_MSDC_CFG            0x000
++#define EMMC_MSDC_INT            0x00C
++#define EMMC_MSDC_INTEN          0x010
++#define EMMC_MSDC_FIFOCS         0x014
++#define EMMC_MSDC_TXDATA         0x018
++#define EMMC_MSDC_SDC_CMD        0x034
++#define EMMC_MSDC_SDC_ARG        0x038
++#define EMMC_MSDC_SDC_STS        0x03C
++#define EMMC_MSDC_RESP0          0x040
++#define EMMC_MSDC_BLK_NUM        0x050
++
++#define EMMC_CFG_PIO             (1u << 3)
++#define EMMC_CFG_CKSTB           (1u << 7)
++#define EMMC_STS_SDCBUSY         (1u << 0)
++#define EMMC_INT_CMDRDY          (1u << 8)
++#define EMMC_INT_CMDTMO          (1u << 9)
++#define EMMC_INT_RSPCRCERR       (1u << 10)
++#define EMMC_INT_XFER_COMPL      (1u << 12)
++#define EMMC_INT_DATTMO          (1u << 14)
++#define EMMC_INT_DATCRCERR       (1u << 15)
++#define EMMC_INT_CMD_ALL         (EMMC_INT_CMDRDY | EMMC_INT_CMDTMO | EMMC_INT_RSPCRCERR)
++#define EMMC_INT_DAT_ALL         (EMMC_INT_XFER_COMPL | EMMC_INT_DATTMO | EMMC_INT_DATCRCERR)
++#define EMMC_FIFOCS_TXCNT(x)     (((x) >> 16) & 0xFFu)
++#define EMMC_FIFOCS_CLR          (1u << 31)
++#define EMMC_FIFO_DEPTH          128u
++#define EMMC_CMD13_W             0x0000008Du
++#define EMMC_CMD24_W             0x02002898u
++#define EMMC_R1_FATAL            0xFFFFA080u
++#define EMMC_R1_READY            (1u << 8)
++#define EMMC_R1_STATE(s)         (((s) >> 9) & 0xFu)
++#define EMMC_STATE_TRAN          4u
++
++/* Log block header.  Offsets, not a struct: this runs before anything that
++ * could tolerate an unaligned access.  See the host decoder for the rest. */
++#define EMMC_LOG_MAGIC           "DLXLOG01"
++#define EMMC_LOG_VERSION         1
++#define EMMC_LOG_SLOT_SIZE       (64 * 1024)
++#define EMMC_LOG_SLOTS           8
++#define EMMC_LOG_OFF_MAGIC       0x00
++#define EMMC_LOG_OFF_VERSION     0x08
++#define EMMC_LOG_OFF_HDR_BYTES   0x0C
++#define EMMC_LOG_OFF_BOOT        0x10
++#define EMMC_LOG_OFF_SLOT_COUNT  0x14
++#define EMMC_LOG_OFF_SLOT_SIZE   0x18
++#define EMMC_LOG_OFF_NEXT_SLOT   0x1C
++#define EMMC_LOG_OFF_TEXT_BYTES  0x20
++#define EMMC_LOG_OFF_CNTPCT      0x24
++#define EMMC_LOG_OFF_CNTFRQ      0x2C
++
++static vm_offset_t emmc_base_vaddr;
++static uint32_t emmc_log_lba;
++static uint32_t emmc_log_sectors;
++static uint32_t emmc_clock_div = 260;
++static uint32_t emmc_index;
++static uint32_t emmc_used;
++static bool emmc_failed;
++static uint8_t emmc_sector[EMMC_SECTOR] __attribute__((aligned(64)));
++
++static uint32_t
++emmc_read(unsigned int reg)
++{
++	if (emmc_base_vaddr == 0) {
++		return 0;
++	}
++	return *(volatile uint32_t *)(emmc_base_vaddr + reg);
++}
++
++static void
++emmc_write(unsigned int reg, uint32_t value)
++{
++	*(volatile uint32_t *)(emmc_base_vaddr + reg) = value;
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++static uint64_t
++emmc_now_ms(void)
++{
++	uint64_t count, frequency;
++
++	__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
++	__asm__ volatile("mrs %0, cntpct_el0" : "=r"(count));
++	if (frequency == 0) {
++		return count / 10000;
++	}
++	return (count / frequency) * 1000 + ((count % frequency) * 1000) / frequency;
++}
++
++/* The staging buffer is ordinary memory and the FIFO is a device. */
++static void
++emmc_clean(const void *address, unsigned long bytes)
++{
++	unsigned long start = (unsigned long)address & ~63UL;
++	unsigned long end = ((unsigned long)address + bytes + 63UL) & ~63UL;
++	unsigned long at;
++
++	for (at = start; at < end; at += 64) {
++		__asm__ volatile("dc civac, %0" :: "r"(at) : "memory");
++	}
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++static int
++emmc_wait_status(uint32_t mask, uint32_t milliseconds)
++{
++	uint64_t deadline = emmc_now_ms() + milliseconds;
++
++	while (emmc_read(EMMC_MSDC_SDC_STS) & mask) {
++		if (emmc_now_ms() > deadline) {
++			return -1;
++		}
++	}
++	return 0;
++}
++
++static int
++emmc_fifo_clear(void)
++{
++	uint64_t deadline = emmc_now_ms() + 20;
++
++	emmc_write(EMMC_MSDC_FIFOCS, emmc_read(EMMC_MSDC_FIFOCS) | EMMC_FIFOCS_CLR);
++	while (emmc_read(EMMC_MSDC_FIFOCS) & EMMC_FIFOCS_CLR) {
++		if (emmc_now_ms() > deadline) {
++			return -1;
++		}
++	}
++	return 0;
++}
++
++static int
++emmc_command(uint32_t command, uint32_t argument, uint32_t *response, uint32_t milliseconds)
++{
++	uint64_t deadline;
++
++	emmc_write(EMMC_MSDC_INT, EMMC_INT_CMD_ALL);
++	emmc_write(EMMC_MSDC_SDC_ARG, argument);
++	emmc_write(EMMC_MSDC_SDC_CMD, command);
++
++	deadline = emmc_now_ms() + milliseconds;
++	for (;;) {
++		uint32_t status = emmc_read(EMMC_MSDC_INT) & EMMC_INT_CMD_ALL;
++
++		if (status != 0) {
++			emmc_write(EMMC_MSDC_INT, status);
++			if ((status & (EMMC_INT_CMDTMO | EMMC_INT_RSPCRCERR)) != 0) {
++				return -1;
++			}
++			if (response != NULL) {
++				*response = emmc_read(EMMC_MSDC_RESP0);
++			}
++			return 0;
++		}
++		if (emmc_now_ms() > deadline) {
++			return -1;
++		}
++	}
++}
++
++static int
++emmc_wait_ready(uint32_t milliseconds)
++{
++	uint64_t deadline = emmc_now_ms() + milliseconds;
++
++	for (;;) {
++		uint32_t response = 0;
++
++		if (emmc_command(EMMC_CMD13_W, 1u << 16, &response, 50) == 0) {
++			if ((response & EMMC_R1_FATAL) != 0) {
++				return -1;
++			}
++			if (EMMC_R1_STATE(response) == EMMC_STATE_TRAN &&
++			    (response & EMMC_R1_READY) != 0) {
++				return 0;
++			}
++		}
++		if (emmc_now_ms() > deadline) {
++			return -1;
++		}
++	}
++}
++
++/* MSDC can gate its own clock while the bus is idle, and the kernel goes quiet
++ * for seconds at a time.  Re-arm before every transfer. */
++static int
++emmc_rearm(void)
++{
++	uint32_t config;
++	uint64_t deadline;
++
++	if ((emmc_read(EMMC_MSDC_CFG) & EMMC_CFG_CKSTB) == 0) {
++		config = emmc_read(EMMC_MSDC_CFG);
++		config &= ~(0xFFFu << 8);
++		config |= 1u | EMMC_CFG_PIO | ((emmc_clock_div & 0xFFFu) << 8);
++		emmc_write(EMMC_MSDC_CFG, config);
++		deadline = emmc_now_ms() + 20;
++		while ((emmc_read(EMMC_MSDC_CFG) & EMMC_CFG_CKSTB) == 0) {
++			if (emmc_now_ms() > deadline) {
++				return -1;
++			}
++		}
++	}
++	emmc_write(EMMC_MSDC_INTEN, 0);
++	return 0;
++}
++
++/* One sector, one CMD24: no CMD12 state machine to get wrong. */
++static int
++emmc_write_block(uint32_t lba, const void *buffer)
++{
++	const uint8_t *source = (const uint8_t *)buffer;
++	uint32_t response = 0;
++	uint32_t status;
++	uint64_t deadline;
++	unsigned int sent = 0;
++
++	if (emmc_wait_status(EMMC_STS_SDCBUSY, 100) != 0 || emmc_fifo_clear() != 0) {
++		return -1;
++	}
++	if (emmc_rearm() != 0) {
++		return -1;
++	}
++
++	emmc_write(EMMC_MSDC_BLK_NUM, 1);
++	emmc_write(EMMC_MSDC_INT, EMMC_INT_DAT_ALL);
++
++	if (emmc_command(EMMC_CMD24_W, lba, &response, 200) != 0) {
++		return -1;
++	}
++	if ((response & EMMC_R1_FATAL) != 0) {
++		return -1;
++	}
++
++	deadline = emmc_now_ms() + 2000;
++	for (;;) {
++		status = emmc_read(EMMC_MSDC_INT) & EMMC_INT_DAT_ALL;
++		if (status != 0) {
++			emmc_write(EMMC_MSDC_INT, status);
++			if ((status & (EMMC_INT_DATTMO | EMMC_INT_DATCRCERR)) != 0) {
++				return -1;
++			}
++			if ((status & EMMC_INT_XFER_COMPL) != 0) {
++				break;
++			}
++		}
++		if (sent < EMMC_SECTOR &&
++		    EMMC_FIFOCS_TXCNT(emmc_read(EMMC_MSDC_FIFOCS)) == 0) {
++			unsigned int burst = EMMC_SECTOR - sent;
++
++			if (burst > EMMC_FIFO_DEPTH) {
++				burst = EMMC_FIFO_DEPTH;
++			}
++			for (unsigned int i = 0; i < burst; i += 4) {
++				uint32_t word;
++
++				__builtin_memcpy(&word, source + sent + i, 4);
++				*(volatile uint32_t *)(emmc_base_vaddr + EMMC_MSDC_TXDATA) = word;
++			}
++			__asm__ volatile("dsb sy" ::: "memory");
++			sent += burst;
++		}
++		if (emmc_now_ms() > deadline) {
++			return -1;
++		}
++	}
++
++	deadline = emmc_now_ms() + 500;
++	while (EMMC_FIFOCS_TXCNT(emmc_read(EMMC_MSDC_FIFOCS)) != 0) {
++		if (emmc_now_ms() > deadline) {
++			return -1;
++		}
++	}
++
++	return emmc_wait_ready(2000);
++}
++
++static void
++emmc_put_le32(uint8_t *at, uint32_t value)
++{
++	at[0] = (uint8_t)value;
++	at[1] = (uint8_t)(value >> 8);
++	at[2] = (uint8_t)(value >> 16);
++	at[3] = (uint8_t)(value >> 24);
++}
++
++static void
++emmc_put_le64(uint8_t *at, uint64_t value)
++{
++	emmc_put_le32(at, (uint32_t)value);
++	emmc_put_le32(at + 4, (uint32_t)(value >> 32));
++}
++
++static uint32_t
++emmc_text_bytes(void)
++{
++	return emmc_index * EMMC_SECTOR + emmc_used;
++}
++
++static void
++emmc_write_header(void)
++{
++	uint8_t header[EMMC_SECTOR] __attribute__((aligned(64)));
++	uint32_t text = emmc_text_bytes();
++	uint64_t count, frequency;
++	unsigned int i;
++
++	for (i = 0; i < EMMC_SECTOR; i++) {
++		header[i] = 0;
++	}
++	for (i = 0; i < 8; i++) {
++		header[EMMC_LOG_OFF_MAGIC + i] = (uint8_t)EMMC_LOG_MAGIC[i];
++	}
++	emmc_put_le32(header + EMMC_LOG_OFF_VERSION, EMMC_LOG_VERSION);
++	emmc_put_le32(header + EMMC_LOG_OFF_HDR_BYTES, EMMC_SECTOR);
++	emmc_put_le32(header + EMMC_LOG_OFF_BOOT, 0);
++	emmc_put_le32(header + EMMC_LOG_OFF_SLOT_COUNT, EMMC_LOG_SLOTS);
++	emmc_put_le32(header + EMMC_LOG_OFF_SLOT_SIZE, EMMC_LOG_SLOT_SIZE);
++	emmc_put_le32(header + EMMC_LOG_OFF_NEXT_SLOT,
++	    (text + EMMC_LOG_SLOT_SIZE - 1) / EMMC_LOG_SLOT_SIZE);
++	emmc_put_le32(header + EMMC_LOG_OFF_TEXT_BYTES, text);
++	__asm__ volatile("mrs %0, cntpct_el0" : "=r"(count));
++	__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
++	emmc_put_le64(header + EMMC_LOG_OFF_CNTPCT, count);
++	emmc_put_le64(header + EMMC_LOG_OFF_CNTFRQ, frequency);
++
++	emmc_clean(header, EMMC_SECTOR);
++	(void)emmc_write_block(emmc_log_lba, header);
++}
++
++static void
++emmc_flush(void)
++{
++	unsigned int i;
++	int attempt;
++
++	if (emmc_failed) {
++		return;
++	}
++	if (emmc_index + 1 >= emmc_log_sectors) {
++		emmc_failed = true;
++		return;
++	}
++
++	for (i = emmc_used; i < EMMC_SECTOR; i++) {
++		emmc_sector[i] = 0;
++	}
++
++	for (attempt = 0; attempt < 3; attempt++) {
++		emmc_clean(emmc_sector, EMMC_SECTOR);
++		if (emmc_write_block(emmc_log_lba + 1 + emmc_index, emmc_sector) == 0) {
++			break;
++		}
++		/* One failed block leaves the card in the receive state; CMD12 and a
++		 * CMD13 poll is the documented way out. */
++		(void)emmc_command(0x0000438Cu, 0, NULL, 250);
++		emmc_write(EMMC_MSDC_INT, 0xFFFFFFFFu);
++		(void)emmc_fifo_clear();
++		(void)emmc_wait_ready(1000);
++	}
++	if (attempt == 3) {
++		emmc_failed = true;
++		return;
++	}
++
++	if ((emmc_index % EMMC_HEADER_EVERY) == 0) {
++		emmc_write_header();
++	}
++}
++
++static void
++emmc_init(void)
++{
++	unsigned int i;
++
++	if (emmc_base_vaddr == 0 || emmc_log_lba == 0 || emmc_log_sectors < 2) {
++		emmc_failed = true;
++		return;
++	}
++	if ((emmc_read(EMMC_MSDC_CFG) & EMMC_CFG_CKSTB) == 0) {
++		emmc_failed = true;
++		return;
++	}
++	emmc_write(EMMC_MSDC_INTEN, 0);
++	emmc_write(EMMC_MSDC_INT, 0xFFFFFFFFu);
++	if ((emmc_read(EMMC_MSDC_CFG) & EMMC_CFG_PIO) == 0) {
++		emmc_write(EMMC_MSDC_CFG, emmc_read(EMMC_MSDC_CFG) | EMMC_CFG_PIO);
++	}
++
++	for (i = 0; i < EMMC_SECTOR; i++) {
++		emmc_sector[i] = 0;
++	}
++	emmc_write_header();
++}
++
++static unsigned int
++emmc_transmit_ready(void)
++{
++	/* The sector buffer absorbs bursts; blocking happens in transmit_data. */
++	return !emmc_failed;
++}
++
++static void
++emmc_transmit_data(uint8_t c)
++{
++	if (emmc_failed) {
++		return;
++	}
++	emmc_sector[emmc_used++] = c;
++	if (emmc_used == EMMC_SECTOR) {
++		emmc_flush();
++		emmc_index++;
++		emmc_used = 0;
++	} else if (c == '\n') {
++		/* Flush every completed line: the interesting thing about a kernel
++		 * that dies is the last line it managed to print. */
++		emmc_flush();
++	}
++}
++
++static unsigned int
++emmc_receive_ready(void)
++{
++	return 0;
++}
++
++static uint8_t
++emmc_receive_data(void)
++{
++	return 0;
++}
++
++SECURITY_READ_ONLY_LATE(static struct pe_serial_functions) emmc_serial_functions = {
++	.init = emmc_init,
++	.transmit_ready = emmc_transmit_ready,
++	.transmit_data = emmc_transmit_data,
++	.receive_ready = emmc_receive_ready,
++	.receive_data = emmc_receive_data,
++	.device = SERIAL_EMMC
++};
++#endif /* XNU_EMMC_SERIAL */
++
++/*****************************************************************************/
++
+ #ifdef VMAPPLE_UART
+ 
+ static vm_offset_t vmapple_uart0_base_vaddr = 0;
+@@ -777,6 +1241,38 @@ serial_init(void)
+ 
+ 	PE_parse_boot_argn("disable-uart-irq", &disable_uart_irq, sizeof(disable_uart_irq));
+ 
++#if defined(XNU_EMMC_SERIAL) && XNU_EMMC_SERIAL
++	/*
++	 * The eMMC console is described like any other serial device, but it
++	 * carries its own addressing: log-lba / log-sectors point at a region
++	 * the device repository reserved inside an eMMC partition.
++	 */
++	if (SecureDTFindEntry("name", "emmc-log", &entryP) == kSuccess &&
++	    SecureDTGetProperty(entryP, "reg", (void const **)&reg_prop, &prop_size) == kSuccess &&
++	    prop_size == 2 * sizeof(uintptr_t)) {
++		prop_value = NULL;
++		if (SecureDTGetProperty(entryP, "log-lba", (void const **)&prop_value, &prop_size) == kSuccess &&
++		    prop_size == sizeof(uint32_t)) {
++			emmc_log_lba = *prop_value;
++		}
++		prop_value = NULL;
++		if (SecureDTGetProperty(entryP, "log-sectors", (void const **)&prop_value, &prop_size) == kSuccess &&
++		    prop_size == sizeof(uint32_t)) {
++			emmc_log_sectors = *prop_value;
++		}
++		prop_value = NULL;
++		if (SecureDTGetProperty(entryP, "clock-div", (void const **)&prop_value, &prop_size) == kSuccess &&
++		    prop_size == sizeof(uint32_t) && *prop_value != 0 && *prop_value <= 0xFFFu) {
++			emmc_clock_div = *prop_value;
++		}
++
++		emmc_base_vaddr = ml_io_map(soc_base + *reg_prop, *(reg_prop + 1));
++		if (emmc_base_vaddr != 0 && emmc_log_lba != 0 && emmc_log_sectors >= 2) {
++			register_serial_functions(&emmc_serial_functions);
++		}
++	}
++#endif /* XNU_EMMC_SERIAL */
++
+ #ifdef PI3_UART
+ 	if (SecureDTFindEntry("name", "gpio", &entryP) == kSuccess) {
+ 		SecureDTGetProperty(entryP, "reg", (void const **)&reg_prop, &prop_size);
+diff --git a/pexpert/pexpert/arm/protos.h b/pexpert/pexpert/arm/protos.h
+index 404b50b..cc36cee 100644
+--- a/pexpert/pexpert/arm/protos.h
++++ b/pexpert/pexpert/arm/protos.h
+@@ -47,7 +47,8 @@ typedef enum serial_device {
+ 	SERIAL_DOCKCHANNEL=0x2,
+ 	SERIAL_PI3_UART=0x4,
+ 	SERIAL_VMAPPLE_UART=0x8,
+-	SERIAL_DCC_UART=0x10
++	SERIAL_DCC_UART=0x10,
++	SERIAL_EMMC=0x40
+ } serial_device_t;
+ 
+ kern_return_t serial_irq_enable(serial_device_t device);
