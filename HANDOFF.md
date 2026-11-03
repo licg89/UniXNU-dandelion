@@ -1130,3 +1130,43 @@ LK → BootShim → SILICIUM_UEFI.fd（我们构建）
   → bsd_init → IOKitBSDInit → “Failed to mount root device”（缺存储驱动）
 内核控制台：flashinfo@LBA 30000（512 扇区），文本可读，见 out/klog11.txt
 ```
+
+---
+
+## 0.20 阶段 6 的接线已经完整，卡在"没有可挂的根卷"（2026-11-04 01:3x）
+
+### 链路每一环都核对过（都在产物里）
+
+| 环节 | 状态 | 证据 |
+|---|---|---|
+| 组件 `RamBlock` 链进内核 | ✓ | `[kernel] archives` 有 `build-arm-driver.py RamBlock`；构建日志 `== kernel: archive-14` |
+| Data seed 进 payload | ✓ | `Payloads/scratch-data.img` 2,097,152 B；`payload.json` 的 `data_ramdisk_sha256` |
+| UniXNU 把 initrd 交给 loader | ✓ | payload 的 `unixnu.toml` 有 `initrd = "Payloads/scratch-data.img"` |
+| ADT 有 RAMDisk 占位符 | ✓ | `dump_adt.py`：`memory-map: RAMDisk=[0x0 0x0]`，另有 `ephemeral-storage=0x1` |
+| DarwinBoot 交接 | ✓ | `DARWINBOOT: hand-off to the kernel`，`args pa=0x594FC000` |
+
+### 但内核要的根卷不是 Data
+
+内核日志最后一行是
+
+```
+Waiting on <dict ... IOProviderClass=IOMedia ... Content=Apple_HFS>
+Still waiting for root device
+```
+
+`NativeRamBlock::start()` 只在 `/chosen/memory-map/RAMDisk` 被 DarwinBoot 填了 16 字节范围时才发布块设备
+（且要求 4 KiB 对齐、≤2 GiB、落在内核物理窗口内），它给的是**可写 Data**，不是根；
+而根卷必须是 `Content = Apple_HFS` 的卷（`IOKitBSDInit.cpp:984` 的等待条件）。
+
+### 于是阶段 6 只剩两条真实路径（都需要本机没有的东西）
+
+1. **存储驱动 + userdata 根卷**：写 MediaTek eMMC/SDHC 主机组件（组件目录里没有，`ShengUfs` 是 UFS），
+   再按 `guide/userdata` 造 userdata 镜像 —— 造镜像那一步要 macOS（`hdiutil`/AEA 解密）。
+2. **RAM 根 fixture**：把根卷镜像直接放进 payload。本机没有 `mkfs.hfsplus`/`hdiutil`，
+   造不出 `Apple_HFS` 卷；这台 Linux 主机上只能借一台 macOS，或者先装 `hfsprogs` 试一个空 HFS+ 卷
+   （空卷只能证明"根设备能挂上"，跑不到用户态）。
+
+### 明天开工的第一件事
+
+先确认本机能不能造 HFS+/APFS 卷（`apt install hfsprogs` 或一台 macOS）；能造就把空 HFS+ 当 ramdisk 试挂根，
+把"根设备挂载"这个里程碑拿到手；不能造就直接起 eMMC 主机组件（固件侧 `DandelionEmmcDxe` 的寄存器序列可对照）。
