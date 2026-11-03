@@ -45,6 +45,15 @@ patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches
   "build-native-aes-bindings.py",
   "build-mockfs-fixture.py",
   "build-libpthread-kernel.py",
+  #
+  # The original ApplePMGRNub bridge that AMFI waits for.  AMFI does
+  # serviceMatching("ApplePMGRNub") + waitForMatchingService and panics with
+  # "No PMGR?" when nothing matches (measured on the phone; see HANDOFF 0.16).
+  # The builder generates the exact 340-entry provider ABI header from the
+  # reference prelinked kernel, compiles package/ShengPlatformPower.cpp against
+  # it, and refuses to build if the original instructions moved.
+  #
+  "build-platform-power.py",
 ]
 
 [device_tree]
@@ -81,7 +90,13 @@ volume = "DANDELION"
 size_mib = 56   # the files take 48 MiB and must fit strictly inside; 56 + 3 MiB FD still fits 64 MiB
 loader = "firmware"
 title = "UniXNU"
-kernel_args = ["-v", "serial=3"]
+kernel_args = ["-v", "serial=3", "sheng-pmgr=2"]
+#
+# sheng-pmgr=2 is what makes the bridge publish the original ApplePMGRNub
+# (package/ShengPlatformPower.cpp: sheng_pmgr_run() returns immediately unless the
+# boot argument is set, and mode 2 is "publish the nub").  AMFI's
+# ConfigurationSettings looks that nub up with waitForMatchingService and panics
+# "No PMGR?" without it.
 #
 # Stage 5 diagnostics, one question per run (unixnu.com/guide/debugging).
 #

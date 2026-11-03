@@ -977,3 +977,54 @@ AppleMobileFileIntegrity 用的是 `__DATA_CONST` 里的预绑定指针（chaine
 
 下一步按路线 1 走；这也是官方文档给参考设备用的同一条路。先用 QEMU 验（`qemu-run.py` +
 本机 kernel/ADT，`-d int` 看异常），通过了再刷机。
+
+---
+
+## 0.17 内核跨过 AMFI，停在“挂根设备”（2026-11-04 00:1x）
+
+### 结果
+
+panic 屏幕：
+
+```
+Failed to mount root device @IOKitBSDInit.cpp:984
+frames fffffff0079c838c fffffff007710c58 fffffff0072cc504 fffffff00742c4a4
+pages=0x000000000000bbf4  free=0x000000000000b259
+```
+
+`AMFI: No PMGR?` 已经消失。内核现在**走完了**：入口 → MMU → `arm_vm_init` → CPU/GIC 注册 →
+`serial_init` → AMFI/ConfigurationSettings → `bsd_init` → `IOKitBSDInit`，最后因为**没有根设备**而停。
+这正是官方 bring-up 的**阶段 6（存储与根卷）**入口。
+
+### 这一关是怎么过来的（PMGR 桥接，路线 1）
+
+1. **素材**（已下载到 `~/work/pmgr-ref/`）：`ShengPlatformPower.cpp`（UniXNU-sheng）、
+   `build-platform-power.py`（xVanTuring/UniXNU-tb128fu）、`sheng-platform-power.patch`（UniXNU）；
+2. `ShengPlatformPower.cpp` 放进设备仓库 `package/`（构建树里就是 `kits/dandelion/`）；
+   `patches/xnu/series` 增加 `sheng-platform-power.patch`（在 `bsd_bufferinit()` 之后调 `sheng_pmgr_run()`）；
+   `board.toml` 的 `[kernel] archives` 追加 `build-platform-power.py`；defconfig 打开 `CONFIG_XNU_SHENG_PMGR=y`；
+3. **桥接只在有启动参数时才发布 nub**：`ShengPlatformPower.cpp:70` 先 `PE_parse_boot_argn("sheng-pmgr", ...)`，
+   为 0 直接返回；所以 `[payload] kernel_args` 必须加 **`sheng-pmgr=2`**（2 = 发布原始 nub）。这一条是关键，
+   少了它就是 `AMFI: No PMGR?`。
+
+### 把 tb128fu 的构建脚本移植到这台 Linux 主机时踩的四个坑（都在框架 `scripts/build-platform-power.py`）
+
+| 现象 | 修法 |
+|---|---|
+| `The original kernelcache is not in the IPSW cache` | 目录布局不同：`ROOT.parents[1]/ipsw` → 向上找第一个 `ipsw/` 目录 |
+| 十个 `-Werror,-Wmissing-designated-field-initializers`（Apple 头文件） | 加 `-Wno-missing-designated-field-initializers`（内核构建本来就有） |
+| 编译期错误被 `check_output` 吞掉 | `run()` 失败时把子进程输出打到 stderr |
+| 链接：`ignoring file libShengPlatformPower.a ... unknown-unsupported file format ( 0x21 0x3C ... )`，`_sheng_pmgr_run` undefined | 本机 `xcrun ar` 是 GNU ar，写出 **SysV** 归档（`!<arch>\n/`），Mach-O 链接器读不了 → 改用 **`llvm-ar --format=darwin rcs`**（成员表为 `__.SYMDEF`） |
+
+另外两个为本地工作流加的补丁：参考内核不存在但归档已存在时**保留归档**（框架的 kernel 步骤会先删
+`kernel/kernel.macho`，否则永远只有首轮的 no-op stub）；契约审计在缺少 prelink plan 时**降级为提示**
+而不是中断（否则失败过的树再也重建不出归档）。
+
+### 下一步：阶段 6（存储与根卷）
+
+按官方 `porting/ufs` + `guide/userdata`：内核需要一个提供 userdata 的块设备、`OS`/`SystemOS` 分区方案、
+以及 `root_match_volume_uuid` 对应的根卷镜像。当前 `[payload]` 里没有 data ramdisk、也没有存储驱动，
+所以"Failed to mount root device"是**预期**的下一关。
+
+在这之前值得先确认的一件事：内核**自己的控制台**现在应该通了（`CONFIG_XNU_EMMC_SERIAL=y` +
+ADT 的 `emmc-log` 节点）。如果 `klog@LBA 30000` 有内容，后面所有阶段都能直接读文本，不用再拍照。

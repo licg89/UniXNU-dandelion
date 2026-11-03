@@ -39,19 +39,14 @@ CONFIG_XNU_NATIVE_PAN=n
 #
 CONFIG_XNU_EMMC_SERIAL=y
 #
-# AMFI's ConfigurationSettings panics with "No PMGR?" when the device tree carries
-# no power-manager node (measured 2026-11-03 on the phone: panic
+# AMFI's ConfigurationSettings panics with "No PMGR?" when nothing publishes an
+# ApplePMGRNub (measured 2026-11-03 on the phone: panic
 # @ConfigurationSettings.cpp:235, after the CPU/GIC problem was fixed).  This
-# board has a MediaTek PMIC rather than an Apple PMGR, so the framework's PMGR
-# shim is the candidate answer -- but turning it on needs the archive the shim
-# links against:
+# board has a MediaTek PMIC rather than an Apple PMGR, so the framework's bridge
+# (package/ShengPlatformPower.cpp, built by build-platform-power.py) publishes the
+# original nub and refuses unsupported power operations explicitly.
 #
-#   build-xnu-4k-baseline.sh: line 786: test -f "$PMGR_ARCHIVE" failed
-#
-# which means adding that component to [kernel] archives in board.toml first.
-# Leave it off until then so the tree keeps building.
-#
-# CONFIG_XNU_SHENG_PMGR=y
+CONFIG_XNU_SHENG_PMGR=y
 # The OS fragment sets this to y; the defconfig is applied last, so n wins.
 # Without it vfs_conf.o is compiled with -DMOCKFS=1 and references symbols the
 # link does not always carry.
