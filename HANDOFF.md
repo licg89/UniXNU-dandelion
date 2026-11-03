@@ -783,3 +783,54 @@ return gPESF != NULL;                                   // 也是干净的返回
   - `scripts/unixnu/devicetree.py`：ADT 导出白名单加 `log-lba`/`log-sectors`/`clock-div`；
   - `scripts/build-xnu-4k-baseline.sh`：把 `XNU_EMMC_SERIAL` 变成 `-DXNU_EMMC_SERIAL=`（之前只有环境变量，没有编译宏）。
 - 注：`panic_screen` 和 `entry_probe_reset_delay` **不能同时用**——阶段 3 的代码会把 panic 渲染器挤出 padding，脚本直接拒绝（"the padding ends at 0xfffffff007414ff0"）。
+
+---
+
+## 0.14 阶段 5 定位结果：内核在 `arm_vm_init` 内部停住，且**不是 panic**（2026-11-03 21:5x）
+
+用官方入口探针（`patch-xnu-entry-probe.py`）按"一次一问"跑了四轮，全部在真机上：
+
+| # | 探针位置 | 结果 | 结论 |
+|---|---|---|---|
+| 1 | 阶段 3（MMU 刚打开处） | 设备 **6 s 后自己重启** | MMU 打开成功 |
+| 2 | `_arm_init` 里 `serial_init` 之后（脚本选中的调用点 `0x…9db084`） | 不重启 | **不可靠**：`_arm_init` 里有两个 `serial_init` 调用点，那个点在执行路径上可能根本走不到（`_arm_init` 实际从 `0xfffffff0079d9a74` 开始，之前 nm 报的 `0x…a8f0` 是另一段） |
+| 3 | `_PE_consistent_debug_inherit` 之后 = `bl _serial_init` **之前**（`0xfffffff0079da204`） | 不重启 | 内核在 **`arm_vm_init` 返回之前**就停了 |
+| 4 | 只装 panic 屏幕（带 framebuffer） | 屏幕上只有三条色条，**没有 panic 文字** | 不是 `panic()`，是异常/死循环（很可能是 VBAR 装好之前的数据异常，所以连 panic 都进不去） |
+
+第 3 轮是关键纠正：**死点不在 `serial_init`，而在 `arm_vm_init` 里面**。
+证据链：阶段 3 的复位点在 `arm_vm_init` 内部 MMU 打开之后（它停在那里等 6 s 再复位，所以"重启"只证明 MMU 开了，不证明函数返回）；
+而 `arm_vm_init` 返回后紧接着的指令 `0xfffffff0079da204` 的探针不触发 ⇒ 函数体里某处没回来。
+
+`arm_init` 的历史窗口（反汇编，`0xfffffff0079d9a74` 起）：
+
+```
+… PE_parse_boot_argn ×2
+bl _arm_vm_init            0x…a1ec   ← MMU 在此函数内部打开
+bl _patch_low_glo          0x…a200   （只是一条 lowGlo.lgStext 赋值，安全）
+bl _PE_consistent_debug_inherit 0x…a204   ← 探针在这里，不触发
+bl _serial_init            0x…a208
+bl _kernel_startup_initialize_upto / _kprintf …
+```
+
+补充事实：`CONFIG_XNU_EMMC_SERIAL` 的 A/B（编译掉我们的控制台）结果**完全一样**（停住），所以与我们那段 emmc-log 代码无关。
+
+### 下一步：走官方 QEMU 入口 fixture（不再靠刷机试）
+
+官方 `reference/qemu` 就是为"内核入口停住"准备的：`scripts/qemu-entry/make-dt.py` 生成 QEMU 用的 ADT，
+`package/Scripts/qemu-run.py` 跑 ESP，`scripts/qemu-entry/gdb-stop.py` 在符号处停住并抓寄存器/内存。
+本机 `qemu-system-aarch64`、`gdb-multiarch`、`qemu-run.py`、`gdb-stop.py` **都在**。
+
+用法（在 `~/work/UniXNU`）：
+
+```sh
+python3 scripts/qemu-entry/make-dt.py --armvirt --armcpu --smp 2 \
+  --owned-memory-size 0x10000000 --output /tmp/qemu.adt
+python3 package/Scripts/qemu-run.py out/esp --log out/qemu.log --timeout 60 \
+  --expect 'DARWINBOOT: hand-off to the kernel'
+python3 scripts/qemu-entry/gdb-stop.py --esp out/esp --kernel <kernel.macho> --system-registers
+```
+
+目标是把 `arm_vm_init` 里停住的 PC 抓出来（`--system-registers` 会给 TCR/TTBR/SCTLR），
+再对着 `osfmk/arm64/arm_init.c` 的 `arm_vm_init` 逐段看是哪一步（`pmap_bootstrap`、physmap、io-ranges…）。
+一处可疑点先记着：ADT 的 `dram-base = 0x40000000`、`dram-size` 直接来自 stock DTS 的 `memory` 节点，
+而设备实际只有 2 GB 级别；如果 `dram-size` 报得过大，`pmap_bootstrap` 的 physmap 会越界。

@@ -83,41 +83,25 @@ loader = "firmware"
 title = "UniXNU"
 kernel_args = ["-v", "serial=3"]
 #
-# Stage 5 diagnostics.  The entry probe paints the two bars below DarwinBoot's
-# green one (unixnu.com/guide/debugging): blue once the kernel's entry code runs
-# with the MMU off, magenta when execution reaches the point before the MMU comes
-# on.  Both were observed on 2026-11-03, so the kernel's entry does run.
+# Stage 5 diagnostics, one question per run (unixnu.com/guide/debugging).
 #
-# The panic screen and the stage-3 reset probe do not fit in the same kernel:
-# with both requested, patch-xnu-entry-probe.py refuses ("the padding ends at
-# 0xfffffff007414ff0"), because the stage-3 code pushes the panic renderer past
-# the end of the cave.  So it is one question at a time, and the next question is
-# the MMU: with a reset delay the patched kernel waits this many seconds after
-# the MMU is on and then resets through PSCI, so a device that reboots by itself
-# after ~6 s got through the MMU enable.
+# Measured tonight:
+#   reset right after the MMU is on (stage 3)   -> device reboots: MMU on.
+#   reset after serial_init (wrong call site)   -> inconclusive, see below.
+#   reset after PE_consistent_debug_inherit, i.e. at the instruction *before*
+#   `bl _serial_init` (0xfffffff0079da204)     -> device stops: the kernel dies
+#                                                  between the MMU being enabled
+#                                                  and arm_vm_init returning.
 #
-panic_screen = false
-entry_probe_reset_delay = 6
+# So it is inside arm_vm_init, not the console: the eMMC console compiled out
+# made no difference.  What is left is the page-table/physmap work, and the
+# documented tool for "kernel stopped early" is the panic screen - it draws the
+# panic format string into the framebuffer, which now exists
+# (DARWINBOOT: video base=0x7ec50000 row=2944).  The panic screen and the reset
+# probe cannot be in the same kernel (the stage-3 code pushes the renderer out of
+# the padding), so this run is the panic screen alone.
 #
-# The full early sequence inside _arm_init, from the kernel's own disassembly:
-#
-#   arm_set_kernel_tbi, PE_set_kc_header, kernel_collection_adjust_mh_addrs,
-#   cpu_data_init, PE_init_platform, timer/WFE setup, SecureDT lookups,
-#   thread_bootstrap, cpu_bootstrap, rtclock_early_init,
-#   kernel_debug_string_early, kernel_startup_bootstrap, timer_call_init,
-#   cpu_init, processor_bootstrap, PE_parse_boot_argn, PE_get_default ...
-#   arm_vm_init            <- MMU on (stage 3 reset proved this is reached)
-#   patch_low_glo, PE_consistent_debug_inherit
-#   serial_init            <- where the eMMC console registers itself
-#   kernel_startup_initialize_upto, kprintf ...
-#
-# The MMU-on reset already fired, so the next single question is whether the
-# kernel gets *past* serial_init: if the device still reboots on its own after
-# the delay, serial_init returned -- and a kernel that returned from serial_init
-# but wrote nothing to the log block is a console problem, not a boot problem.
-#
-entry_probe_reset_after = "_serial_init"
-entry_probe_reset_in = "_arm_init"
+panic_screen = true
 
 [package]
 unixnu = "../UniXNU"
