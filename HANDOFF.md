@@ -924,3 +924,56 @@ build-xnu-4k-baseline.sh: line 786: test -f "$PMGR_ARCHIVE" failed
 1. 找到 PMGR 垫片组件（组件目录里搜 "pmgr"/"sheng"），把它的 archive 加进 `[kernel] archives`；
 2. 或者走另一条：给 ADT 加一个 `pmgr` 节点（如果 AMFI 只是要一个能匹配的设备）；
 3. 每改一次，**先 QEMU 验**（`qemu-run.py` + 内核/ADT），只有 QEMU 里过了再刷机。
+
+---
+
+## 0.16 AMFI 的 "No PMGR?" 是框架里已知的一步，两条路都查清了（2026-11-04 00:1x）
+
+### 官方文档怎么说
+
+`UniXNU/docs/devices/sirius-*.md`、`gta4l-gta4lunix.md` 都记着同一个阻塞：
+
+> AMFI finds the PMGR through `IOService::serviceMatching("ApplePMGRNub")` +
+> `waitForMatchingService`, then reads the provider at `nub+0x88` and calls its
+> readAon/writeAon slots (OR bit 2).  The original classes are ApplePMGR
+> (storage 0x4b8a8) and ApplePMGRNub (0x740);
+> `UniXNU/scripts/audit-amfi-pmgr-contract.py` pins the exact instructions.
+> `amfi_get_out_of_my_way=1` does not skip the check.  Two routes remain:
+> (1) instantiate the original classes the way UniXNU-sheng does
+> (`OSKextLoadKextWithIdentifier` + a generated `OriginalPMGRABI.h` + a published
+> nub), or (2) patch the AMFI block in the prelinked kernel.
+
+所以这不是我们特有的坑，是"非 Apple SoC 移植"的标准一步。
+
+### 路线 1 的现成素材（已下载到 `~/work/pmgr-ref/`）
+
+| 文件 | 来源 | 作用 |
+|---|---|---|
+| `ShengPlatformPower.cpp`（8.2 KB） | `UniXNU/UniXNU-sheng/main/package/` | 继承 ApplePMGR 的垫片，把 340 项虚表按 ABI 填好，只实现 readAon/writeAon，其余 `unavailable()` |
+| `build-platform-power.py`（9.0 KB） | `xVanTuring/UniXNU-tb128fu/main/scripts/` | 生成 `OriginalPMGRABI.h` + `GuardedPMGRSlots.inc`，用参考内核的编译记录编出 `libShengPlatformPower.a` |
+| `sheng-platform-power.patch`（352 B） | `UniXNU/UniXNU/main/patches/xnu/` | 在 `bsd_init.c` 的 `bsd_bufferinit()` 之后调 `sheng_pmgr_run()` |
+
+要用它还需要：
+1. 把 `ShengPlatformPower.cpp` 放进设备仓库 `kits/<kit>/`；
+2. `[kernel] archives` 追加一个 `build-platform-power.py`（**要先把 xcrun 换成 Linux 的 kernel clang**——
+   `scripts/build-arm-driver.py` 里的 `kernel_target.py` 就是现成范式）；
+3. `patches/xnu/series` 加 `sheng-platform-power.patch`；
+4. defconfig 打开 `CONFIG_XNU_SHENG_PMGR=y`（现在注释着，因为归档没有会 `test -f` 失败）。
+
+脚本里还有几个 **tb128fu 专属硬编码地址**（`ApplePMGR` ctor/dtor/gMetaClass、AON reader 表
+`0xfffffff005ce26d8`），换板子要重新从我们自己的内核里取。它的 `ORIGINAL_KERNELCACHE_SHA256`
+是 `f18b4df8…`（iPad 17.7.11 的原始 kernelcache）——我们用的正是同一个 IPSW 家族，第一步可以先原样试。
+
+### 路线 2（补丁 AMFI）今晚探到的边界
+
+`AMFI: No PMGR?` 字符串在 `0xfffffff0042dde34`（`kernel.macho` 文件偏移 `0x1203e34`），
+但**在 `__TEXT`/`__TEXT_EXEC` 里扫不到任何 `adrp/add` 引用它** —— 说明预链接内核里
+AppleMobileFileIntegrity 用的是 `__DATA_CONST` 里的预绑定指针（chained fixups），
+不是现算地址。要做这条路得先解 chained-fixup 的 rebase 编码，比路线 1 更细。
+`scripts/audit-amfi-pmgr-contract.py` 提供了校验方法（按模块 `__TEXT_EXEC` 的 sha256 + 指令契约），
+可以拿它当"补丁没打歪"的判据。
+
+### 结论
+
+下一步按路线 1 走；这也是官方文档给参考设备用的同一条路。先用 QEMU 验（`qemu-run.py` +
+本机 kernel/ADT，`-d int` 看异常），通过了再刷机。
