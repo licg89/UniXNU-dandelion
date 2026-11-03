@@ -1170,3 +1170,50 @@ Still waiting for root device
 
 先确认本机能不能造 HFS+/APFS 卷（`apt install hfsprogs` 或一台 macOS）；能造就把空 HFS+ 当 ramdisk 试挂根，
 把"根设备挂载"这个里程碑拿到手；不能造就直接起 eMMC 主机组件（固件侧 `DandelionEmmcDxe` 的寄存器序列可对照）。
+
+---
+
+## 0.21 根卷路径打通：内核已经在 `md0` 上尝试挂根（2026-11-04 02:0x）
+
+### 关键一步：`rd=md0`
+
+参考其它移植（`docs/devices/j716f.md`、`rmx1971.md`）都用 `rd=` 指定根设备：
+j716f 是 `rd=md0`（APFS RAMDisk），rmx1971 是 `rd=ufsroot0`。我们之前只把 seed 放进 payload、
+ADT 也有 `RAMDisk` 占位符，但**没有 `rd=md0`，内核就一直在等 UUID 匹配的卷**。
+
+加上 `rd=md0` 之后，内核日志（`out/klog13.txt`，45,613 字节）第一次出现根设备：
+
+```
+BSD root: md0, major 3, minor 0
+apfs_vfsop_mountroot:2965: apfs: mountroot called!
+container_rootmount:2531: boot from ramdisk /dev/md0
+dev_init:303: md0 device accelerated crypto: 0 (compiled @ Jul 11 2025 17:34:16)
+dev_init:306: md0 device_handle block size 512 block count 8192 features 0 internal
+apfs_vfsop_mount:2479: unable to root from devvp 0xfffffff44fc34790 (root_device): 79
+apfs_mountroot failed: 79
+cannot mount root, errno = 19
+```
+
+`block count 8192` × 512 = **4 MiB**，正好是我们塞进 payload 的 seed 大小 —— 说明
+**DarwinBoot 正确填了 `/chosen/memory-map/RAMDisk`**，md 驱动拿到了正确范围，
+`container_rootmount` 认出来"从 ramdisk 启动"。整条链路（payload → loader → ADT 占位符 → md0）全部成立。
+
+### 只差文件系统格式
+
+失败原因是 **79**（`ENOTSUP` 一类）：我们造的是 **HFS+** 卷，而 iOS 17 的内核只走 `apfs_vfsop_mountroot`。
+所以下一步只需要一个**APFS 卷**，别的都不用改。
+
+### APFS 卷怎么来（本机现状）
+
+- `apt install apfsprogs` 只提供 `apfsck`（检查器），**没有 `mkfs.apfs`**；
+- `libfsapfs-utils` 是只读访问；
+- 参考记录的 `ramdisk_apfs_meta_10mb.dmg` 是在 macOS 上用 `hdiutil`/`diskutil` 做的。
+
+所以这一步要么用一台 macOS 造一个最小 APFS 卷（比如 16 MiB，含 `SHNGROOT` 布局或至少一个空卷），
+要么在 Linux 上自己拼一个最小 APFS 容器（工作量大，不建议）。
+
+### 顺带修掉的构建脚本坑
+
+`build_intc.sh` 末尾那段 `mcopy` 会把 payload 里的 kernel 复制到 QEMU ESP，遇到已存在的目标会**交互式询问**
+`overwrite (y/n)?`，把整个构建脚本挂住（今晚卡了两次、每次十几分钟）。已把那段从构建脚本里移除，
+QEMU 的 restaging 只在 `restage_qemu.sh` 里做。

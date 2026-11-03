@@ -97,7 +97,13 @@ volume = "DANDELION"
 size_mib = 56   # the files take 48 MiB and must fit strictly inside; 56 + 3 MiB FD still fits 64 MiB
 loader = "firmware"
 title = "UniXNU"
-kernel_args = ["-v", "serial=3", "sheng-pmgr=2"]
+kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "rd=md0"]
+#
+# rd=md0 makes the RAM disk the root device (the reference ports use it the same
+# way: j716f with an APFS RAMDisk, rmx1971 with rd=ufsroot0).  Without it the
+# kernel ignores whatever the loader placed in /chosen/memory-map/RAMDisk and
+# waits for a volume whose UUID matches [payload.adt] root_match_volume_uuid --
+# which this board has no storage to provide.
 #
 # sheng-pmgr=2 is what makes the bridge publish the original ApplePMGRNub
 # (package/ShengPlatformPower.cpp: sheng_pmgr_run() returns immediately unless the
