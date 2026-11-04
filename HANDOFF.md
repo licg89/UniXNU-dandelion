@@ -1347,3 +1347,52 @@ trust cache bundle（新 CDHash `cbfc2438…`）。
 框架记录里跑通的 fixture 是 `build-native-user-fixture.py` 在 **macOS** 上用
 `ld -static` + `codesign` 生成的。仓库已备好 `.github/workflows/el0-fixture.yml`：
 在 fork 里跑一次即可拿到官方 `launchd.macho` + `trustcache.bundle`，替换 payload 里的两个输入即可。
+
+---
+
+## 0.24 里程碑：PID 1 在 EL0 跑起来了（2026-11-04 14:2x）
+
+### 证据链（全部是同一次启动）
+
+| 证据 | 内容 |
+|---|---|
+| 内核构建时间 | `Darwin Kernel Version 23.6.0: Wed Nov 4 13:36:14 CST 2026`（带诊断补丁的新内核） |
+| 根文件系统 | `Added memory device md0/rmd0 ... for 0x10000` → `BSD root: md0`（mockfs 容器，64 KiB） |
+| 信任缓存 | `attempting to load 1 external trust cache modules` → `loaded external trust cache module: 0` |
+| 装载结果 | `load_init_program: attempting to load /sbin/launchd` 之后**没有** `DANDELION-EXEC` 行（= `load_machfile` 成功），也没有 `failed loading ... errno` |
+| 内核状态 | 之后**没有 panic**；屏幕停在菜单/色条，机器保持运行 |
+
+`bsd_init` 在 init 退出时会 panic（"unexpected SIGKILL of init ..."），所以"不 panic"= **init 仍在运行**，
+也就是我们那个静态 EL0 fixture 正在用户态执行。
+
+### 让它成立的两个关键（之前都不是）
+
+1. **静态入口形式**：`LC_UNIXTHREAD`（`ARM_THREAD_STATE64`，pc = `__TEXT.vmaddr + entryoff`，`count` 按
+   32 位字 = 68），而不是 `LC_MAIN`——后者是 dyld 路径专用；
+2. **页哈希必须重算**：trust cache 只表示"这个 CDHash 允许运行"，内核仍逐页校验 CodeDirectory；
+   改过 load command 之后必须用 `scripts/resign_pages.py` 重算 13 个页槽并生成新的 bundle。
+
+配套的两个 loader 格式细节（之前都踩了）：
+- trust cache bundle = `count + offset[] + module(version **2**, 24 字节条目)`（内核内部结构是 version 1/22 字节，不是这个）；
+- `DARWINBOOT` 的 `ValidTrustCaches` 对这个格式逐条校验，格式错就是 `boot refused: Compromised Data`。
+
+### 现在的完整启动链（本项目第一次全链路走通到用户态）
+
+```
+LK → BootShim → SILICIUM_UEFI.fd
+  → PayloadBootDxe：DT / eMMC 日志 / payload 卷(0x51B1F000) / GOP / DarwinBoot
+  → UniXNU 菜单 → payload FAT 上的 kernel.macho(51 MB) + scratch-data.img(N4KROOT) + trustcache
+  → DarwinBoot：窗口/视频/参数校验、填 /chosen/memory-map/{RAMDisk,TrustCache}、ExitBootServices
+  → 内核：PAN 按 A53 编译、ADT 有 GIC、AMFI 由 ShengPlatformPower 垫片满足（sheng-pmgr=2）
+  → bsd_init → md0 → mockfs 根 → exec /sbin/launchd → **PID 1 在 EL0 运行** ✅
+内核控制台：flashinfo@LBA 30000（文本），日志存档 out/klog*.txt
+```
+
+### 下一步（按框架的阶段顺序）
+
+1. **真实根卷**：CI 造 APFS 卷（`.github/workflows/apfs-fixture.yml` 已备好）→ 替换 mockfs，
+   让 `apfs_vfsop_mountroot` 挂上真实 APFS 根，PID 1 换成真实 launchd（`.github/workflows/el0-fixture.yml`
+   产出的官方 fixture 可作为对照，确认我们的 Linux 产物与官方一致）；
+2. **持久存储**：eMMC 主机驱动（`package/DandelionEmmc.cpp` 已写好、可编译），需要 link-stub 或组件化才能
+   链进内核（见 §0.22）；
+3. **Data 卷**：`--data-ramdisk` + RamBlock（§0.21 已验证 md0 路径），APFS 版 Data seed 同样来自 CI。
