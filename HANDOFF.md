@@ -1780,3 +1780,63 @@ C: 起始只剩 **0.39 GB**，清理后 **~24.7 GB**。逐项：
 3. **块设备窗口**（最后一步）：168 个 vtable 方法已能绑定（`scripts/bind-by-vtable.py`），
    还差基类构造/析构/`gMetaClass` 三个地址，它们在预链接后被剥掉、IPSW kernelcache 里也没有；
    需要框架钉住的参考候选，或反汇编定位。
+
+---
+
+## 0.32 eMMC 驱动读到并验证了真实的 SHNGROOT manifest（2026-11-04 22:4x）
+
+### 结果
+
+刷入完整 8.74 GiB userdata 镜像后，`native-msdc-persist=1` 的内核日志给出：
+
+```
+NativeMsdc: controller 0x11230000 inherited CFG=0x02210499 STS=0x00000000
+NativeMsdc: EXT_CSD rev 8, 122142720 sectors, cache 0, partition access 0
+NativeMsdc: userdata sectors 13385728..122021854
+NativeMsdc: userdata head 53484e47        ← "SHNG"
+NativeMsdc: manifest status 0             ← kManifestOk
+```
+
+`NativeMsdc.h:239` 的枚举是 `kManifestOk = 0, kManifestNoMagic = 1, …`，所以 **status 0 = 解析成功**。
+驱动已经完成了：MSDC0 继承 → EXT_CSD → GPT → userdata 定位 → manifest 读取与 SHA-256 校验 → 窗口表解析。
+
+### 之前为什么一直是 "no SHNGROOT manifest"
+
+两个独立原因，都不在驱动里：
+
+1. **64 MB 片段没落到分区起始**：`fastboot flash userdata` 对稀疏镜像按块写入，
+   我们截取的前 64 MB 加上 AVB footer 处理后并未落在 offset 0；
+2. **读取日志的 dd 一直失败**（`su` 被拒绝，因为 `fastboot -w` 清掉了 Magisk 的授权数据），
+   所以那几次"拉到的日志"其实是更早的旧文件 —— 连我自己加的诊断行都看不到，就是这个原因。
+
+### 关键工作流修正（以后不用拍照、不用每次重设）
+
+本机是 **userdebug** 构建（`ro.build.type=userdebug`、`ro.debuggable=1`），所以：
+
+```sh
+adb root                     # adbd 以 root 重新启动，不需要 Magisk
+adb shell "dd if=/dev/block/by-name/flashinfo of=/data/local/tmp/fi.bin bs=1M"
+adb pull /data/local/tmp/fi.bin flashinfo.bin
+```
+
+日志通道（内核 `flashinfo@LBA 30000`、固件 `LBA 30512`）一直是好的，只是需要 root 才能读。
+
+### 现在的完整状态
+
+```
+内核入口/MMU/CPU/GIC/AMFI            ✅
+mockfs 根 + PID 1 在 EL0             ✅
+APFS 根卷挂载（自造 4 MiB 容器）        ✅
+eMMC：控制器/EXT_CSD/GPT              ✅
+eMMC：userdata SHNGROOT manifest      ✅（本节）
+块设备窗口发布（native-msdc-root=1）    ⏳ 需 NATIVE_MSDC_BLOCK_DEVICES=1 + 3 个符号
+真实 root（userdata 里的 OS 窗口）      ⏳ 依赖上一条
+```
+
+### 唯一剩下的技术阻塞
+
+`NATIVE_MSDC_BLOCK_DEVICES=1` 的构建（发布 OS/SystemOS 窗口）还需要三个符号地址：
+`IOBlockStorageDevice` 的基类构造、基类析构、`gMetaClass`。
+168 个 vtable 方法已经由 `scripts/bind-by-vtable.py` 绑定（基类 vtable 定位在 `0xfffffff005cb37a0`），
+但这三个既不在预链接内核（kext 符号被剥离）也不在 IPSW kernelcache（只有 6,056 个内核导出）里。
+两条路：① CI 跑框架原版流程产出钉住的参考候选；② 反汇编定位（构造/析构可通过 `bl IOService` 的调用点识别）。

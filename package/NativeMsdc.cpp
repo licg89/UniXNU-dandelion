@@ -709,6 +709,13 @@ bool hostFindLayout (const char **why)
   SHA256_Final (digest, &context);
   native_msdc_manifest_status = parseManifest (gHost.bounce, digest, partitionSectors * kSector, gHost.manifest);
   gHost.manifestValid = native_msdc_manifest_status == kManifestOk;
+  // dandelion diagnostic: name the first bytes of userdata and the parse verdict.
+  // The console records this fine once the host has root again (adb root on this
+  // userdebug build); a sixteen-argument print never reached the console, so this
+  // stays at two lines of four and five arguments.
+  IOLog ("NativeMsdc: userdata head %02x%02x%02x%02x\n",
+         gHost.bounce[0], gHost.bounce[1], gHost.bounce[2], gHost.bounce[3]);
+  IOLog ("NativeMsdc: manifest status %u\n", native_msdc_manifest_status);
   if (gHost.manifestValid) native_msdc_step = 4;
   return true;
 }
