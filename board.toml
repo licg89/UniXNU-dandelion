@@ -70,6 +70,12 @@ patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches
   #
   "build-native-msdc.py",
   #
+  # The storage bindings (bind-by-vtable.py) are held back with the window block
+  # devices: they resolve the 168 vtable-slot methods, but the base constructor,
+  # base destructor and gMetaClass are in no symbol table this tree has (the
+  # prelinked kernel's kext symbols are stripped, and the IPSW kernelcache carries
+  # only kernel exports), so the link still fails on those four.
+  #
   # The eMMC host (package/DandelionEmmc.cpp, build-dandelion-emmc.py) compiles and
   # archives cleanly, but it cannot be linked yet: it subclasses
   # IOBlockStorageDevice, and IOStorageFamily is a prelinked kext whose symbols do

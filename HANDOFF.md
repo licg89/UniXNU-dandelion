@@ -1678,3 +1678,65 @@ dry-run 输出（已实测）：
 2. 或者让 CI 跑框架的原版流程产出那个候选。
 
 在这之前，`NATIVE_MSDC_BLOCK_DEVICES=0` 的驱动已经能读 eMMC（§0.28），窗口发布是它之上的最后一步。
+
+---
+
+## 0.30 storage bindings：能解的都解了，差 4 个符号（2026-11-04 16:0x-16:3x）
+
+### 做成的事
+
+`scripts/bind-by-vtable.py`：**按 vtable 槽位配对**生成 IOStorageFamily 的绑定。
+
+- 驱动的对象里有自己的 vtable（`__ZTV15NativeMsdcBlock`，190 槽），每个槽的重定位指向
+  「自己的 override」或「要继承的基类方法名」；
+- 我们**自己的内核**里，IOStorageFamily 的 `__DATA_CONST`（计划里 `va=0xfffffff005cb3200`）有一段
+  vtable：`0xfffffff005cb37a0`，33/190 个槽指向 kext 代码；
+- 用「驱动未定义的那些存储槽必须落在 kext 代码段」作为签名找到它，然后按槽对齐 → **168 个符号绑定成功**，
+  产出 `libStorageBindings.a`；storage-specific 的槽位都验证过落在 kext 的 `__TEXT_EXEC` 里。
+
+### 还差的 4 个符号
+
+`OSDefineMetaClassAndStructors` 生成的代码还引用：
+
+```
+__ZTV20IOBlockStorageDevice                      (基类 vtable —— 已找到：0xfffffff005cb37a0)
+__ZN20IOBlockStorageDeviceC2EPK11OSMetaClass      (基类构造)
+__ZN20IOBlockStorageDeviceD2Ev                    (基类析构)
+__ZN20IOBlockStorageDevice10gMetaClassE           (静态元类对象)
+```
+
+它们**不在任何可用的符号表里**：
+
+| 来源 | 情况 |
+|---|---|
+| 我们预链接的 `kernel.macho` | 50,953 个符号，但 kext 符号在预链接时被剥掉（`IOStorage*` 计数 0） |
+| IPSW 的 `kernelcache.decompressed` | 只有 6,056 个内核导出符号，没有 kext 的 C++ 符号 |
+| 预链接计划的 `bindings`（69,294 条） | 只给 fixup 记录；IOStorageFamily 的 `site` 位移全是 `-0x1000000`（就是 slide），不含 vtable/ctor/dtor 地址 |
+
+框架的 `audit-storage-interface.py` 是从**钉住的参考候选** `native-apfs-load-positive.macho` 取这三个值
+（`original_protected_constructor` / `original_base_destructor` / `original_metaclass`），我们没有该产物。
+
+### 因此
+
+已把树恢复成**可工作状态**（`NATIVE_MSDC_BLOCK_DEVICES=0` + `native-msdc-persist=1`，§0.28 验证过的那套），
+`bind-by-vtable.py` 与 `build-native-msdc.py --block-devices 1` 都保留在仓库里，等下面任一条路打通即可接入：
+
+1. **让 CI 跑框架原版流程**产出那个参考候选（`.github/workflows/` 已有 runner 配置）；
+2. **反汇编定位**这三个地址（基类构造/析构在 kext 的 `__TEXT_EXEC` 里，`gMetaClass` 在 `__DATA` 里，
+   可由 vtable 的 typeinfo 指针与相邻对象推断）。
+
+### userdata 镜像（同时进行，已过下载关）
+
+```
+== userdata: image 9382658048 bytes (8.74 GiB) in a partition of 55621697024 bytes
+== userdata: OS from 044-76040-038.dmg
+== userdata: SystemOS from 044-76034-038.dmg
+```
+
+**镜像 8.74 GiB**（不是整个 55.6 GB 分区），正在抽取 OS/SystemOS 两个窗口。
+产物：`out/<device>/<os_profile>/<config>/userdata/userdata-root.img` + 报告（含 fastboot 命令）。
+
+### 环境事故记录
+
+16:2x 时 WSL 整体崩过一次（`Wsl/Service/E_UNEXPECTED`），`wsl --shutdown` 后恢复；
+那次中断了 userdata 下载（DMG 已缓存，重启后直接从抽取继续）。构建/下载同时跑时注意内存（WSL 9 GB）。
