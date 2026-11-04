@@ -1740,3 +1740,43 @@ __ZN20IOBlockStorageDevice10gMetaClassE           (静态元类对象)
 
 16:2x 时 WSL 整体崩过一次（`Wsl/Service/E_UNEXPECTED`），`wsl --shutdown` 后恢复；
 那次中断了 userdata 下载（DMG 已缓存，重启后直接从抽取继续）。构建/下载同时跑时注意内存（WSL 9 GB）。
+
+---
+
+## 0.31 环境事故与恢复 + 当前推进路线（2026-11-04 16:4x-18:0x）
+
+### C: 盘清理（与本项目直接相关：构建输出都在 WSL 里，而 WSL 的 vhdx 在 C:）
+
+C: 起始只剩 **0.39 GB**，清理后 **~24.7 GB**。逐项：
+
+| 项目 | 释放 | 说明 |
+|---|---|---|
+| Windows Temp + Windows Update 缓存 + 回收站 | ~6.1 GB | 安全 |
+| pip 缓存 | ~2.2 GB | 可重建 |
+| npm 缓存 | ~1.9 GB | 可重建 |
+| `JianyingPro\User Data\Cache` | 5.91 GB | 只删缓存；**Projects 1.01 GB 与 Presets 1.71 GB 保留** |
+| `.lingma` | 5.57 GB | 用户同意删除 |
+| `.qoder-cn` | 4.99 GB | 用户同意删除 |
+
+未动（等用户决定）：Docker `docker_data.vhdx` 8.11 GB、WSL 里的 IPSW 镜像 8 GB、桌面 12.5 GB。
+「把构建目录搬到 D:」试过一半后按用户要求回退，`/root/work/UniXNU/out` 保持原样（已确认完整：
+`dandelion` 939 MB、`feeds` 730 MB、`ipsw` 8.0 GB；中断时删掉的只是那个 7 GB 的未完成 userdata 镜像）。
+
+### WSL 两次故障与恢复
+
+1. 16:2x `Wsl/Service/E_UNEXPECTED` —— `wsl --shutdown` 后恢复（当时下载中断，DMG 已缓存）；
+2. 17:3x `Wsl/Service/CreateInstance/CreateVm/HCS_E_CONNECTION_TIMEOUT` ——
+   `wsl --shutdown`、检查 `vmcompute/hns/HvHost`（都在跑，但无权限重启）、内存充足（18.9 GB 中空闲 8.2 GB）
+   都无效；**`wsl --update` 是有效修复**（更新到 WSL 2.6.3.0 / 内核 6.18.54.1），之后正常。
+   伴随一条无害告警：`Failed to start the systemd user session for 'root'`。
+
+### 当前推进路线（用户要求回到移植）
+
+1. **重建 userdata 镜像**（正在跑）：`unixnu userdata -D ../UniXNU-dandelion`，
+   产物 8,382,658,048 B（8.74 GiB）/ `out/.../userdata/userdata-root.img`；
+2. **刷入后验证驱动能读到 SHNGROOT**：`native-msdc-persist=1` 的驱动会读 GPT 并解析 userdata 头
+   4096 字节的 SHNGROOT manifest；现在会从 `no SHNGROOT manifest in userdata` 变成
+   打印出窗口（OS/SystemOS 的偏移与大小）——这是块设备之前能拿到的最后一个纯读取里程碑；
+3. **块设备窗口**（最后一步）：168 个 vtable 方法已能绑定（`scripts/bind-by-vtable.py`），
+   还差基类构造/析构/`gMetaClass` 三个地址，它们在预链接后被剥掉、IPSW kernelcache 里也没有；
+   需要框架钉住的参考候选，或反汇编定位。
