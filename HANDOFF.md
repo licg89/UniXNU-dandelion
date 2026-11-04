@@ -1900,3 +1900,70 @@ adb pull /data/local/tmp/fi.bin flashinfo.bin
 
 内核控制台在 LBA 30000、固件日志在 LBA 30512。**注意**：每次 `fastboot -w` 会让 Android 需要重设，
 而 `su`/root 也会随之丢失 —— 用 `adb root` 恢复，不需要 Magisk。
+
+---
+
+## 0.34 真实根卷挂载成功 —— 停在"根卷未认证"（2026-11-05 00:0x）
+
+### 结果
+
+去掉 `rd=md0`、把 `[payload.adt] root_match_volume_uuid` 设为 OS 卷的 UUID 之后：
+
+```
+rootvp not authenticated after mounting @bsd_init.c:1099
+```
+
+**这条 panic 本身就证明了成功**：内核按 UUID 选中了 eMMC 驱动发布出来的 OS 窗口，APFS 挂载了它，
+`bsd_init` 只是在检查"根卷是否已认证"时停下。传输链路已经全部打通。
+
+### OS 卷 UUID 的来源（本机可复现）
+
+`fsapfsinfo`（`apt install libfsapfs-utils`）直接读 userdata 镜像里的 OS 窗口：
+
+```
+Identifier : 04769d26-2ca0-4825-b443-e2e5f88300f2
+Name       : DawnUpdate21H461.J120J121J207J208OS
+```
+
+注意窗口里是**完整磁盘镜像**：`EFI PART` 在 0x200、APFS 容器从 0x4400 开始，
+所以要先 carve 掉 17408 字节的 GPT 前缀再交给 fsapfsinfo。这个 UUID 与 UFS 文档示例里的值一致
+（同一个 IPSW 家族）。
+
+### 现在的完整链路
+
+```
+LK → BootShim → SILICIUM_UEFI → PayloadBootDxe → UniXNU 菜单
+   → DarwinBoot（窗口/视频/参数、memory-map、ExitBootServices）
+   → 内核：PAN(A53) → CPU/GIC → AMFI(PMGR 垫片) → md0/mockfs 或 APFS
+   → NativeMsdc：MSDC0 → EXT_CSD → GPT → userdata → SHNGROOT manifest
+   → 窗口块设备（storage bindings 由 dispatch table 推导）
+   → APFS 挂载 OS 卷（UUID 匹配）→ **根卷已挂载** ✅
+   → 停在 rootvp 认证检查
+```
+
+### 下一步：根卷认证（VerifiedRoot）
+
+NativeMsdc README 与实测 panic 指向同一条路：
+
+> iPadOS APFS requires the root volume to be authenticated (`rootvp not authenticated after
+> mounting` otherwise). Built with `-DNATIVE_VERIFIED_BLOCK=1` and `kits/VerifiedRoot/include`,
+> the windows are served only through owner-signed VerifiedRoot policies.
+
+框架里 `VerifiedRoot` 是**组件（kit）**：`github.com/UniXNU/VerifiedRoot`，revision `974f043d…`，
+我们这棵树**还没取**（`kits/` 下只有 NativePrelink / XnuPrelink / dandelion）。
+
+要做的事：
+
+1. `[components] include` 加 `"VerifiedRoot"`（组件会自动 fetch）；构建脚本加 `build-sheng-source-storage.py`/其归档；
+2. 驱动用 `-DNATIVE_VERIFIED_BLOCK=1` + `kits/VerifiedRoot/include` 编译（README 给的命令：
+   `build-arm-driver.py NativeMsdc --verified-root`）；
+3. 生成 owner 签名的策略区（`kits/VerifiedRoot/tools/manifest.py`），按 README 的布局放到 userdata
+   窗口之后（`A04RPOL1` 头 + 条目，4064 字节处是头部的 SHA-256）；
+4. 链接需要 `verified_root_key`、`vr_open`、`vr_verify_block`、`vr_xnu_crypto`（来自 kit 的单独归档）。
+
+### 本轮另外两处工程细节
+
+- 驱动加了 `native_msdc_busy` 门（控制台在驱动传输期间不写 flashinfo），避免控制台与块驱动抢 MSDC0
+  —— 之前 APFS 报的 ETIMEDOUT/EIO 很可能就是这个竞争；
+- `board.toml` 里 `[payload.adt]` 不能声明两次（我一度写成两段，TOML 直接报错），
+  `root_match_volume_uuid` 必须并进已有的 `[payload.adt]`。

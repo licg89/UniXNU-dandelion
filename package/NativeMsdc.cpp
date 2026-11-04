@@ -112,6 +112,12 @@ constexpr uint64_t kCommandTimeoutNs = 1000000000ULL;     // one command and its
 constexpr uint64_t kBusyTimeoutNs = 5000000000ULL;        // programming after a write, cache flush
 constexpr unsigned kDmaDescriptorBytes = 4096;             // GPD at 0, BD at 64; the buffer follows
 constexpr unsigned kTransferBytes = kMaxBlocks * kSector;
+
+// The kernel's eMMC console (pe_serial.c) drives the same controller.  A console
+// write interleaved with a driver transfer corrupts it -- APFS then reports
+// ETIMEDOUT/EIO on checkpoint reads -- so the console checks this flag and keeps its
+// line buffered while a transfer is in flight.
+extern "C" volatile uint32_t native_msdc_busy = 0;
 constexpr uint64_t kDmaPhysicalMask = 0x00000000fffff000ULL;
 constexpr uint32_t kDmaSelfTestSector = 0x40;
 constexpr unsigned kDmaSelfTestBlocks = 4;
@@ -437,6 +443,11 @@ public:
 // One transfer of at most kMaxBlocks sectors anywhere on the user area; callers bound it to their own region.
 IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write)
 {
+
+  struct BusyGuard {
+    BusyGuard () { __atomic_add_fetch (&native_msdc_busy, 1, __ATOMIC_ACQ_REL); }
+    ~BusyGuard () { __atomic_sub_fetch (&native_msdc_busy, 1, __ATOMIC_ACQ_REL); }
+  } busyGuard;
   if (gHost.poisoned) return kIOReturnNotReady;
   if (!blocks || blocks > kMaxBlocks || sector >= gHost.diskSectors || blocks > gHost.diskSectors - sector)
     return kIOReturnBadArgument;

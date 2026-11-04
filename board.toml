@@ -128,7 +128,7 @@ volume = "DANDELION"
 size_mib = 56   # the files take 48 MiB and must fit strictly inside; 56 + 3 MiB FD still fits 64 MiB
 loader = "firmware"
 title = "UniXNU"
-kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "rd=md0", "amfi_get_out_of_my_way=1",
+kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1",
                "native-msdc-persist=1", "native-msdc-root=1"]
 #
 # amfi_get_out_of_my_way=1 keeps AMFI's policy checks relaxed for this developer
@@ -188,6 +188,14 @@ owned_memory_size = "0x10000000"   # 512 MiB; DarwinBoot refused the 2 GiB defau
 # TODO: the board's identity seed, as the framework requires.
 chip_id = "6765"   # hex; the board identity this port uses
 unique_chip_id = "required"
+#
+# The OS volume of the userdata image, read from the image itself with fsapfsinfo:
+#   Identifier : 04769d26-2ca0-4825-b443-e2e5f88300f2
+#   Name       : DawnUpdate21H461.J120J121J207J208OS
+# XNU roots the volume whose IOMedia UUID matches this, so the OS window the eMMC
+# driver publishes becomes the root instead of a RAM disk.
+#
+root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
 
 # The userdata partition of this phone's eMMC, by the evidence in HANDOFF 0.28:
 # NativeMsdc read the GPT and reported "userdata sectors 13385728..122021854"
