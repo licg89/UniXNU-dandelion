@@ -1840,3 +1840,63 @@ eMMC：userdata SHNGROOT manifest      ✅（本节）
 168 个 vtable 方法已经由 `scripts/bind-by-vtable.py` 绑定（基类 vtable 定位在 `0xfffffff005cb37a0`），
 但这三个既不在预链接内核（kext 符号被剥离）也不在 IPSW kernelcache（只有 6,056 个内核导出）里。
 两条路：① CI 跑框架原版流程产出钉住的参考候选；② 反汇编定位（构造/析构可通过 `bl IOService` 的调用点识别）。
+
+---
+
+## 0.33 storage bindings 打通 + 真实 OS 卷被 APFS 挂载（2026-11-04 23:0x）
+
+### 1. storage bindings 在 Linux 上解决了
+
+按 sirius 记录的算法（`docs/zh/devices/sirius-dddqmmx.md:246`）实现 `scripts/derive-storage-symbols.py`：
+
+- 用**公开 IOStorageFamily 源码**编译的参考对象（`build/storage-abi/IOBlockStorageDevice-reference.o`）取出 190 个槽名；
+- 在本内核 `IOStorageFamily __DATA_CONST` 里找**唯一**匹配全部 176 个内核导出名的表；
+- 构造 = "存 table+16 并转调 `IOService` 构造"的那个函数；析构 = 指向 `IOService::~IOService` 的跳板；
+  `gMetaClass` = slot 7 的 `adrp/add` 目标。
+
+本内核实测结果：
+
+```
+PASS: table 0xfffffff005cb44c0, 176 kernel-bound slots
+  constructor 0xfffffff00496ed98 (forwards to IOService)
+  destructor  0xfffffff00496edb8 (resolves to IOService)
+  metaclass   0xfffffff006add1d0
+```
+
+两个坑：① `.set` 只能给 **kext 自有**的符号，给内核导出名也写会造成 **162 duplicate symbols**；
+② 内核链接取的是 `build/native-msdc/libNativeMsdc.a` 这个名字，绑定归档必须**覆盖**该路径。
+
+### 2. 窗口发布成功，APFS 挂上了真实的 OS 卷
+
+刷入 8.74 GiB userdata + `native-msdc-root=1` 的内核后：
+
+```
+NativeMsdc: SystemOS volume ready
+NativeMsdc: published OS
+dev_init:306: disk2s1 device_handle block size 4096 block count 1483776
+nx_mount: disk2s1 checkpoint search: largest xid 418, best xid 417
+nx_mount: disk2s1 reloading after unclean unmount, checkpoint xid 417, superblock xid 418
+```
+
+`1,483,776 × 4096 = 6.07 GB`，正是 manifest 里 OS 窗口的大小 ——
+**userdata → GPT → SHNGROOT manifest → 窗口块设备 → APFS 挂载真实 OS 卷** 这条链路全线走通。
+
+### 3. 日志暴露的两个待修问题
+
+1. **读取超时**：`disk0 couldn't read checkpoint descriptor block 27 …: 60`（ETIMEDOUT）、
+   `disk2s1 … block 2 …: 5`（EIO）。大偏移的多块读取不稳定，需要调 chunk（驱动默认 128 扇区/CMD18）
+   或改用 `native-msdc-dma=1` 的 GPD/BD 路径；
+2. **根卷选择**：`kernel_args` 仍带 `rd=md0`，内核继续从那个 4 MiB RAM 卷挂根，所以最后仍是
+   `process 1 exec of /sbin/launchd failed, errno 2`。下一步要去掉 `rd=md0` 并设置
+   `[payload.adt] root_match_volume_uuid`（OS 卷的 UUID），让内核从 `disk2s1` 挂根。
+
+### 工程记录：本机读日志的方法（不再需要拍照/重设手机）
+
+```sh
+adb root            # userdebug + ro.debuggable=1，adbd 以 root 重启
+adb shell "dd if=/dev/block/by-name/flashinfo of=/data/local/tmp/fi.bin bs=1M"
+adb pull /data/local/tmp/fi.bin flashinfo.bin
+```
+
+内核控制台在 LBA 30000、固件日志在 LBA 30512。**注意**：每次 `fastboot -w` 会让 Android 需要重设，
+而 `su`/root 也会随之丢失 —— 用 `adb root` 恢复，不需要 Magisk。

@@ -55,7 +55,7 @@ CONFIG_XNU_SHENG_PMGR=y
 # the IOStorageFamily methods it inherits: those symbols live in the prelinked
 # kext, so a link without them fails on the whole vtable.  scripts/bind-by-vtable.py
 # pairs the driver's vtable slots with the base vtable in our own kernel.
-CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/native-msdc/libNativeMsdc.a"
+CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/native-msdc-bindings/libStorageBindings.a"
 #
 # The older hand-written driver would go here:
 #   CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/dandelion-emmc/libDandelionEmmc.a"
