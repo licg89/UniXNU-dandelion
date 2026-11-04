@@ -1551,3 +1551,70 @@ boot.img sha256 139cedcb…                （59,494,400 B，15:42）
 
 `scripts/package.sh` 每次都会连 UEFI 固件一起构建，固件没变时那一步纯属浪费（本次 32 分钟里约 20 分钟是固件）。
 以后只改内核/payload 时，用 `unixnu build kernel` + `unixnu build payload` + `unixnu bootimg` 三步可以省掉。
+
+---
+
+## 0.28 两个里程碑同时落地：APFS 根卷挂载成功 + eMMC 驱动工作（2026-11-04 15:5x）
+
+### 1. APFS 根卷挂载成功
+
+```
+nx_mount: md0 checkpoint search: largest xid 1, best xid 1 @ 1
+nx_mount: md0 stable checkpoint indices: desc 0 data 0
+apfs_vfsop_mount: md0s1 fs iokit node was not found
+handle_mount:817: md0s1 vol-uuid: 29097E4D-113B-4F46-84CB-8CBCCA84135F
+                  block size: 4096 block count: 1024 (unencrypted; flags: 0x1; features: 1.0.2)
+handle_mount:830: md0s1 setting dev block size to 4096 from 512
+apfs_log_op_with_proc: md0s1 mount-complete volume DANDELION, requested by: kernel_task
+```
+
+之前那次 `apfs_mountroot failed: 79` 是**镜像不是 APFS**（HFS+），而 mockfs 又把失败盖住；
+换成本机 `mkapfs` 造的真 APFS 容器后，**APFS 直接挂载完成**（卷名 DANDELION，1024 个 4 KiB 块）。
+
+随后 `load_init_program` → `/sbin/launchd` → `errno 8`：**卷是空的**，没有 launchd。这是预期。
+
+### 2. eMMC 驱动第一次在 XNU 里工作
+
+```
+NativeMsdc: controller 0x11230000 inherited CFG=0x02210499 STS=0x00000000
+NativeMsdc: EXT_CSD rev 8, 122142720 sectors, cache 0, partition access 0
+NativeMsdc: userdata sectors 13385728..122021854
+NativeMsdc: no SHNGROOT manifest in userdata
+```
+
+逐条含义：
+
+| 日志 | 证据价值 |
+|---|---|
+| `controller 0x11230000 inherited CFG=0x02210499` | 与固件日志里的 `cfg 0x02210499` **完全一致**——驱动继承的是固件留下的同一控制器状态，没有重置 |
+| `EXT_CSD rev 8, 122142720 sectors` | 122,142,720 × 512 = **62.4 GB**，手机 eMMC 的真实容量 |
+| `userdata sectors 13385728..122021854` | **读到了 GPT** 并找到 userdata 分区（Android 的分区表） |
+| `no SHNGROOT manifest` | 预期：userdata 里是 Android 数据，不是 iOS 的 SHNGROOT 布局 |
+
+到这一步，**XNU 已经能在这台手机的 eMMC 上读数据**：控制器、EXT_CSD、GPT、分区边界全部正确。
+
+### 现在的完整状态
+
+```
+内核 → mockfs/APFS 根                    ✅（APFS 挂载已验证）
+     → eMMC 读（控制器/EXT_CSD/GPT）      ✅
+     → 块设备窗口（native-msdc-root=1）    ⏳ 需要 NATIVE_MSDC_BLOCK_DEVICES=1 + storage bindings
+     → 真实 root（userdata 里的 OS/SystemOS） ⏳ 需要造 userdata 镜像
+```
+
+### 下一步的两条依赖
+
+1. **块设备窗口**：`build-native-virtio-bindings.py` 的组件表加 `NativeMsdc`，
+   `--block-devices 1` 重编，启动参数加 `native-msdc-root=1`；
+2. **userdata 镜像**：按 `guide/userdata` 用 IPSW 的 OS/SystemOS 造（含 SHNGROOT manifest + `root_match_volume_uuid`）。
+   造镜像那一步要 macOS 的 AEA 解密/hdiutil —— 这是唯一还需要 CI/macOS 的环节。
+
+### 本次构建踩的时间坑
+
+`scripts/package.sh` 每次都连 UEFI 固件一起构建；本次 32 分钟里约 20 分钟是没变的固件。
+只改内核/payload 时应该用：
+```sh
+python3 ../UniXNU/unixnu build kernel  -D .
+python3 ../UniXNU/unixnu build payload -D .
+python3 ../UniXNU/unixnu bootimg       -D .
+```
