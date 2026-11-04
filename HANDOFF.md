@@ -1618,3 +1618,63 @@ python3 ../UniXNU/unixnu build kernel  -D .
 python3 ../UniXNU/unixnu build payload -D .
 python3 ../UniXNU/unixnu bootimg       -D .
 ```
+
+---
+
+## 0.29 userdata 镜像怎么做 + 块设备 bindings 的进展（2026-11-04 15:5x-16:1x）
+
+### 镜像是框架自带的一条命令
+
+`board.toml` 需要 `[userdata]` 段（起止 LBA 来自**驱动自己读出的 GPT**，即 §0.28 的
+`NativeMsdc: userdata sectors 13385728..122021854`）：
+
+```toml
+[userdata]
+first_lba = 13385728
+last_lba  = 122021854
+lba_bytes = 512          # eMMC 用 512 字节扇区；UFS 板是 4096
+```
+
+然后：
+
+```sh
+cd ~/work/UniXNU
+python3 unixnu userdata -D ../UniXNU-dandelion --dry-run   # 先看窗口与容量
+python3 unixnu userdata -D ../UniXNU-dandelion             # 真做
+```
+
+dry-run 输出（已实测）：
+
+```
+== userdata: OS would be extracted from 044-76040-038.dmg (4918 MiB)
+== userdata: SystemOS would be extracted from 044-76034-038.dmg (3150 MiB)
+```
+
+真跑会从 Apple CDN 下载这两个 DMG（约 8 GiB）并写出
+`out/<device>/<os_profile>/<config>/userdata/userdata-root.img` + 报告（报告里有 fastboot 命令）。
+**正在跑**（16:1x 时已下载 2.8 GB）。
+
+注意：
+- 文档写明 `--skip-setup` 与 `seed-data-grow` 需要 macOS `hdiutil`；主路径在 Linux 上用 `scripts/unixnu/udif.py` 读 DMG；
+- AEA 加密的镜像由框架处理（`userdata.py` 头注释），若这步在 Linux 上受限，就用 CI（`.github/workflows/` 已有 runner 配置）。
+
+### 块设备（native-msdc-root=1）的 bindings：过了三道 macOS 关卡，卡在参考候选
+
+框架的 storage bindings 链路是 `audit-storage-interface.py` → `build-native-virtio-bindings.py`，
+两者原本都假定 macOS。本机已解决：
+
+| 关卡 | 解决方式 |
+|---|---|
+| macOS SDK 的 `TargetConditionals.h` | 造一个最小 SDK 树 + `xcrun` 垫片（`~/work/fake-macos-sdk`、`~/work/fake-bin/xcrun`） |
+| clang 24 比记录工具链更严格（11 个 `-Werror`） | 给 audit 的编译命令加 `-Wno-missing-designated-field-initializers` 等 |
+| `xcrun dwarfdump` | 垫片转成 `llvm-dwarfdump --name X`，已验证输出满足脚本的正则 |
+
+**当前阻塞**：audit 需要一个固定参考候选
+`build/xnu-prelink/native-apfs-load-positive.macho`（框架为 APFS/root 配置钉住的预链接产物），我们没有。
+下一步两条路：
+
+1. 自己写等价的审计：用 `kernel/kernel.json`（预链接计划，16.9 MB，已在）+ 原始 kernelcache 的
+   IOStorageFamily kext 符号表，算出每个方法在**我们内核**里的地址，直接生成 bindings（`.set` 汇编）；
+2. 或者让 CI 跑框架的原版流程产出那个候选。
+
+在这之前，`NATIVE_MSDC_BLOCK_DEVICES=0` 的驱动已经能读 eMMC（§0.28），窗口发布是它之上的最后一步。

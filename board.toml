@@ -175,3 +175,12 @@ owned_memory_size = "0x10000000"   # 512 MiB; DarwinBoot refused the 2 GiB defau
 # TODO: the board's identity seed, as the framework requires.
 chip_id = "6765"   # hex; the board identity this port uses
 unique_chip_id = "required"
+
+# The userdata partition of this phone's eMMC, by the evidence in HANDOFF 0.28:
+# NativeMsdc read the GPT and reported "userdata sectors 13385728..122021854"
+# (512-byte sectors, so lba_bytes = 512 rather than the 4096 the UFS boards use).
+# The framework sizes and manifests the OS/SystemOS windows through this.
+[userdata]
+first_lba = 13385728
+last_lba = 122021854
+lba_bytes = 512
