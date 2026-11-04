@@ -1,5 +1,6 @@
 # Board patch paths, one per line in application order.
 device-emmc-log-console.patch
+device-emmc-console-gate.patch
 #
 # The bsd_init.c hunk that calls sheng_pmgr_run() (the ApplePMGRNub bridge) after
 # bsd_bufferinit(); its code compiles to nothing unless CONFIG_XNU_SHENG_PMGR=y.

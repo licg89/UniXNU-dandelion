@@ -28,6 +28,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--block-devices', type=int, choices=(0, 1), default=0,
                     help='build the window block devices (needs the storage bindings)')
+parser.add_argument('--verified-root', action='store_true',
+                    help='serve the windows only through owner-signed VerifiedRoot policies')
 args = parser.parse_args()
 
 OUT = ROOT / 'build/native-msdc'
@@ -73,6 +75,9 @@ command += [
     f'-DNATIVE_MSDC_BLOCK_DEVICES={args.block_devices}',
     '-I', str(storage_include), '-I', str(OUT), '-I', str(source.parent),
 ]
+if args.verified_root:
+    command += ['-DNATIVE_VERIFIED_BLOCK=1',
+                '-I', str(ROOT / 'kits/VerifiedRoot/include')]
 result = subprocess.run(command, cwd=record['directory'], stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT, text=True)
 (OUT / 'compile.log').write_text(result.stdout)

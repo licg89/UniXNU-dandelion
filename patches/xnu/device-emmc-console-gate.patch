@@ -1,0 +1,20 @@
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -991,6 +991,17 @@
+ 	if (emmc_failed) {
+ 		return;
+ 	}
++	/*
++	 * The block driver drives this controller too.  A console write interleaved with
++	 * one of its transfers corrupts the transfer -- a policy header read came back
++	 * without its magic -- so keep the line buffered until the driver is idle.
++	 */
++	{
++		extern volatile unsigned int native_msdc_busy;
++		if (native_msdc_busy) {
++			return;
++		}
++	}
+ 	if (emmc_index + 1 >= emmc_log_sectors) {
+ 		emmc_failed = true;
+ 		return;

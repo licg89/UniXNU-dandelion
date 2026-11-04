@@ -107,8 +107,11 @@ if len(found) != 1:
     sys.exit(f'cannot uniquely identify the dispatch table (found {len(found)})')
 table, pointers = found[0]
 matched = sum(name in by_name for name in methods)
-if matched != 176:
-    sys.exit(f'expected 176 kernel-bound slots, matched {matched}')
+# 176 is the count for a kernel that does not carry our bindings yet.  Once they are
+# linked in, the .set symbols are absolute exports of the kernel too, so by_name holds
+# all 190 names; the table is still the same one, because identification is by address.
+if matched < 176:
+    sys.exit(f'expected at least 176 kernel-bound slots, matched {matched}')
 for index, name in enumerate(methods):
     if name not in by_name and not (text['va'] <= pointers[index] < text['va'] + text['size']):
         sys.exit(f'slot {index} ({name}) is neither a kernel export nor kext code')
@@ -179,12 +182,14 @@ bindings = {
 for index, name in enumerate(methods):
     if name in (PURE_NAME,) or name in bindings:
         continue
-    # Only the kext-owned slots need an absolute address: the other 176 names are
-    # kernel exports (IOService, IORegistryEntry, ...) that the kernel already
-    # defines, and binding them again produces "162 duplicate symbols".
-    if name in by_name:
+    # Only the kext-owned slots need an absolute address.  Test that by where the slot
+    # points, not by whether the name is exported: after one build our own bindings are
+    # exports too, and binding the kernel-implemented slots again is what produced
+    # "162 duplicate symbols".
+    target = pointers[index]
+    if not (text['va'] <= target < text['va'] + text['size']):
         continue
-    bindings.setdefault(name, pointers[index])
+    bindings.setdefault(name, target)
 
 assembly = out / 'storage-bindings.S'
 assembly.write_text(''.join(f'.globl {name}\n.set {name}, {value:#x}\n'
@@ -192,10 +197,20 @@ assembly.write_text(''.join(f'.globl {name}\n.set {name}, {value:#x}\n'
 subprocess.run(['/usr/bin/xcrun', 'clang', '-target', 'arm64-apple-ios17.0', '-c',
                 str(assembly), '-o', str(out / 'storage-bindings.o')], check=True)
 if args.object:
+    # One archive for everything the storage driver needs: the bound driver object,
+    # the dispatch-table bindings, and -- when the verified-root build produced them --
+    # the verifier, its XNU crypto adapter and the owner key.  The kernel link picks up
+    # this file by name, and a second -force_load entry in the defconfig does not
+    # survive the environment hand-off.
+    extra = sorted((ROOT / 'build/verified-root').glob('*.o'))
     archive = out / 'libStorageBindings.a'
     archive.unlink(missing_ok=True)
     subprocess.run(['llvm-ar', '--format=darwin', 'rcs', str(archive),
-                    str(args.object), str(out / 'storage-bindings.o')], check=True)
+                    str(args.object), str(out / 'storage-bindings.o'),
+                    *[str(o) for o in extra]], check=True)
+    if extra:
+        print(f'included {len(extra)} verified-root objects: '
+              + ', '.join(o.name for o in extra))
     print(f'{archive} ({archive.stat().st_size} bytes): driver object plus {len(bindings)} bindings')
     # The kernel link picks up build/native-msdc/libNativeMsdc.a by name, so the
     # archive it finds there has to be the bound one; otherwise the same object

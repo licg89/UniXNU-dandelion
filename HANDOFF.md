@@ -1967,3 +1967,78 @@ NativeMsdc README 与实测 panic 指向同一条路：
   —— 之前 APFS 报的 ETIMEDOUT/EIO 很可能就是这个竞争；
 - `board.toml` 里 `[payload.adt]` 不能声明两次（我一度写成两段，TOML 直接报错），
   `root_match_volume_uuid` 必须并进已有的 `[payload.adt]`。
+
+---
+
+## 0.35 VerifiedRoot 接入：策略区读通，只差条目尺寸（2026-11-05 01:0x）
+
+### 已完成
+
+1. **组件已取**：`[components] include` 加 `"VerifiedRoot"`（`github.com/UniXNU/VerifiedRoot`，
+   rev `974f043d…`），框架自动 fetch 到 `tree/kits/VerifiedRoot`（真实路径
+   `/root/work/UniXNU/kits/VerifiedRoot`，含 `include/ src/ tools/ adapters/`）。
+
+2. **owner 密钥与签名**：`tools/manifest.py` 用 RSA-3072 私钥签整幅窗口的 4096 字节块哈希，
+   产出 `VROOT01` 信封 + **395 字节**的 `trusted-key.bin`（`VR_KEY_BYTES`）。
+
+3. **verifier 归档**：`scripts/build-verified-root.py` 编译 `src/verified_root.c` +
+   `adapters/xnu_crypto.c` + owner key 符号 → `build/verified-root/libVerifiedRoot.a`。
+   两个坑：① `.c` 必须用 `-x c` 放在**源文件之前**，否则按 C++ 编译后文件作用域 `const`
+   （`verified_root_key`、`vr_xnu_crypto`）变成内部链接、根本不出符号；② 随之要过滤
+   `-std=gnu++2b` 之类的 C++ 专用开关。
+
+   另一个坑：defconfig 里**两个** `-force_load` 只有第一个生效，所以把 vr 的三个 `.o`
+   直接并进 `libStorageBindings.a`（`derive-storage-symbols.py` 已经这么做）。
+
+4. **策略区写入**：`scripts/write_policy_region.py`，位置必须等于驱动的
+   `policyRegionOffset()` = **最远窗口末端按 1 MiB 向上对齐**
+   （本次 = `0x22f400000` = 9,382,658,048，也正好等于原始镜像大小）；
+   布局 `A04RPOL1` + version 1 + count + total_bytes + 条目表 + 4064 处 SHA-256。
+   镜像尾部必须按 4096 对齐，否则 fastboot 稀疏写入报
+   `don't care size … is not a multiple of the block size`。
+
+5. **控制台门控**（关键修复）：`patches/xnu/device-emmc-console-gate.patch` 让 `emmc_flush()`
+   在驱动传输期间直接返回（读 `native_msdc_busy`）。之前策略区 8 个扇区的读取被控制台写入
+   打断，读回来的头部**没有 magic**（日志里那行乱码就是现场）。
+
+### 本轮的实测日志
+
+```
+NativeMsdc: reading the signed root policy, 47485472 bytes at userdata +9382658048
+NativeMsdc: signed root policy read in 147604 ms, 1 entries
+NativeMsdc: OS not published: no policy entry has this window's size (vr_open -1)
+```
+
+即：策略区**读成功了**（1 个条目），只是条目与窗口尺寸不匹配。
+
+### 唯一剩下的问题（已定位，未做完）
+
+`selectPolicy()` 按**窗口字节数**精确匹配条目，而 `configureVerification()` 还会校验
+`view.image_bytes == windowBytes`。我第一次 carve 时按整 MiB 取整，签名的 `image_bytes`
+是 6,077,546,496，而窗口是 **6,077,580,800**（+34,304）；第二次按 4096 取整又少了 1,536 字节
+（该窗口不是 4096 的整数倍：1,483,784.375 块）。
+
+**正确做法**：按 **512 字节** carve（`6,077,580,800 / 512 = 11,870,275` 扇区），
+让文件长度**正好**等于窗口大小，再签名；`manifest.py` 会按 `(size+4095)/4096` 处理最后一块。
+SystemOS 是可选窗口，可后做（或同样精确 carve 后作为第二个条目）。
+
+### 宿主侧故障（需要先修）
+
+WSL 的 vhdx 挂载失败，已以只读回退：
+
+```
+wsl: An error occurred mounting the distribution disk, it was mounted read-only as a fallback.
+```
+
+处理顺序：`wsl --shutdown` → 重新进入；仍只读就 `e2fsck -f /dev/sdX`（用 `wsl --mount` 挂 vhdx，
+或 `wsl --manage Ubuntu --move`）。空间占用主要来自本轮的大镜像：
+`os-window.img` 6.07 GB、`os-apfs.img` 6.07 GB、`systemos.img` 3.30 GB、`os-exact.img` 6.08 GB、
+`userdata-root-signed.img` 9.43 GB —— 除最后一项外都可随时重建，优先删它们。
+
+### 已落在 D: 的产物（无需 WSL 即可复现刷机）
+
+| 文件 | 说明 |
+| --- | --- |
+| `D:\aios\out3\boot-gate.img` | 带控制台门控 + 块设备 + verified root 的内核（`af030600…`）|
+| `D:\aios\out3\userdata-signed.img` | 带 `A04RPOL1` 策略区的 9.43 GB 镜像（条目尺寸待修）|
+| `D:\aios\artifacts\boot_backup.img` | Android 原厂 boot（恢复用）|

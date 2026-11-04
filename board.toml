@@ -27,7 +27,11 @@ kit = "dandelion"
 #         dandelion-gic-mode.patch and zz-dandelion-cntp-timer.patch.
 # ArmDTPlatform: the device-tree platform expert - replaces the generic-platform-expert
 #         fallback this port had to patch into IOKit.
-include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink", "DarwinBoot", "RamBlock"]
+include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink", "DarwinBoot", "RamBlock",
+           # The authenticated-block kit: iPadOS wants the root volume authenticated, and this
+           # is what serves the eMMC windows through owner-signed policies (the
+           # NATIVE_VERIFIED_BLOCK build of NativeMsdc).
+           "VerifiedRoot"]
 
 [kernel]
 defconfig = "dandelion_defconfig"
@@ -68,7 +72,13 @@ patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches
   # bindings needed -- and still brings the controller up and reads the GPT, which
   # is what the first step verifies with native-msdc-persist=1.
   #
-  "build-native-msdc.py --block-devices 1",
+  #
+  # The verifier the windows are served through: iPadOS refuses an unauthenticated
+  # root ("rootvp not authenticated after mounting"), so the driver signs and checks
+  # every 4096-byte block against our own owner key.
+  #
+  "build-verified-root.py --key /root/work/vr/os.envelope/trusted-key.bin",
+  "build-native-msdc.py --block-devices 1 --verified-root",
   #
   # IOStorageFamily's addresses are derived from our own kernel's dispatch table
   # (docs/devices/sirius: 176 of the 190 slots are kernel exports, one __DATA_CONST
