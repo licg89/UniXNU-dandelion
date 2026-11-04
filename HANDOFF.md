@@ -1442,3 +1442,59 @@ truncate -s 4M image.apfs
          真实 APFS 根卷                                ⏳（镜像已就绪，等手机）
          持久存储 eMMC                                  ⏳（驱动代码已写，需 link-stub/组件化）
 ```
+
+---
+
+## 0.26 APFS 那次的真相：mockfs 把它盖住了；eMMC 有现成社区驱动（2026-11-04 14:5x-15:0x）
+
+### APFS 测试结果解读
+
+日志（`out/klog12`/`/tmp/k12.txt`）：
+
+```
+Added memory device md0/rmd0 ... for 0x400000      ← 4 MiB，就是我们的 APFS 容器
+BSD root: md0, major 3, minor 0
+load_init_program: attempting to load /sbin/launchd
+load_init_program: failed loading /sbin/launchd: errno 8     ← ENOEXEC
+```
+
+**没有任何 `apfs_vfsop_mountroot` 行**，而 errno 8 说明根卷是 **mockfs**：它把整块设备当成
+`/sbin/launchd` 交给 exec（APFS 容器开头不是 Mach-O → ENOEXEC）。
+
+也就是说：`vfs_mountroot` 里 APFS 没挂上（连日志都没走到），然后 **最后一个 mountroot——mockfs——总是成功**，
+把失败盖掉了。这是 `CONFIG_XNU_SOURCE_MOCKFS=y` 的副作用。
+
+**处理**：已把 `CONFIG_XNU_SOURCE_MOCKFS` 关掉并重建（`boot.img` sha256 `258888b9…`），
+下一次启动日志会直接显示 `apfs_mountroot` 的真实结果，而不是被 mockfs 兜底。
+
+### eMMC：社区已经有 MediaTek MSDC 驱动
+
+用户点出的文档：
+
+| 组件 | 仓库 | 范围 | 状态 |
+|---|---|---|---|
+| `NativeMsdc` | [mouseos/NativeMsdc](https://github.com/mouseos/NativeMsdc) | MT8167 MSDC eMMC 块驱动，发布根镜像窗口 + 持久 Data | “可针对 xnu-10063.141.1 头文件编译”；寄存器序列在早期 a04br3 移植上用过 |
+| `NativeEmmc` | [Dracen-W/NativeEmmc](https://github.com/Dracen-W/NativeEmmc) | Redmi Note 9（merlinx，同为 MTK）eMMC 驱动 | 仓库存在，未记录真机结果 |
+
+已克隆 NativeMsdc 到 `~/work/NativeMsdc`（1500 行 + 599 行头）。其 README 说明了我们缺的那一环：
+
+> “They subclass the original IOBlockStorageDevice of the prelinked IOStorageFamily,
+> so the kernel link needs the **storage bindings**.”
+
+**storage bindings 在框架里的实现**是 `scripts/build-native-virtio-bindings.py`：它把驱动对象里的
+vtable 重定位（`__ZTV<Component>`）解析到**参考预链接内核**里原始 IOStorageFamily 的真实符号地址，
+生成 bindings 对象再参与链接。它当前支持的组件是 `VirtioMmioBlock / RamBlock / NativeVirtioBlock /
+NativeRamBlock`——**加一个 `NativeMsdc` 是延长这个脚本的 component 映射表**，正是 §0.22 里“link-stub 或组件化”
+那条路的官方做法。
+
+另外核实：**上游 `UniXNU/UniXNU` main 分支没有 `NATIVE_MSDC` 支持**（`build-xnu-4k-baseline.sh` 里 0 处），
+所以这套要自己接：defconfig 开关、archive 配方、personality patch（匹配 `mediatek,*-mmc` 节点）、bindings 步骤。
+
+### eMMC 接入的具体工作清单（下一步）
+
+1. `NativeMsdc.cpp` 适配 MT6762G：MSDC0 基址 0x11230000、CMD/DMA 序列参考固件 `DandelionEmmcDxe.c`；
+   MT8167 与 MT6762G 的 MSDC IP 同源，先按 README 的 PIO 轮询路径跑通；
+2. 扩展 `build-native-virtio-bindings.py` 的 component 表加入 `NativeMsdc`（生成 storage bindings）；
+3. defconfig 加 `CONFIG_XNU_NATIVE_MSDC=y`；`[kernel] archives` 加配方；`patches/xnu` 加 personality patch；
+4. 启动参数 `native-msdc-root=1` 先只读发布窗口，再用 `native-msdc-persist=1` 验证持久区；
+5. 真机验证：读出的块与 `adb shell dd` 的同 LBA 内容逐字节比对（README 也这么要求）。
