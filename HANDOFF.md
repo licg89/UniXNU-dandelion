@@ -2042,3 +2042,60 @@ wsl: An error occurred mounting the distribution disk, it was mounted read-only 
 | `D:\aios\out3\boot-gate.img` | 带控制台门控 + 块设备 + verified root 的内核（`af030600…`）|
 | `D:\aios\out3\userdata-signed.img` | 带 `A04RPOL1` 策略区的 9.43 GB 镜像（条目尺寸待修）|
 | `D:\aios\artifacts\boot_backup.img` | Android 原厂 boot（恢复用）|
+
+---
+
+## 0.36 精确签名刷入完毕，结果待读（2026-11-05 02:2x）
+
+### 这一轮做了什么
+
+`0.35` 定位到"条目尺寸与窗口不匹配"后，按 **512 字节**精确 carve 并重新签名：
+
+```
+window: 6077580800 bytes = 11870275 sectors at offset 1048576
+carved: 6077580800 bytes (want 6077580800)
+signed image bytes: 6077580800 -> matches the window: True
+```
+
+信封 `manifest.bin` 47,481,664 字节，策略区 `47,485,760` 字节（头部 + 1 个条目），
+写回镜像 `D:\aios\out3\userdata-signed.img` 的 `0x22f400000`，头部 SHA-256 已重算，
+文件保持 4096 对齐（9,430,892,544 字节）。随后刷入 userdata + `boot-gate.img` 并启动。
+
+**结果尚未读取**：手机停在 iOS 内核上，既不在 adb 也不在 fastboot（USB 设备都不出现），
+需要物理按键恢复。日志仍在 `flashinfo@LBA 30000`，不会丢。
+
+### 早上第一件事
+
+```powershell
+# 长按电源 10 秒 → 音量下+电源 进 fastboot，然后：
+powershell -ExecutionPolicy Bypass -File D:\aios\_work\collect_after_boot.ps1
+```
+
+脚本会：刷回 Android boot → `fastboot -w` → 等 Android → `adb root` → 拉 `flashinfo`
+→ 解码并打印 `NativeMsdc` 与根卷相关的行（**不用拍照、不用装 Magisk**）。
+
+### 两种可能的结果与下一步
+
+- **成功**：日志出现 `NativeMsdc: OS verified against its signed policy`，并且不再停在
+  `rootvp not authenticated`。那就该继续看它卡在哪一步（launchd 的 exec、或下一个缺失的 kext 服务）。
+- **失败**：日志会给出 `vrReason` 的具体值（`VR_KEY`/`VR_SIGNATURE`/`VR_HASH_TABLE`/`VR_BLOCK`），
+  按值定位：`VR_KEY` = 内核里那个 395 字节 anchor 与签名用的公钥不一致（重新生成
+  `verified_root_key.o` 后必须重连内核）；`VR_BLOCK` = 某个 4096 字节块的哈希不符
+  （窗口 carve 的范围与驱动读的窗口范围不一致）；`VR_SIGNATURE` = 私钥/公钥不配对。
+
+### 一个已知的性能问题（成功后再优化）
+
+策略区读取花了 **147,604 ms**（47 MB）。PIO + 64 KiB 分块在这个控制器上大约 320 KB/s，
+启动时读 47 MB 太慢。方向：`native-msdc-dma=0/1` 对比、加大 CMD18 块数、
+或让 `native-msdc-vcache=1` 缓存已验证块（驱动已有该开关）。
+
+### 宿主侧：C: 空间已彻底修好
+
+C: 曾被 WSL 的虚拟磁盘（55 GB，位于 `%LOCALAPPDATA%\wsl\{guid}\ext4.vhdx`）塞满到 0 字节，
+导致 WSL 只读挂载。处理：删 Docker 数据盘与各类缓存腾出 11 GB → `wsl --export`（25.9 GB tar，
+5.8 分钟）→ `wsl --unregister` → `wsl --import Ubuntu D:\wsl\Ubuntu <tar>`（10.2 分钟）→ 删除 tar。
+
+结果：**C: 66 GB 可用，D: 56 GB 可用**，WSL 现在位于 D:，以后膨胀不再吃 C:。
+`diskpart`/`Optimize-VHD` 需要管理员权限，本会话无法提权，所以走了导出/导入这条路。
+另外教训：**不要在 `/mnt/d` 上用 `bs=512` 读大文件**（1,187 万次小块写，20 分钟没完成）；
+用 4 MiB 块 + `truncate -s` 到精确长度即可。
