@@ -1279,3 +1279,71 @@ apfs_mountroot failed: 79
 控制台    flashinfo@LBA 30000 文本日志可用（klog10..16）                                    ✅
 APFS      本机造不出来（apfsprogs 只有 apfsck），已加 CI workflow `.github/workflows/apfs-fixture.yml` ⏳
 ```
+
+---
+
+## 0.23 用户态 exec：从 "SIGKILL" 一路查到具体检查（2026-11-04 13:0x-14:1x）
+
+### 屏幕那句话的确切含义
+
+`unexpected SIGKILL of init with reason -- namespce 9 code 0x1`：
+
+- namespace 9 = **`OS_REASON_EXEC`**（`bsd/sys/reason.h:96`），不是 codesigning；
+- code 1 = **`EXEC_EXIT_REASON_BAD_MACHO`**（同文件 `reason.h:248`）。
+
+### 走过的三条死路（都有实测依据，不是猜的）
+
+| 尝试 | 结果 |
+|---|---|
+| `amfi_get_out_of_my_way=1` | 无效：问题不在 AMFI，在 Mach-O 装载器 |
+| `cs_enforcement_disable=1` | **panic**：`can't has cs_enforcement_disable @AppleMobileFileIntegrity.cpp:5261` |
+| 手工写 `trust_cache_module1`（version 1 / 22 字节条目） | **`DARWINBOOT: boot refused: Compromised Data`**：DarwinBoot 校验的是另一种 bundle 格式（`count + offset[] + module(version **2**, 24 字节条目)`） |
+
+修好 bundle 后内核日志出现 `loaded external trust cache module: 0` —— **trust cache 这条路通了**。
+
+### 决定性证据：诊断打印
+
+给内核加了一条临时补丁（`patches/xnu/dandelion-exec-diag.patch`），在 `kern_exec.c` 的
+`lret = load_machfile(...)` 失败分支里打印返回码，eMMC 日志立刻给出：
+
+```
+DANDELION-EXEC: load_machfile lret=4 errno=85 cputype=16777228 flags=0x50c
+DANDELION-EXEC: header filetype=2 ncmds=13 sizeofcmds=704
+```
+
+- `lret=4` = **`LOAD_FAILURE`**（`bsd/kern/mach_loader.h:135`，不是 `LOAD_BADMACHO=2`）；
+- `errno=85` = **`EBADEXEC`**。
+
+### 根因：静态可执行不能只有 LC_MAIN
+
+`ld64.lld` 的 `-static` **未实现**（只给 warning），所以 fixture 实际是动态镜像（`LC_LOAD_DYLINKER`
++ chained fixups）。剥掉这些命令后它只剩 `LC_MAIN`，而 XNU 的 `result->using_lcmain` 是 **dyld 路径**
+专用的；静态 `MH_EXECUTE` 应该带 **`LC_UNIXTHREAD`**（`ARM_THREAD_STATE64`，pc = 入口）——
+这正是 `ld -static` 在 macOS 上会生成的形态。
+
+已实现 `scripts/make_unixthread_exec.py`：去掉 `LC_MAIN`、追加 `LC_UNIXTHREAD`（34 个 uint64，
+count 按 32 位字 = 68）、清 `MH_PIE`；再用 `scripts/resign_pages.py` 重算 13 个页哈希并生成新的
+trust cache bundle（新 CDHash `cbfc2438…`）。
+
+### 本机（Linux）造 fixture 的完整工具链（都在 `scripts/`）
+
+| 脚本 | 作用 |
+|---|---|
+| `strip_dynamic_load.py` | 去掉 `LC_LOAD_DYLINKER` / `LC_DYLD_CHAINED_FIXUPS` / `LC_DYLD_EXPORTS_TRIE`，清 `MH_DYLDLINK` |
+| `make_unixthread_exec.py` | `LC_MAIN` → `LC_UNIXTHREAD`（静态入口），清 `MH_PIE` |
+| `resign_pages.py` | 重算 CodeDirectory 页哈希（大端），输出新 CDHash + loader 格式 trustcache bundle |
+| `cdhash_trustcache.py` | 从已签名 Mach-O 解析 CDHash → bundle（含 DarwinBoot 的 `ValidTrustCaches` 规则） |
+| `make_mockfs_image.py` | 组装 `N4KROOT` 容器（launchd@0x1000、probe@4K 对齐） |
+
+### 待验证
+
+镜像 `boot-intc.img`（sha256 `cb0d1e67…`）已构建：mockfs 容器 + `LC_UNIXTHREAD` fixture +
+匹配的 trust cache。刷入后看两件事：
+1. 若出现 `DANDELION-EXEC` 行 → 仍是 `LOAD_FAILURE`，按 lret 继续查；
+2. 若没有该行、也没 panic → **PID 1 在 EL0 跑起来了**。
+
+### 备用路线（若 Linux 产物始终不等价）
+
+框架记录里跑通的 fixture 是 `build-native-user-fixture.py` 在 **macOS** 上用
+`ld -static` + `codesign` 生成的。仓库已备好 `.github/workflows/el0-fixture.yml`：
+在 fork 里跑一次即可拿到官方 `launchd.macho` + `trustcache.bundle`，替换 payload 里的两个输入即可。

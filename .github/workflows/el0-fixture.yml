@@ -1,0 +1,53 @@
+name: el0-fixture
+
+# Builds the static EL0 test init the way the framework's records describe it.
+#
+# The gta4l record says a "signed static EL0 fixture" ran as PID 1 under a
+# RAM-backed mockfs root *without* AMFI bypass arguments.  The recipe is
+# scripts/build-native-user-fixture.py, and every step it needs is macOS-only:
+#
+#   xcrun ld -static ...            real ld64 supports -static; ld64.lld does not
+#                                   ("Option `-static' is not yet implemented"),
+#                                   so a Linux link stays dynamic and mockfs exec
+#                                   fails as OS_REASON_EXEC / BAD_MACHO
+#   codesign --sign - --pagesize 4096   no codesign on Linux
+#   codesign --display            -> CDHash -> trustcache.bundle
+#
+# Run this in a fork, download the artifact, and give the two files to the payload:
+#
+#   launchd.macho        -> the mockfs container's launchd blob (N4KROOT, offset 4096)
+#   trustcache.bundle    -> owner_trust_cache in unixnu.local.toml
+#
+# mockfs image (Linux, from this repository): scripts/make_mockfs_image.py
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixture:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: licg89/UniXNU
+          path: UniXNU
+          submodules: recursive
+      - name: Build the static EL0 fixture
+        run: |
+          set -eux
+          cd UniXNU
+          python3 scripts/build-native-user-fixture.py
+          ls -l build/native-user-fixture
+      - uses: actions/upload-artifact@v4
+        with:
+          name: el0-fixture
+          path: |
+            UniXNU/build/native-user-fixture/launchd.macho
+            UniXNU/build/native-user-fixture/trustcache.bundle
+            UniXNU/build/native-user-fixture/trustcache.json
+            UniXNU/build/native-user-fixture/addresses.json
+          if-no-files-found: error

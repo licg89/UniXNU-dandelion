@@ -1,0 +1,12 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -1346,5 +1346,9 @@
+ 	lret = load_machfile(imgp, mach_header, thread, &map, &load_result);
+ 	if (lret != LOAD_SUCCESS) {
+ 		error = load_return_to_errno(lret);
++		printf("DANDELION-EXEC: load_machfile lret=%d errno=%d cputype=%d flags=%#x\n",
++		    lret, error, imgp->ip_origcputype, imgp->ip_flags);
++		printf("DANDELION-EXEC: header filetype=%u ncmds=%u sizeofcmds=%u\n",
++		    mach_header->filetype, mach_header->ncmds, mach_header->sizeofcmds);
+ 
+ 		KERNEL_DEBUG_CONSTANT(BSDDBG_CODE(DBG_BSD_PROC, BSD_PROC_EXITREASON_CREATE) | DBG_FUNC_NONE,

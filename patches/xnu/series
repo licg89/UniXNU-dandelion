@@ -11,3 +11,10 @@ sheng-platform-power.patch
 # available at kernel link time (see board.toml [kernel] archives).
 #
 # dandelion-emmc.patch
+#
+# Temporary diagnostic: prints the load_machfile return code and the image header
+# when exec fails, so the eMMC console names the reason instead of leaving us to
+# guess at OS_REASON_EXEC / EXEC_EXIT_REASON_BAD_MACHO.  Remove once the mockfs
+# fixture runs.
+#
+dandelion-exec-diag.patch
