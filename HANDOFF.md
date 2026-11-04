@@ -1396,3 +1396,49 @@ LK → BootShim → SILICIUM_UEFI.fd
 2. **持久存储**：eMMC 主机驱动（`package/DandelionEmmc.cpp` 已写好、可编译），需要 link-stub 或组件化才能
    链进内核（见 §0.22）；
 3. **Data 卷**：`--data-ramdisk` + RamBlock（§0.21 已验证 md0 路径），APFS 版 Data seed 同样来自 CI。
+
+---
+
+## 0.25 APFS 卷可以在本机造了（不用 macOS / 不用 CI）（2026-11-04 14:2x-14:5x）
+
+之前判断"APFS 必须 macOS"是**错的**：`apfsprogs` 的 Ubuntu 包里只有 `apfsck`，但上游仓库自带 **`mkapfs`**，
+本机编译即可：
+
+```sh
+git clone --depth 1 https://github.com/linux-apfs/apfsprogs.git /tmp/apfsprogs
+make -C /tmp/apfsprogs/mkapfs          # 产出 mkapfs/mkapfs
+truncate -s 4M image.apfs
+/tmp/apfsprogs/mkapfs/mkapfs -L DANDELION image.apfs 1024    # 4 KiB 块，1024 块
+```
+
+实测可用尺寸：2 / 3 / 4 / 6 / 8 MiB 都能生成（`NXSB` 魔数落在 0x20）。16 MiB 塞不进 payload
+（`the payload files take 65 MiB; raise size_mib (now 56)`），**4 MiB 是安全选择**。
+
+脚本：`_work/stage_apfs_seed.sh <MiB>`。
+
+### 这一版 payload 已核对（手机一到就能测）
+
+| 项 | 值 |
+|---|---|
+| `Payloads/scratch-data.img` | 4,194,304 B，偏移 0x20 = `NXSB` ✓ |
+| `unixnu.toml` | `initrd = "Payloads/scratch-data.img"`，`args = "-v serial=3 sheng-pmgr=2 rd=md0 amfi_get_out_of_my_way=1"` |
+| ADT `/chosen/memory-map` | `RAMDisk=[0x0 0x0], TrustCache=[0x0 0x0]`（等 DarwinBoot 填） |
+| boot.img | 59,494,400 B，sha256 `00188063…` |
+| 内核 | 带 `dandelion-exec-diag.patch`（失败时会打印 `DANDELION-EXEC`），构建时间 13:36 |
+
+### 判据（`_work/test_ios_boot.sh` 一键跑完并打印）
+
+- 出现 `apfs_vfsop_mountroot: apfs: mountroot called!` 且**没有** `apfs_mountroot failed: 79`
+  → **APFS 根卷挂载成功**（这一版镜像里没有任何文件，所以随后会是 `failed loading /sbin/launchd: errno 2`，
+  那正是"挂上了但卷是空的"的正确表现）；
+- 仍是 `apfs_mountroot failed: 79` → mkapfs 造的容器被内核拒绝，需要换布局（记录 size/块大小/特性）；
+- 出现 `DANDELION-EXEC` → exec 侧又有新问题，按 lret 继续。
+
+### 现状小结（这一夜的完整成果）
+
+```
+阶段 4-5  内核入口/MMU/CPU/GIC/AMFI                    ✅
+阶段 6    根卷：md0 + mockfs + trust cache             ✅（PID 1 在 EL0 运行）
+         真实 APFS 根卷                                ⏳（镜像已就绪，等手机）
+         持久存储 eMMC                                  ⏳（驱动代码已写，需 link-stub/组件化）
+```
