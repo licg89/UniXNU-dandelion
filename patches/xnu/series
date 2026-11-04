@@ -18,3 +18,8 @@ sheng-platform-power.patch
 # fixture runs.
 #
 dandelion-exec-diag.patch
+#
+# Instantiates the vendored MSDC driver on the board's IOPlatformDevice, since it
+# is linked into the kernel instead of being loaded as a kext.
+#
+dandelion-msdc.patch

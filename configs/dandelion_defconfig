@@ -48,7 +48,12 @@ CONFIG_XNU_EMMC_SERIAL=y
 #
 CONFIG_XNU_SHENG_PMGR=y
 #
-# The eMMC host archive would go here:
+# The vendored MediaTek MSDC driver (community NativeMsdc, adapted).  Built
+# without the window block devices it links on its own, so it needs no storage
+# bindings: `native-msdc-persist=1` then proves the controller and the GPT read.
+CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/native-msdc/libNativeMsdc.a"
+#
+# The older hand-written driver would go here:
 #   CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/dandelion-emmc/libDandelionEmmc.a"
 # but linking it fails: IOBlockStorageDevice's vtable and every method of it are
 # undefined at kernel link time, because IOStorageFamily is a prelinked kext.

@@ -62,6 +62,14 @@ patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches
   #
   "build-arm-driver.py RamBlock",
   #
+  # The vendored community MSDC driver (mouseos/NativeMsdc, BSD-2-Clause-Patent),
+  # adapted for this board's "mediatek,mt6765-msdc" node.  Built without the window
+  # block devices (NATIVE_MSDC_BLOCK_DEVICES=0) it links on its own -- no storage
+  # bindings needed -- and still brings the controller up and reads the GPT, which
+  # is what the first step verifies with native-msdc-persist=1.
+  #
+  "build-native-msdc.py",
+  #
   # The eMMC host (package/DandelionEmmc.cpp, build-dandelion-emmc.py) compiles and
   # archives cleanly, but it cannot be linked yet: it subclasses
   # IOBlockStorageDevice, and IOStorageFamily is a prelinked kext whose symbols do
@@ -107,14 +115,28 @@ volume = "DANDELION"
 size_mib = 56   # the files take 48 MiB and must fit strictly inside; 56 + 3 MiB FD still fits 64 MiB
 loader = "firmware"
 title = "UniXNU"
-kernel_args = ["-v", "serial=3", "sheng-pmgr=2"]
+kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "rd=md0", "amfi_get_out_of_my_way=1",
+               "native-msdc-persist=1"]
 #
-# rd=md0 was here to make the RAM disk the root (the reference ports use it the
-# same way: j716f with an APFS RAMDisk, rmx1971 with rd=ufsroot0).  It works --
-# the kernel reaches container_rootmount on /dev/md0 with the exact block count of
-# the seed -- but the seed is HFS+ and iOS 17 only runs apfs_vfsop_mountroot, so
-# the mount fails with 79.  With CONFIG_XNU_SOURCE_MOCKFS=y the framework's
-# documented path is a mock root instead, and rd= overrides it, so it is off.
+# amfi_get_out_of_my_way=1 keeps AMFI's policy checks relaxed for this developer
+# image.  cs_enforcement_disable=1 was tried and removed: AMFI refuses it outright
+# ("can't has cs_enforcement_disable" @AppleMobileFileIntegrity.cpp:5261) and
+# panics.  What actually admits init is the trust cache: the fixture is ad-hoc
+# signed by ld64.lld (CodeDirectory v0x20400, SHA-256, 4 KiB pages) and its CDHash
+# goes into a trust_cache_module1 that the payload carries as owner_trust_cache
+# (see unixnu.local.toml and scripts/cdhash_trustcache.py).  The framework's own flow signs the fixture and ships a trust-cache bundle
+# (build-native-user-fixture.py calls codesign and writes trustcache.bundle, which
+# the payload takes as owner_trust_cache), but codesign does not exist on this
+# Linux host, so the boot argument is the way to get PID 1 past AMFI here.
+#
+# rd=md0 makes the RAM disk the root device (the reference ports use it the same
+# way: j716f with an APFS RAMDisk, rmx1971 with rd=ufsroot0).  The seed is HFS+,
+# so apfs_vfsop_mountroot refuses it with 79 -- and then mockfs, which
+# vfs_conf.c registers as the last mountroot filesystem, is what mounts.  That is
+# the combination the gta4l record calls a "RAM-backed mockfs root": the RAM disk
+# is the device, mockfs is the filesystem.  Both halves are needed: without
+# rd=md0 the kernel waits in IOKitBSDInit for an IOMedia and never reaches
+# vfs_mountroot at all (measured 2026-11-04 09:11 with a cleared log block).
 #
 # sheng-pmgr=2 is what makes the bridge publish the original ApplePMGRNub
 # (package/ShengPlatformPower.cpp: sheng_pmgr_run() returns immediately unless the

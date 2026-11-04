@@ -1498,3 +1498,56 @@ NativeRamBlock`——**加一个 `NativeMsdc` 是延长这个脚本的 component
 3. defconfig 加 `CONFIG_XNU_NATIVE_MSDC=y`；`[kernel] archives` 加配方；`patches/xnu` 加 personality patch；
 4. 启动参数 `native-msdc-root=1` 先只读发布窗口，再用 `native-msdc-persist=1` 验证持久区；
 5. 真机验证：读出的块与 `adb shell dd` 的同 LBA 内容逐字节比对（README 也这么要求）。
+
+---
+
+## 0.27 eMMC：社区 NativeMsdc 已移植进内核并链接成功（2026-11-04 15:0x-15:4x）
+
+### 做了什么
+
+1. **移植**：把 [mouseos/NativeMsdc](https://github.com/mouseos/NativeMsdc)（BSD-2-Clause-Patent，
+   1500 行 + 599 行头）放进 `package/NativeMsdc.{cpp,h}`，并在文件头写明来源与许可；
+   对 dandelion 的唯一改动是 personality 的 `compatible`：`mediatek,mt8167-mmc` → **`mediatek,mt6765-msdc`**
+   （与 `dts/dandelion.dts` 的节点一致，3 处）；
+2. **构建**：`scripts/build-native-msdc.py` —— 用内核自己的 `IOPlatformExpert.cpo` 编译记录 + `build/storage-abi/include`
+   编译，产出 `build/native-msdc/libNativeMsdc.a`。**首次编译即通过**；
+3. **链接**：`board.toml [kernel] archives` 加 `build-native-msdc.py`；
+   defconfig 的 `CONFIG_XNU_EXTRA_LD_ARCHIVES` 指向该归档；
+4. **实例化**：驱动原本靠 kext 的 Info.plist personality 匹配，内核内链接版本不会自己起来——
+   在 `NativeMsdc.cpp` 末尾加 `dandelion_msdc_install()`：用 `IOService::addMatchingNotification`
+   监听 `IOPlatformDevice`，匹配到 `/arm-io/emmc` 就 `new NativeMsdc` → `probe` → `attach` → `start`；
+5. **bsd_init 钩子**：`patches/xnu/dandelion-msdc.patch`（在 sheng 桥之后调用 `dandelion_msdc_install()`），
+   `git apply --check` 干净；
+6. **启动参数**：`native-msdc-persist=1`（驱动默认不碰控制器；这个参数让它读 GPT 并验证持久区）。
+
+### 为什么先按 `NATIVE_MSDC_BLOCK_DEVICES=0` 构建
+
+驱动 README：窗口块设备（`NativeMsdcBlock : IOBlockStorageDevice`）“subclass 了预链接 IOStorageFamily 的类，
+所以内核链接需要 **storage bindings**”。`BLOCK_DEVICES=0` 的版本不含块设备，**自己就能链接**，
+但仍会做控制器 bring-up + 读 GPT —— 先用它验证硬件访问是真实的。
+
+窗口块设备那一步（要 root 卷才需要）需要：
+- 把 `build-native-virtio-bindings.py` 的组件表扩展到 `NativeMsdc`（它把 `__ZTV<Component>` 解析到参考预链接内核的
+  IOStorageFamily 真实地址），
+- 然后 `--block-devices 1` 重编，并把 `native-msdc-root=1` 加进启动参数。
+
+### 构建结果（已验证）
+
+```
+kernel.macho sha256 c67a834b…            （含 52 个 NativeMsdc 符号）
+payload args: -v serial=3 sheng-pmgr=2 rd=md0 amfi_get_out_of_my_way=1 native-msdc-persist=1
+boot.img sha256 139cedcb…                （59,494,400 B，15:42）
+```
+
+### 下一次启动要看什么（`NativeMsdc:` 前缀的 IOLog，会进 eMMC 控制台）
+
+| 日志 | 含义 |
+|---|---|
+| `NativeMsdc:` + step/manifest 相关行 | 控制器起来了、GPT 读到了 |
+| 完全没有 `NativeMsdc:` 行 | 匹配没触发（`compatible` 不匹配或 nub 未发布），需要查 `/arm-io/emmc` 是否成为 IOPlatformDevice |
+| `hostBringUp` 失败原因 | 时钟/CMD 序列与 MT6762G 的差异，按 `why` 调整 |
+
+### 备注（构建时间）
+
+`scripts/package.sh` 每次都会连 UEFI 固件一起构建，固件没变时那一步纯属浪费（本次 32 分钟里约 20 分钟是固件）。
+以后只改内核/payload 时，用 `unixnu build kernel` + `unixnu build payload` + `unixnu bootimg` 三步可以省掉。

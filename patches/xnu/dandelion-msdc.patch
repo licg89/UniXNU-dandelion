@@ -1,0 +1,18 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -773,10 +773,15 @@
+ 	bsd_init_kprintf("calling bsd_bufferinit\n");
+ 	bsd_bufferinit();
+ 
+ #if defined(XNU_SHENG_PMGR) && XNU_SHENG_PMGR
+ 	extern void sheng_pmgr_run(void);
+ 	sheng_pmgr_run();
+ #endif
++
++	{
++		extern void dandelion_msdc_install(void);
++		dandelion_msdc_install();
++	}
+ 
+ 	/*
+ 	 * Initialize the calendar.
