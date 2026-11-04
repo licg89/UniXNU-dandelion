@@ -1,0 +1,49 @@
+name: apfs-fixture
+
+# Builds a minimal APFS volume on a macOS runner and uploads it.
+#
+# This host (Linux) cannot create APFS: apfsprogs ships apfsck only, and the
+# framework's fixtures all call hdiutil.  The kernel's root path is
+# apfs_vfsop_mountroot, so a RAM-root test needs an APFS volume -- and CI can
+# make one.
+#
+# Run this workflow in a fork, download the artifact, and use the image as the
+# payload's data ramdisk:
+#
+#   unixnu build payload --data-ramdisk apfs-root-32m.dmg
+#
+# The volume is empty, so the kernel will mount it as root and then fail to find
+# /sbin/launchd: that is the expected next checkpoint, not a fault.
+
+on:
+  workflow_dispatch:
+    inputs:
+      size:
+        description: "Volume size in MiB"
+        default: "32"
+
+permissions:
+  contents: read
+
+jobs:
+  apfs:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - name: Create an APFS volume
+        run: |
+          set -eu
+          SIZE="${{ inputs.size }}m"
+          hdiutil create -size "$SIZE" -layout NONE -fs APFS \
+            -volname DANDELION -o "apfs-root-${SIZE}.dmg"
+          hdiutil create -size "$SIZE" -layout NONE -fs APFS \
+            -volname DANDELION -o "apfs-root-${SIZE}.raw" -format UDRW
+          ls -l
+          hdiutil imageinfo "apfs-root-${SIZE}.raw" | head -20
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apfs-fixture
+          path: |
+            apfs-root-*.dmg
+            apfs-root-*.raw
+          if-no-files-found: error

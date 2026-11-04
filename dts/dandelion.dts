@@ -652,6 +652,19 @@
 	 * Values are the ones MemoryMapLib and MT6765Pkg already use: GICD
 	 * 0x0c000000 + 0x40000, GICR 0x0c100000 + 0x200000, 128 KiB stride.
 	 */
+	/*
+	 * The eMMC host as the OS sees it: /arm-io/emmc in the ADT.
+	 *
+	 * The kernel driver (package/DandelionEmmc.cpp) reads this node's reg and the
+	 * arm-io window to find the controller, and the stock node below is not
+	 * exported because it carries no unixnu,adt-name.
+	 */
+	emmc@11230000 {
+		compatible = "mediatek,mt6765-msdc";
+		reg = <0x00 0x11230000 0x00 0x00010000>;
+		unixnu,adt-name = "emmc";
+	};
+
 	intc@c000000 {
 		compatible = "arm,gic-v3";
 		reg = <0x00 0x0c000000 0x00 0x00040000 0x00 0x0c100000 0x00 0x00200000>;

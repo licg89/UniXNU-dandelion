@@ -5,3 +5,9 @@ device-emmc-log-console.patch
 # bsd_bufferinit(); its code compiles to nothing unless CONFIG_XNU_SHENG_PMGR=y.
 #
 sheng-platform-power.patch
+#
+# dandelion-emmc.patch is held back with the driver itself: it calls
+# dandelion_emmc_probe(), which cannot link until IOStorageFamily's symbols are
+# available at kernel link time (see board.toml [kernel] archives).
+#
+# dandelion-emmc.patch

@@ -1217,3 +1217,65 @@ cannot mount root, errno = 19
 `build_intc.sh` 末尾那段 `mcopy` 会把 payload 里的 kernel 复制到 QEMU ESP，遇到已存在的目标会**交互式询问**
 `overwrite (y/n)?`，把整个构建脚本挂住（今晚卡了两次、每次十几分钟）。已把那段从构建脚本里移除，
 QEMU 的 restaging 只在 `restage_qemu.sh` 里做。
+
+---
+
+## 0.22 eMMC 驱动已写但链不上；mockfs 开了但 RAM 盘仍抢先（2026-11-04 08:5x）
+
+### eMMC 主机驱动：代码完成，链接受阻
+
+`package/DandelionEmmc.cpp`（约 460 行）+ `scripts/build-dandelion-emmc.py` + `patches/xnu/dandelion-emmc.patch`
++ dts 的 `/arm-io/emmc` 节点都写好了，**归档编译通过**（`libDandelionEmmc.a` 258,624 B）。要点：
+
+- 卡在 LK 阶段就初始化好了（固件驱动注释：`CMD0, no CMD1, no re-tuning`），所以内核驱动只做：
+  `IOMemoryDescriptor::withPhysicalAddress` 映射 MSDC0 → 设分频/PIO → CMD8 读 EXT_CSD（SEC_COUNT 在 212 字节）
+  → CMD17/CMD18 读、CMD24/CMD25 写 + CMD12 收尾，全部轮询、无中断；
+- 寄存器/命令/FIFO 序列照抄 `DandelionEmmcDxe.c`（同一颗芯片、同一条路径）。
+
+**链接失败**（这是真正的阻塞点，不是代码问题）：
+
+```
+Undefined symbols for architecture arm64:
+  "__ZTV20IOBlockStorageDevice", referenced from: ...
+  "__ZN20IOBlockStorageDeviceC2EPK11OSMetaClass", ...
+  "__ZN9IOStorage8completeEP19IOStorageCompletioniy", ...
+```
+
+`IOStorageFamily` 是**预链接 kext**：内核链接阶段它的符号还不存在，而我们的驱动子类化了
+`IOBlockStorageDevice`，于是整张虚表都要解析。两条路（都记在 `board.toml` 的注释里）：
+
+1. 给内核链接加一个 **link-stub 归档**（defconfig 里 `EXTRA_LD_ARCHIVES` 那一行的注释就是为这个准备的）；
+2. 或者把驱动做成**组件**（`components.toml` 里 `ShengUfs` 那样的 `kind="driver"`），由框架的组件机制接管链接。
+
+另外查到：参考板 `stanveyjiang/UniXNU-camellia`（MT6833）**也没有存储驱动**，它走的就是 mockfs。
+
+### mockfs：打开了，但 RAM 盘仍然抢先
+
+`CONFIG_XNU_SOURCE_MOCKFS=y` 后内核能编过（`build exit=0`）。但内核日志仍然是：
+
+```
+container_rootmount:2531: boot from ramdisk /dev/md0
+dev_init:306: md0 device_handle block size 512 block count 8192
+apfs_mountroot failed: 79
+```
+
+而这一版 payload 里**已经没有 seed 了**（`payload.json` 的 `data_ramdisk_sha256` 为 None、
+`Payloads/` 下没有 `scratch-data.img`、ADT 的 `memory-map` 为空），`rd=md0` 也从 `kernel_args` 里拿掉了，
+固件日志里也没有任何 ramdisk 交接行。**所以"md0 是谁创建的"是下一次开工的第一个问题。**
+
+可能的解释（按可能性排）：
+
+1. 内核控制台块（LBA 30000）**跨启动累积**，我们读到的尾部是上一版（有 seed）那次启动的内容；
+   验证方法：刷机前把 30000..30511 全清零，再读一次；
+2. `container_rootmount` 在内核里另有一条 RAM 盘来源（例如 `boot_args` 里的字段被 DarwinBoot 填了）；
+3. 刷写没有真正落到 `boot` 分区（`fastboot getvar current-slot` / 读回比对可排除）。
+
+### 今天（这一夜）的完整进度
+
+```
+阶段 4-5  内核入口 → MMU → arm_vm_init → CPU/GIC → AMFI（PAN 指令 + GIC 节点 + PMGR 垫片）   ✅
+阶段 6    根卷：RAM 盘路径全程打通（md0、8192 块、container_rootmount），只差 APFS 文件系统   ⏳
+存储驱动  代码完成、归档可编，链接需要 link-stub 或组件化                                   ⏳
+控制台    flashinfo@LBA 30000 文本日志可用（klog10..16）                                    ✅
+APFS      本机造不出来（apfsprogs 只有 apfsck），已加 CI workflow `.github/workflows/apfs-fixture.yml` ⏳
+```

@@ -61,6 +61,16 @@ patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches
   # to mount and stops at "Still waiting for root device".
   #
   "build-arm-driver.py RamBlock",
+  #
+  # The eMMC host (package/DandelionEmmc.cpp, build-dandelion-emmc.py) compiles and
+  # archives cleanly, but it cannot be linked yet: it subclasses
+  # IOBlockStorageDevice, and IOStorageFamily is a prelinked kext whose symbols do
+  # not exist at kernel link time (ld reports the whole vtable undefined).  Wiring
+  # it in needs a link-stub archive; until then the documented path is
+  # CONFIG_XNU_SOURCE_MOCKFS, which the defconfig header calls "a root to boot
+  # from before the eMMC driver exists".
+  #
+  # "build-dandelion-emmc.py",
 ]
 
 [device_tree]
@@ -97,13 +107,14 @@ volume = "DANDELION"
 size_mib = 56   # the files take 48 MiB and must fit strictly inside; 56 + 3 MiB FD still fits 64 MiB
 loader = "firmware"
 title = "UniXNU"
-kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "rd=md0"]
+kernel_args = ["-v", "serial=3", "sheng-pmgr=2"]
 #
-# rd=md0 makes the RAM disk the root device (the reference ports use it the same
-# way: j716f with an APFS RAMDisk, rmx1971 with rd=ufsroot0).  Without it the
-# kernel ignores whatever the loader placed in /chosen/memory-map/RAMDisk and
-# waits for a volume whose UUID matches [payload.adt] root_match_volume_uuid --
-# which this board has no storage to provide.
+# rd=md0 was here to make the RAM disk the root (the reference ports use it the
+# same way: j716f with an APFS RAMDisk, rmx1971 with rd=ufsroot0).  It works --
+# the kernel reaches container_rootmount on /dev/md0 with the exact block count of
+# the seed -- but the seed is HFS+ and iOS 17 only runs apfs_vfsop_mountroot, so
+# the mount fails with 79.  With CONFIG_XNU_SOURCE_MOCKFS=y the framework's
+# documented path is a mock root instead, and rd= overrides it, so it is off.
 #
 # sheng-pmgr=2 is what makes the bridge publish the original ApplePMGRNub
 # (package/ShengPlatformPower.cpp: sheng_pmgr_run() returns immediately unless the
