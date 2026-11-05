@@ -35,7 +35,14 @@ CONFIG_XNU_OWNER_ROOT_TRUST=y
 CONFIG_XNU_OWNER_CACHE_MOUNT=y
 CONFIG_XNU_OWNER_CACHE_STARTUP=y
 CONFIG_XNU_OWNER_BOOT_MANIFEST=y
-CONFIG_XNU_OWNER_UNION_SYSTEMOS=y
+#
+# AMFI refuses the shared cache with "is adhoc signed" / "unsuitable CT policy 0 for this
+# platform/device" when it is reached through the SystemOS union.  The carrier instrument
+# serves it from /private/preboot instead, which is the path the reference ports describe, so
+# the union is off and the carrier is on for this bring-up.
+#
+CONFIG_XNU_OWNER_UNION_SYSTEMOS=n
+CONFIG_XNU_OWNER_CACHE_CARRIER=y
 CONFIG_XNU_NATIVE_VIRTIO_BLOCK=y
 # The eMMC driver verifies every published block against the owner policy, so the
 # build gates accept it as verified block storage (local deviation, documented in
