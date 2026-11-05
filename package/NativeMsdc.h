@@ -192,11 +192,14 @@ static inline bool gptEntryNamed (const uint8_t *entry, const char *name)
   return i == 36 || (!entry[56 + 2 * i] && !entry[57 + 2 * i]);
 }
 
-// Checks the entry array (gpt.entrySectors sectors) and finds the one partition named "userdata".
-static inline const char *gptFindUserdata (const uint8_t *entries, GptLayout &gpt)
+// Checks the entry array (gpt.entrySectors sectors) and finds the partition the driver
+// reads.  A dedicated "ios" partition wins over "userdata": the Android filesystem keeps
+// the rest of userdata, so an iOS test no longer destroys it (and no longer needs the
+// userdata image reflashed, nor the Android setup redone).
+static inline const char *gptFindData (const uint8_t *entries, GptLayout &gpt)
 {
   if (gptCrc32 (entries, size_t (gpt.entryCount) * kGptEntryBytes) != gpt.entriesCrc) return "GPT entries CRC";
-  bool found = false;
+  bool found = false, dataIsIos = false;
   for (uint32_t index = 0; index < gpt.entryCount; ++index) {
     const uint8_t *entry = entries + index * kGptEntryBytes;
     if (!gptEntryUsed (entry)) continue;
@@ -206,13 +209,19 @@ static inline const char *gptFindUserdata (const uint8_t *entries, GptLayout &gp
       const uint8_t *other = entries + prior * kGptEntryBytes;
       if (gptEntryUsed (other) && first <= le64 (other + 40) && le64 (other + 32) <= last) return "GPT partition overlap";
     }
-    if (!gptEntryNamed (entry, "userdata")) continue;
-    if (found) return "duplicate userdata partition";
+    const bool isData = gptEntryNamed (entry, "ios");
+    const bool isUserdata = !isData && gptEntryNamed (entry, "userdata");
+    if (!isData && !isUserdata) continue;
+    if (isData && found && dataIsIos) return "duplicate ios partition";
+    if (isUserdata && found && !dataIsIos) return "duplicate userdata partition";
+    // "ios" wins whatever the order, and userdata is then ignored.
+    if (found && isUserdata) continue;
     gpt.userdataFirst = first;
     gpt.userdataLast = last;
+    dataIsIos = isData;
     found = true;
   }
-  return found ? nullptr : "no userdata partition";
+  return found ? nullptr : "no userdata or ios partition";
 }
 
 // ---- SHNGROOT manifest at the start of userdata (UniXNU docs: concepts/userdata) ----------------------------------

@@ -139,7 +139,7 @@ size_mib = 56   # the files take 48 MiB and must fit strictly inside; 56 + 3 MiB
 loader = "firmware"
 title = "UniXNU"
 kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1",
-               "native-msdc-persist=1", "native-msdc-root=1"]
+               "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480"]
 #
 # amfi_get_out_of_my_way=1 keeps AMFI's policy checks relaxed for this developer
 # image.  cs_enforcement_disable=1 was tried and removed: AMFI refuses it outright
@@ -151,6 +151,14 @@ kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1",
 # (build-native-user-fixture.py calls codesign and writes trustcache.bundle, which
 # the payload takes as owner_trust_cache), but codesign does not exist on this
 # Linux host, so the boot argument is the way to get PID 1 past AMFI here.
+#
+#
+# native-msdc-area=<MiB>: the iOS data area lives in the LAST N MiB of userdata, so the
+# Android filesystem in front of it keeps working between iOS tests.  Without it the
+# manifest has to sit at the partition start, where the Android F2FS superblock lives, and
+# every test needed a userdata flash plus an Android re-setup.  The area is base-relative,
+# so the same image works: manifest at area+0, windows at area+0x100000 / area+0x16a600000,
+# policy region at area+align(imageBytes).
 #
 # rd=md0 makes the RAM disk the root device (the reference ports use it the same
 # way: j716f with an APFS RAMDisk, rmx1971 with rd=ufsroot0).  The seed is HFS+,

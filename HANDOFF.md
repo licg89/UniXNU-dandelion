@@ -2099,3 +2099,61 @@ C: 曾被 WSL 的虚拟磁盘（55 GB，位于 `%LOCALAPPDATA%\wsl\{guid}\ext4.v
 `diskpart`/`Optimize-VHD` 需要管理员权限，本会话无法提权，所以走了导出/导入这条路。
 另外教训：**不要在 `/mnt/d` 上用 `bs=512` 读大文件**（1,187 万次小块写，20 分钟没完成）；
 用 4 MiB 块 + `truncate -s` 到精确长度即可。
+
+---
+
+## 0.37 给 iOS 数据区独立分区（解决"每次刷 userdata + 重设 Android"）（2026-11-05 10:3x）
+
+### 背景
+
+`0.36` 的精确签名跑出了这条日志：
+
+```
+NativeMsdc: OS verified against its signed policy
+NativeMsdc: OS: read of sectors 0+1 refused, a block failed its signed hash
+```
+
+即**签名链全部通过**（`vr_open` 校验了 anchor、签名、哈希表），但每个数据块都判哈希不符。
+已在内核里加了诊断（`boot-verifydiag.img`）：失败时打印 `index`、校验长度、数据前 8 字节、
+实算摘要与表中摘要，一次启动即可区分三种成因（长度不是整块 / 读到的数据不对 / 内核 SHA-256 适配器有问题）。
+
+### 工作流问题与方案
+
+iOS 镜像原来放在 userdata **偏移 0**（SHNGROOT manifest 的固定位置），而 Android 的 F2FS
+超级块也在那里 —— 两者互斥，所以每次 iOS 测试都要 `fastboot flash userdata`（6.5 分钟），
+之后 Android 必须 `fastboot -w` 重设（开发者选项、USB 调试授权全部丢失）。
+
+**方案：给 iOS 单独一个 GPT 分区 `ios`**（24 GiB，可调），userdata 相应缩小到约 30 GB：
+
+| 收益 | |
+| --- | --- |
+| 不再刷 userdata | iOS 镜像只刷一次到 `ios`：`fastboot flash ios userdata-signed.img` |
+| Android 一直可用 | `/data` 不再被覆盖，开发者选项与 USB 调试授权保留 |
+| 每次测试 | `fastboot flash boot` + 重启 + `adb root` 读日志 |
+| iOS 空间 | 24 GiB（当前镜像 9.4 GB，余量足够以后加 Data 卷） |
+
+### 已完成的代码
+
+1. **驱动**（`package/NativeMsdc.h` 的 `gptFindData`）：分区表里存在 `ios` 时优先用它，
+   否则仍用 `userdata`；manifest、窗口、策略区全部相对该分区的首扇区计算。
+   重复项检查按"同类"比较（`ios` 优先，userdata 被忽略）。
+   `native-msdc-area` 的偏移方案已废弃（被分区方案取代）。
+2. **`scripts/../make_ios_partition.py`**（`_work/make_ios_partition.py`）：从 GPT dump 里
+   把 `userdata` 尾部切出 `ios`，重算 entries CRC 与 header CRC，同时生成 primary 与 backup 两份。
+3. **`_work/make_ios_partition.ps1`**：一键流程 —— `adb root` → dump GPT → 改表 → 写回两份 →
+   `fastboot -w`（格式化缩小后的 userdata）→ `fastboot flash ios` → 重启。
+
+产物：`D:\aios\out3\boot-iospart.img`（sha256 `d6a5b055…`，含 `ios` 分区识别）。
+
+### 下次手机可用时的执行顺序
+
+1. 先跑 `collect_after_boot.ps1` 取 `0.36` 那次启动的诊断日志（区分 A/B/C 三种成因）；
+2. 再跑 `make_ios_partition.ps1`（会先 dump GPT 到 `D:\aios\out3\gpt-dump.bin`，出问题可写回）；
+3. 之后每次 iOS 测试只需 `fastboot flash boot boot-iospart.img` + 重启 + 读日志。
+
+### 注意
+
+- `fastboot flash ios` 依赖 bootloader 重新读 GPT；改表后先 `fastboot reboot bootloader` 或让
+  `-w` 流程先重启一次（脚本里已这么做）。
+- 分区表的唯一 GUID 用固定值（`0102…10`），文档记录，便于识别。
+- 持久化 store（`native-msdc-persist`）现在落在 `ios` 分区内；等 Data 卷真正启用时再单独规划。

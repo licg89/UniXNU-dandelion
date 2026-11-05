@@ -118,6 +118,13 @@ constexpr unsigned kTransferBytes = kMaxBlocks * kSector;
 // ETIMEDOUT/EIO on checkpoint reads -- so the console checks this flag and keeps its
 // line buffered while a transfer is in flight.
 extern "C" volatile uint32_t native_msdc_busy = 0;
+
+// dandelion: with native-msdc-area=<MiB> the iOS data area lives in the last N MiB of
+// userdata, so the Android filesystem in front of it can still mount between tests.
+// Everything the driver reads -- manifest, windows, policy region -- is then relative to
+// the area's base sector instead of the partition's first sector.
+uint64_t gAreaBytes = 0;
+uint64_t gAreaBaseSector = 0;
 constexpr uint64_t kDmaPhysicalMask = 0x00000000fffff000ULL;
 constexpr uint32_t kDmaSelfTestSector = 0x40;
 constexpr unsigned kDmaSelfTestBlocks = 4;
@@ -699,7 +706,7 @@ bool hostFindLayout (const char **why)
     *why = "GPT entries read failed";
     return false;
   }
-  if (const char *reason = gptFindUserdata (gHost.bounce, gpt)) {
+  if (const char *reason = gptFindData (gHost.bounce, gpt)) {
     *why = reason;
     return false;
   }
@@ -708,8 +715,12 @@ bool hostFindLayout (const char **why)
   native_msdc_step = 3;
   uint64_t partitionSectors = gpt.userdataLast - gpt.userdataFirst + 1;
   IOLog ("NativeMsdc: userdata sectors %llu..%llu\n", gpt.userdataFirst, gpt.userdataLast);
+  gAreaBytes = partitionSectors * kSector;
+  gAreaBaseSector = gpt.userdataFirst;
+  IOLog ("NativeMsdc: data partition sectors %llu..%llu (%llu MiB)\n",
+         gpt.userdataFirst, gpt.userdataLast, gAreaBytes / (1024 * 1024));
   if (partitionSectors < kManifestBytes / kSector ||
-      transfer (gpt.userdataFirst, kManifestBytes / kSector, gHost.bounce, false) != kIOReturnSuccess) {
+      transfer (gAreaBaseSector, kManifestBytes / kSector, gHost.bounce, false) != kIOReturnSuccess) {
     *why = "userdata manifest read failed";
     return false;
   }
@@ -786,7 +797,7 @@ const char *loadPolicy (void)
   uint64_t partitionBytes = (gHost.gpt.userdataLast - gHost.gpt.userdataFirst + 1) * kSector;
   uint64_t start = policyRegionOffset (gHost.manifest);
   if (start >= partitionBytes || partitionBytes - start < kPolicyHeaderBytes) return "policy region outside userdata";
-  uint64_t available = partitionBytes - start, firstSector = gHost.gpt.userdataFirst + start / kSector;
+  uint64_t available = partitionBytes - start, firstSector = gAreaBaseSector + start / kSector;
   PolicyHeader header;
   unsigned status;
   uint8_t digest[32];
@@ -1104,6 +1115,23 @@ IOReturn NativeMsdcBlock::readVerified (IOMemoryDescriptor *buffer, UInt64 block
       if (checked != VR_OK) {
         __atomic_fetch_add (&native_msdc_integrity_failures, 1, __ATOMIC_RELAXED);
         native_msdc_failure = "window block failed its signed hash";
+        // Diagnosis: a failing block has to name itself -- the length it was checked
+        // with, what it read, and both digests.  Without this the only visible symptom
+        // is APFS refusing to mount.
+        uint8_t actual[32];
+        if (view && view->hashes && vr_xnu_crypto.sha256) {
+          vr_xnu_crypto.sha256 (data, length, actual);
+          IOLog ("NativeMsdc: verify %llu len %zu data %02x%02x%02x%02x %02x%02x%02x%02x "
+                 "got %02x%02x%02x%02x want %02x%02x%02x%02x\n",
+                 index, length,
+                 length > 0 ? data[0] : 0, length > 1 ? data[1] : 0,
+                 length > 2 ? data[2] : 0, length > 3 ? data[3] : 0,
+                 length > 4 ? data[4] : 0, length > 5 ? data[5] : 0,
+                 length > 6 ? data[6] : 0, length > 7 ? data[7] : 0,
+                 actual[0], actual[1], actual[2], actual[3],
+                 view->hashes[index * 32 + 0], view->hashes[index * 32 + 1],
+                 view->hashes[index * 32 + 2], view->hashes[index * 32 + 3]);
+        }
         return kIOReturnNotPrivileged;
       }
       __atomic_fetch_add (&native_msdc_verified_blocks, 1, __ATOMIC_RELAXED);
@@ -1198,7 +1226,7 @@ bool gVerifyWindows;
 bool windowMatchesManifest (NativeMsdcBlock *device)
 {
   const RootWindow &entry = gHost.manifest.window[device->windowIndex ()];
-  uint64_t first = gHost.gpt.userdataFirst + entry.offset / kSector, count = entry.size / kSector;
+  uint64_t first = gAreaBaseSector + entry.offset / kSector, count = entry.size / kSector;
   SHA256_CTX context;
   SHA256_Init (&context);
   for (uint64_t done = 0; done < count;) {
@@ -1366,7 +1394,7 @@ bool NativeMsdc::startRoot (bool allowWrites, const char **why)
     NativeMsdcBlock *device = OSTypeAlloc (NativeMsdcBlock);
     gPending[index] = device;
     if (!device || !device->init (static_cast<OSDictionary *> (nullptr)) ||
-        !device->configure (index, entry, gHost.gpt.userdataFirst + entry.offset / kSector, allowWrites)) {
+        !device->configure (index, entry, gAreaBaseSector + entry.offset / kSector, allowWrites)) {
       if (device) device->release ();
       gPending[index] = nullptr;
       while (index) discardPending (--index);
@@ -1416,6 +1444,8 @@ unsigned storeMode (void)
 
 uint64_t reserveBlocks (void)
 {
+  // The store grows down from the end of userdata, so the iOS area at the end has to be
+  // reserved in addition to the operator's own reserve.
   return uint64_t (bootArgument ("native-msdc-reserve", 16384, 1024)) * (1024 * 1024 / kStoreBlock);
 }
 
