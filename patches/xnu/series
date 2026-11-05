@@ -25,10 +25,23 @@ dandelion-exec-diag.patch
 #
 dandelion-msdc.patch
 #
-# Lets the kernel accept the root volume when the eMMC driver's owner policy authenticated
-# it.  APFS cannot obtain system-volume-auth-blob from the device tree, so
-# FSIOC_KERNEL_ROOTAUTH fails and bsd_init would panic; the framework's
-# offline-owner-root-binding-audit does the same check but its build validation only
-# accepts virtio or source-storage as the verified block provider.
+# zzyc-owner-skip-launch-constraints.patch is applied by the framework itself (the kernel
+# already contains the sheng-no-lc check), so only the boot argument belongs to this board:
+# kernel_args carries sheng-no-lc=1, which clears AMFI's launch-constraint refusal of
+# /sbin/launchd (OS_REASON_EXEC, code 0x8) on an owner-trusted volume.
 #
-dandelion-root-authorize.patch
+# zzyc-owner-skip-launch-constraints.patch
+
+#
+# dandelion-root-authorize.patch is superseded: CONFIG_XNU_OWNER_ROOT_AUDIT/TRUST now enable
+# the framework's offline-owner-root-binding-audit, which does the same check and is the
+# documented path.  The file stays in the tree for reference.
+#
+# dandelion-root-authorize.patch
+#
+# AMFI's exec answer can still refuse an Apple-signed binary on an owner-verified volume even
+# though the trust cache module loaded.  sheng-skip-cs=1 clears imgp->ip_mac_return, which is
+# what the reference ports record ("clearing that answer makes exec_activate_image return 0").
+# The argument is off by default: a properly trusted image never needs it.
+#
+dandelion-skip-cs.patch

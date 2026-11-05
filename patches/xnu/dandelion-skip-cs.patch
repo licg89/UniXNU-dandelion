@@ -1,0 +1,23 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8685,6 +8685,20 @@
+ 	 * which is unexpected but security framework does not
+ 	 * approve of exec, kill and return immediately.
+ 	 */
++	/*
++	 * dandelion: AMFI's answer for this image.  On this board the OS volume is served
++	 * from an owner-verified window, so an Apple-signed binary can be refused even though
++	 * its trust-cache entry was loaded.  sheng-skip-cs=1 clears the answer; without the
++	 * argument nothing changes.
++	 */
++	{
++		uint32_t skip_cs = 0;
++		if (PE_parse_boot_argn("sheng-skip-cs", &skip_cs, sizeof(skip_cs)) && skip_cs != 0) {
++			printf("DANDELION-EXEC: clearing policy answer %d (pid %d)\n",
++			    imgp->ip_mac_return, proc_getpid(p));
++			imgp->ip_mac_return = 0;
++		}
++	}
+ 	if (imgp->ip_mac_return != 0) {
+ 		KERNEL_DEBUG_CONSTANT(BSDDBG_CODE(DBG_BSD_PROC, BSD_PROC_EXITREASON_CREATE) | DBG_FUNC_NONE,
+ 		    proc_getpid(p), OS_REASON_EXEC, EXEC_EXIT_REASON_SECURITY_POLICY, 0, 0);

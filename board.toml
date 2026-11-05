@@ -158,7 +158,7 @@ title = "UniXNU"
 # accepts this file only if its SHA-256 is the one recorded here.
 #
 trust_cache_sha256 = "4563bdbf6ed8f72237d45dbba3ccde432634338f95c10d79d5d4631678a97c7c"
-kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1",
+kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1", "sheng-no-lc=1", "sheng-skip-cs=1",
                "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480"]
 #
 # amfi_get_out_of_my_way=1 keeps AMFI's policy checks relaxed for this developer
