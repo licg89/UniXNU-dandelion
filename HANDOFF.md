@@ -2431,3 +2431,36 @@ b"AMFI: '%s' is adhoc signed.\n"
    （Apple kext 在预链接里没有运行时签名校验）；
 3. 验证：改完启动，看是否还打印那两行 AMFI 消息、launchd 是否不再
    `no dyld cache`。
+
+## 0.44 陈旧日志的坑：控制台门控必须去掉（2026-11-06 00:0x）
+
+### 症状
+
+连续几轮读到的日志都是同一份：里面写着
+`attempting to load 2 external trust cache modules` 和 `data partition ... (24576 MiB)`，
+而当时的镜像已经是 **3 个 trust cache 模块**、`ios` 分区也早已改过 —— 说明**新日志根本没写进去**。
+
+### 原因
+
+`device-emmc-console-gate.patch` 让控制台在驱动传输期间直接返回。当初加它是怀疑控制台和
+MSDC0 抢控制器，但那个现象的真因是 **carve 偏移 bug**（§0.39），门控从来不是必需的。
+开启 verified root 之后驱动几乎一直在传输，控制台被永久饿死。
+
+### 处置
+
+- 从 series 移除 `device-emmc-console-gate.patch`（保留文件以备查）；
+- `collect_nowipe.ps1` 现在**每次读完日志就清零 flashinfo 块**，这样下一轮启动从空块开始：
+  读到空日志本身就是"控制台没写"的信号，不会再被旧内容误导。
+
+### 顺带确认的事实
+
+- 带 CT 补丁的那一轮，日志停在 APFS 初始化（`install_apfs_vfs_fs ... telemetry ENABLED`），
+  而没有补丁的版本能走到 launchd —— 说明**单指令补丁太激进**，把 AMFI 的正常流程也跳过了。
+  `dandelion-skip-cs` 那种"清一个返回值"的做法安全，直接改控制流不安全。
+- 设备上的 `ios` 分区实际是 **24 GiB**（第一次 GPT 写入的值；后来的 30 GiB 只改了脚本默认值，
+  没有重新写 GPT）。镜像 9.4 GiB 装得下，暂不影响，后续要扩容再重写 GPT。
+
+### 当前基线镜像
+
+`D:\aios\out3\boot-baseline.img`（sha256 `9f49f9d6…`）：无门控、无 CT 补丁、其它配置不变
+（verified root + 双窗口策略 + 三模块 trust cache）。这是下一步实验的起点。
