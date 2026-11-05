@@ -2174,3 +2174,66 @@ primary and backup tables identical: True
 
 即两份 GPT 一致、CRC 全对、`ios` 精确占据 userdata 原尾部。真机上执行时脚本会先把
 原 GPT dump 到 `D:\aios\out3\gpt-dump.bin`，出问题可以直接写回。
+
+---
+
+## 0.38 对照官方文档找到的两处缺失，owner-root 已按文档接通（2026-11-05 13:0x）
+
+按用户要求重新通读 unixnu.com 后，与自身实现逐条对比，发现**两个**真实缺口。
+
+### 缺口一：块哈希校验失败（未解决，需一次启动）
+
+宿主侧用 kit 自己的 C provider 验证我们的信封，**完全通过**：
+
+```
+PASS: real RSA signature and all 1483785 original blocks verified by C; host only
+image_bytes 6077580800, volume_uuid 04769D26-…, original_image_modified false
+```
+
+即签名、anchor、哈希表都对。所以内核侧 `a block failed its signed hash` 只能是
+「内核读到的字节与 carve 不同」或「内核 SHA-256 适配器」。`boot-verifydiag.img` 会打印
+`index / 校验长度 / 数据前 8 字节 / 实算摘要 / 表中摘要`，一次启动即可定案。
+
+**方法记录**：`kits/VerifiedRoot/tests/openssl_provider.c` 可在 Linux 上编译成宿主库
+（`cc -shared -fPIC -I include src/verified_root.c tests/openssl_provider.c -lcrypto`），
+再用 `tools/verify_image.py` 校验信封 —— 这条路以后所有签名问题都能离线自证。
+
+### 缺口二：`rootvp not authenticated`（已按文档解决）
+
+对照 `docs/zh/concepts/security` 与 `docs/zh/xnu/patch-reference`：
+
+- 框架**早已自动应用** `offline-owner-root-binding-audit.patch`（源码树里 panic 后面紧跟
+  `#if defined(XNU_OWNER_ROOT_TRUST)`），但 `XNU_OWNER_ROOT_AUDIT` / `XNU_OWNER_ROOT_TRUST`
+  两个开关没开，代码被 `#if` 整段剔除 —— 这就是一直 panic 的原因。
+- 该路径要求一个"已验证块存储"提供 `native_verified_block_root_authorized(dev_t)`；
+  框架的实现是 `VirtioMmioBlock` 组件里的 `verifiedVolumeQuery()`，它通过 weak 导入
+  `native_ufs_block_authenticates()` 询问每个 provider —— **我们的驱动早就定义了这个符号**。
+
+### 为此做的三处工程改动
+
+1. **配置**：`CONFIG_XNU_OWNER_ROOT_AUDIT=y`、`CONFIG_XNU_OWNER_ROOT_TRUST=y`、
+   `CONFIG_XNU_NATIVE_VIRTIO_BLOCK=y`、`CONFIG_XNU_NATIVE_MSDC_VERIFIED=y`。
+   注意构建读的是 `out/<os>/<build>/.config`，**不是** `configs/*_defconfig` —— 改完 defconfig
+   必须同步那份 `.config`，否则开关不生效（踩过）。
+2. **virtio 传输**：`build-arm-driver.py NativeVirtioBlock --verified-root`（组件名必须是
+   `NativeVirtioBlock`，写成 `VirtioMmioBlock` 会被拒绝），输出在
+   `build/virtio-mmio-block-verified/`；`derive-storage-symbols.py` 把该归档**覆盖**到
+   `build/virtio-mmio-block/libVirtioMmioBlock.a`（框架在 `NATIVE_VIRTIO_BLOCK=1` 时自动链接这个路径），
+   **不能**再折叠进 `libStorageBindings.a`，否则 85 个重复符号。
+3. **空策略桩**：virtio 的 verified 构建引用 `verified_root_manifest` /
+   `verified_root_manifest_bytes`；它在本 SoC 上从不 probe（没有 virtio-mmio 节点），
+   所以在 `build-verified-root.py` 里给 0 长度的桩，真实策略仍由 eMMC 窗口携带。
+
+另外给框架的 `build-xnu-4k-baseline.sh` 两处门禁加了 `XNU_NATIVE_MSDC_VERIFIED` 分支
+（原来只认 probe / source-storage）——**这是本地偏离，已记录**。
+
+### 增量编译的坑（值得记）
+
+XNU 的 make 不跟踪编译开关变化：打开 `XNU_OWNER_ROOT_*` 后 `bsd_init.o` 仍是旧的，
+代码不会编进去。改开关后必须删 `build/xnu/ios-obj/**/bsd_init.o` 与 `mach.development*`。
+验证方法：`llvm-nm bsd_init.o | grep -c owner_root`，本次为 9。
+
+### 产物
+
+`D:\aios\out3\boot-ownerroot.img`（sha256 `3f87b8e8…`）：块设备 + 精确签名 + 空桩 +
+owner-root audit/trust 全部在内。

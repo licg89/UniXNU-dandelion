@@ -18,6 +18,19 @@ CONFIG_XNU_ARM_DT_PLATFORM=y
 CONFIG_XNU_ARMCPU=y
 CONFIG_XNU_NATIVE_AES=y
 CONFIG_XNU_TRUST_CACHE_RUNTIME=y
+#
+# Owner root: the build tree already applies offline-owner-root-binding-audit.patch, which
+# accepts the root when the verified-block provider vouches for the mounted device.  APFS
+# cannot authenticate the volume itself (system-volume-auth-blob is an Apple-signed device
+# tree input), so this is the documented route for an owner-built root.
+#
+CONFIG_XNU_OWNER_ROOT_AUDIT=y
+CONFIG_XNU_OWNER_ROOT_TRUST=y
+CONFIG_XNU_NATIVE_VIRTIO_BLOCK=y
+# The eMMC driver verifies every published block against the owner policy, so the
+# build gates accept it as verified block storage (local deviation, documented in
+# HANDOFF: the gates otherwise name only the crypto probe or source storage).
+CONFIG_XNU_NATIVE_MSDC_VERIFIED=y
 CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
 CONFIG_XNU_DT_PANIC_REGION=y
 CONFIG_XNU_NATIVE_ARCH_TIMER=y

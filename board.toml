@@ -31,7 +31,15 @@ include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink", "DarwinBoot",
            # The authenticated-block kit: iPadOS wants the root volume authenticated, and this
            # is what serves the eMMC windows through owner-signed policies (the
            # NATIVE_VERIFIED_BLOCK build of NativeMsdc).
-           "VerifiedRoot"]
+           "VerifiedRoot",
+           #
+           # The verified-block query helper.  The owner-root acceptance check asks
+           # native_verified_block_root_authorized(dev_t) whether the mounted root is a
+           # window whose owner policy authenticated it; the virtio provider implements
+           # that query by calling the weak native_ufs_block_authenticates, which the eMMC
+           # driver defines.  It never probes here: no virtio-mmio node exists on this SoC.
+           #
+           "VirtioMmioBlock"]
 
 [kernel]
 defconfig = "dandelion_defconfig"
@@ -85,6 +93,10 @@ patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches
   # table matches them all; the constructor forwards to IOService's and slot 7 is the
   # metaclass getter).  The step archives the driver object with those bindings.
   #
+  # The verified-block query helper the owner-root audit calls.  The builder only accepts
+  # the concrete transport name (NativeVirtioBlock) with --verified-root, and it writes to
+  # build/virtio-mmio-block-verified.  It never probes here: no virtio-mmio node exists.
+  "build-arm-driver.py NativeVirtioBlock --verified-root",
   "derive-storage-symbols.py --object build/native-msdc/NativeMsdc.o",
   #
   # The storage bindings (bind-by-vtable.py) are held back with the window block
@@ -135,7 +147,7 @@ DEVICE_MODEL = "dandelion"
 
 [payload]
 volume = "DANDELION"
-size_mib = 56   # the files take 48 MiB and must fit strictly inside; 56 + 3 MiB FD still fits 64 MiB
+size_mib = 72   # 64 MiB of files plus the FAT slack; the kernel grew with the verifier and virtio helper
 loader = "firmware"
 title = "UniXNU"
 kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1",

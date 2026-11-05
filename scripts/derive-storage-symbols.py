@@ -203,6 +203,11 @@ if args.object:
     # this file by name, and a second -force_load entry in the defconfig does not
     # survive the environment hand-off.
     extra = sorted((ROOT / 'build/verified-root').glob('*.o'))
+    # The verified-block query helper arrives as an archive, so unpack its members: the
+    # kernel link picks up this one file by name and a second -force_load is ignored.
+    # The verified transport is not folded in here: the kernel links
+    # build/virtio-mmio-block/libVirtioMmioBlock.a itself when NATIVE_VIRTIO_BLOCK is on, so
+    # that file is replaced below with the verified build instead of duplicating it.
     archive = out / 'libStorageBindings.a'
     archive.unlink(missing_ok=True)
     subprocess.run(['llvm-ar', '--format=darwin', 'rcs', str(archive),
@@ -216,6 +221,11 @@ if args.object:
     # archive it finds there has to be the bound one; otherwise the same object
     # arrives without its bindings and the whole IOBlockStorageDevice vtable is
     # undefined again.
+    verified = ROOT / 'build/virtio-mmio-block-verified/libVirtioMmioBlock.a'
+    plain_virtio = ROOT / 'build/virtio-mmio-block/libVirtioMmioBlock.a'
+    if verified.is_file() and plain_virtio.parent.is_dir():
+        plain_virtio.write_bytes(verified.read_bytes())
+        print(f'{plain_virtio}: replaced with the verified transport')
     plain = args.object.parent / 'libNativeMsdc.a'
     if plain.is_file():
         plain.write_bytes(archive.read_bytes())

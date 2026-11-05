@@ -1197,6 +1197,8 @@ extern "C" int native_ufs_block_authenticates (IOService *provider, const char *
   if (!block) return -1;
   return block->authenticatesVolume (uuid, digest) ? 1 : 0;
 }
+
+
 #endif // NATIVE_MSDC_VERIFIED
 #endif // NATIVE_MSDC_BLOCK_DEVICES
 

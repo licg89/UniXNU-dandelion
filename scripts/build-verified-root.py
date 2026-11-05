@@ -86,7 +86,13 @@ key_body = ', '.join(f'{byte:#04x}' for byte in key)
 (out / 'verified_root_key.c').write_text(
     '/* The owner key tools/manifest.py derived from owner.pub: exactly VR_KEY_BYTES. */\n'
     '#include <stdint.h>\n'
-    f'const uint8_t verified_root_key[395] = {{ {key_body} }};\n')
+    f'const uint8_t verified_root_key[395] = {{ {key_body} }};\n'
+    '\n'
+    '/* The transport that answers the owner-root query links a policy bundle of its own.\n'
+    ' * It never probes on this SoC (no virtio-mmio node), so an empty bundle satisfies the\n'
+    ' * reference without inventing policy: the eMMC windows carry the real one. */\n'
+    'const uint8_t verified_root_manifest[1] = { 0 };\n'
+    'const uint64_t verified_root_manifest_bytes = 0;\n')
 compile_source(out / 'verified_root_key.c', out / 'verified_root_key.o')
 objects.append(out / 'verified_root_key.o')
 print('compiled the owner key')

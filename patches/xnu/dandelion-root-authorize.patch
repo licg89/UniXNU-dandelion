@@ -1,0 +1,28 @@
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index bb558ee..a6cce32 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -942,7 +942,22 @@ bsd_init(void)
+ 		if (require_rootauth) {
+ 			/* enforce sealedness */
+ 			int autherr = VNOP_IOCTL(rootvnode, FSIOC_KERNEL_ROOTAUTH, NULL, 0, vfs_context_kernel());
+-			if (autherr) {
++			int owner_authorized = 0;
++			/*
++			 * dandelion: APFS cannot obtain system-volume-auth-blob from the device tree, so
++			 * FSIOC_KERNEL_ROOTAUTH always fails on this board.  The eMMC driver serves the OS
++			 * volume from a window whose owner policy authenticated it block by block, so ask
++			 * it whether the mounted root device is that window.
++			 */
++			{
++				extern int native_msdc_root_authorized(dev_t);
++				mount_t root_mount = vnode_mount(rootvnode);
++				vnode_t device_vnode = vfs_devvp(root_mount);
++				dev_t device = device_vnode ? vnode_specrdev(device_vnode) : (dev_t)-1;
++				if (device_vnode) vnode_put(device_vnode);
++				owner_authorized = native_msdc_root_authorized(device);
++			}
++			if (autherr && !owner_authorized) {
+ 				panic("rootvp not authenticated after mounting");
+ 			}
+ 		}
