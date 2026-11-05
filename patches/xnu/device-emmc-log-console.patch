@@ -24,7 +24,7 @@ diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
 index 997a4ab..665f59e 100644
 --- a/pexpert/arm/pe_serial.c
 +++ b/pexpert/arm/pe_serial.c
-@@ -591,6 +591,470 @@ SECURITY_READ_ONLY_LATE(static struct pe_serial_functions) pi3_uart_serial_funct
+@@ -591,6 +591,514 @@
  
  /*****************************************************************************/
  
@@ -107,6 +107,9 @@ index 997a4ab..665f59e 100644
 +static uint32_t emmc_index;
 +static uint32_t emmc_used;
 +static bool emmc_failed;
++/* Set the first time the storage driver flushes for us: from then on it is the only
++ * writer, because its call is the only one that happens with the controller free. */
++static bool emmc_hooked;
 +static uint8_t emmc_sector[EMMC_SECTOR] __attribute__((aligned(64)));
 +
 +static uint32_t
@@ -384,7 +387,7 @@ index 997a4ab..665f59e 100644
 +	unsigned int i;
 +	int attempt;
 +
-+	if (emmc_failed) {
++	if (emmc_failed || emmc_hooked) {
 +		return;
 +	}
 +	if (emmc_index + 1 >= emmc_log_sectors) {
@@ -488,6 +491,47 @@ index 997a4ab..665f59e 100644
 +	.receive_data = emmc_receive_data,
 +	.device = SERIAL_EMMC
 +};
++
++/*
++ * Called by the storage driver between its own transfers, when the controller is free:
++ * the timer flush races with a transfer in flight, fails, and after three attempts the
++ * console disables itself for the rest of the boot.
++ */
++void
++pe_serial_emmc_flush(void)
++{
++	unsigned int i;
++	int attempt;
++
++	if (emmc_failed) {
++		return;
++	}
++	emmc_hooked = true;
++	if (emmc_index + 1 >= emmc_log_sectors) {
++		emmc_failed = true;
++		return;
++	}
++	for (i = emmc_used; i < EMMC_SECTOR; i++) {
++		emmc_sector[i] = 0;
++	}
++	for (attempt = 0; attempt < 3; attempt++) {
++		emmc_clean(emmc_sector, EMMC_SECTOR);
++		if (emmc_write_block(emmc_log_lba + 1 + emmc_index, emmc_sector) == 0) {
++			break;
++		}
++		(void)emmc_command(0x0000438Cu, 0, NULL, 250);
++		emmc_write(EMMC_MSDC_INT, 0xFFFFFFFFu);
++		(void)emmc_fifo_clear();
++		(void)emmc_wait_ready(1000);
++	}
++	if (attempt == 3) {
++		emmc_failed = true;
++		return;
++	}
++	if ((emmc_index % EMMC_HEADER_EVERY) == 0) {
++		emmc_write_header();
++	}
++}
 +#endif /* XNU_EMMC_SERIAL */
 +
 +/*****************************************************************************/
@@ -495,7 +539,7 @@ index 997a4ab..665f59e 100644
  #ifdef VMAPPLE_UART
  
  static vm_offset_t vmapple_uart0_base_vaddr = 0;
-@@ -777,6 +1241,38 @@ serial_init(void)
+@@ -777,6 +1241,38 @@
  
  	PE_parse_boot_argn("disable-uart-irq", &disable_uart_irq, sizeof(disable_uart_irq));
  
@@ -538,7 +582,7 @@ diff --git a/pexpert/pexpert/arm/protos.h b/pexpert/pexpert/arm/protos.h
 index 404b50b..cc36cee 100644
 --- a/pexpert/pexpert/arm/protos.h
 +++ b/pexpert/pexpert/arm/protos.h
-@@ -47,7 +47,8 @@ typedef enum serial_device {
+@@ -47,7 +47,8 @@
  	SERIAL_DOCKCHANNEL=0x2,
  	SERIAL_PI3_UART=0x4,
  	SERIAL_VMAPPLE_UART=0x8,

@@ -119,6 +119,10 @@ constexpr unsigned kTransferBytes = kMaxBlocks * kSector;
 // line buffered while a transfer is in flight.
 extern "C" volatile uint32_t native_msdc_busy = 0;
 
+// Provided by the eMMC console patch; weak so a build without the console still
+// links.  The driver calls it between transfers, while the controller is free.
+extern "C" void pe_serial_emmc_flush (void) __attribute__ ((weak));
+
 // dandelion: with native-msdc-area=<MiB> the iOS data area lives in the last N MiB of
 // userdata, so the Android filesystem in front of it can still mount between tests.
 // Everything the driver reads -- manifest, windows, policy region -- is then relative to
@@ -457,7 +461,10 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
 
   struct BusyGuard {
     BusyGuard () { __atomic_add_fetch (&native_msdc_busy, 1, __ATOMIC_ACQ_REL); }
-    ~BusyGuard () { __atomic_sub_fetch (&native_msdc_busy, 1, __ATOMIC_ACQ_REL); }
+    ~BusyGuard () {
+      __atomic_sub_fetch (&native_msdc_busy, 1, __ATOMIC_ACQ_REL);
+      if (pe_serial_emmc_flush) pe_serial_emmc_flush ();
+    }
   } busyGuard;
   if (gHost.poisoned) return kIOReturnNotReady;
   if (!blocks || blocks > kMaxBlocks || sector >= gHost.diskSectors || blocks > gHost.diskSectors - sector)
