@@ -2464,3 +2464,51 @@ MSDC0 抢控制器，但那个现象的真因是 **carve 偏移 bug**（§0.39�
 
 `D:\aios\out3\boot-baseline.img`（sha256 `9f49f9d6…`）：无门控、无 CT 补丁、其它配置不变
 （verified root + 双窗口策略 + 三模块 trust cache）。这是下一步实验的起点。
+
+---
+
+## 0.45 控制台为什么静默：控制台自己的写路径失效，改用驱动写入（2026-11-06 02:3x）
+
+### 已经排除的原因
+
+| 怀疑 | 结论 |
+| --- | --- |
+| 分区/地址错 | ❌ 控制台 `log-lba = 0x747b50f = 122,139,919` = `flashinfo + 30,000`，与我读的位置一致；同一分区里**固件块（+30,512）有 3,639 字节**，说明分区可写、地址没错 |
+| ADT 里丢了 `emmc-log` 节点 | ❌ payload 的 ADT 里 `emmc-log` / `log-lba` / `log-sectors` 都在 |
+| 驱动改了 CFG 没恢复 | ❌ 驱动 `HostSession` 构造时存 CFG/INTEN、析构时原值写回，分频和总线宽度都恢复 |
+| 门控把它饿死 | ❌ 去掉门控后依然静默 |
+| 从驱动里调用 `emmc_flush()` | ❌ 与定时刷写并发，直接把块写成空 |
+
+### 结论
+
+控制台是"只写、依赖固件留下的卡状态、每次写前 `rearm`"的设计。它的 `rearm` 只在时钟稳定位
+为 0 时才重写 CFG，而驱动**会**在传输期间切 PIO/DMA 并迅速恢复，卡本身进入过读状态 ——
+之后控制台的 CMD24 序列就失败，重试三次即 `emmc_failed`，整轮启动从此静默。
+寄存器是恢复的，**失效的是控制台自己的命令序列**。
+
+### 修法：把失败的块交给驱动写
+
+- 控制台补丁里新增弱符号 `native_msdc_console_sink(uint32_t lba, const void *data)`；
+- `emmc_flush` 在自己三次尝试都失败后，把该块交给这个 sink；成功则照常写 header 并返回，
+  不再置 `emmc_failed`；
+- 驱动实现 `native_msdc_console_sink()`：`HostSession` + `transfer(lba, 1, data, true)`，
+  也就是整个移植一直在用的单块写路径。
+
+这样控制台在驱动启动前用自己的 PIO 写（已验证可用），驱动启动后自动切到驱动的传输路径，
+不再有并发（控制台的刷写发生在它自己的上下文，不与驱动传输重入），也不会永久放弃。
+
+### 产物
+
+`boot-ctflags.img`（sha256 `f11f45e4…`）：控制台带回退写者 + AMFI 数据级补丁（`mov w8, #0`
+在 `0xfffffff004ab6334`），已刷入设备。
+
+### 早上怎么验
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\aios\_work\morning-check.ps1
+```
+
+手机先按电源 10 秒 → 音量下+电源进 fastboot。脚本会：刷回 Android boot（不擦除）→ 等 adb →
+`adb root` → 从**设备绝对地址 122,139,919** 读 512 个扇区 → 判定 `LOG IS FRESH / EMPTY` →
+打印最后 40 行和关键标记（trust cache 模块数、`unsuitable CT policy`、`dyld cache`、
+`Library not loaded`、`launchd`、`private/var`）。

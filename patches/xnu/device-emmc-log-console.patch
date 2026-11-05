@@ -24,7 +24,7 @@ diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
 index 997a4ab..665f59e 100644
 --- a/pexpert/arm/pe_serial.c
 +++ b/pexpert/arm/pe_serial.c
-@@ -591,6 +591,517 @@
+@@ -591,6 +591,485 @@
  
  /*****************************************************************************/
  
@@ -107,9 +107,13 @@ index 997a4ab..665f59e 100644
 +static uint32_t emmc_index;
 +static uint32_t emmc_used;
 +static bool emmc_failed;
-+/* Set the first time the storage driver flushes for us: from then on it is the only
-+ * writer, because its call is the only one that happens with the controller free. */
-+static bool emmc_hooked;
++/*
++ * Provided by the storage driver (weak, so a board without it still links).  The console's
++ * own polled-PIO sequence stops working once the driver has touched the card, and its
++ * recovery only buys three attempts; the driver's transfer path is the one the whole port
++ * trusts, so a failed block is retried through it.
++ */
++extern int native_msdc_console_sink(uint32_t lba, const void *data) __attribute__((weak));
 +static uint8_t emmc_sector[EMMC_SECTOR] __attribute__((aligned(64)));
 +
 +static uint32_t
@@ -242,19 +246,16 @@ index 997a4ab..665f59e 100644
 +	uint32_t config;
 +	uint64_t deadline;
 +
-+	/*
-+	 * Unconditional on purpose.  The storage driver reprograms CKDIV, bus width and DMA mode
-+	 * and leaves the clock stable, so the old "only when CKSTB is clear" test never fired and
-+	 * the console kept writing at the driver's clock until it timed out for good.
-+	 */
-+	config = emmc_read(EMMC_MSDC_CFG);
-+	config &= ~(0xFFFu << 8);
-+	config |= 1u | EMMC_CFG_PIO | ((emmc_clock_div & 0xFFFu) << 8);
-+	emmc_write(EMMC_MSDC_CFG, config);
-+	deadline = emmc_now_ms() + 20;
-+	while ((emmc_read(EMMC_MSDC_CFG) & EMMC_CFG_CKSTB) == 0) {
-+		if (emmc_now_ms() > deadline) {
-+			return -1;
++	if ((emmc_read(EMMC_MSDC_CFG) & EMMC_CFG_CKSTB) == 0) {
++		config = emmc_read(EMMC_MSDC_CFG);
++		config &= ~(0xFFFu << 8);
++		config |= 1u | EMMC_CFG_PIO | ((emmc_clock_div & 0xFFFu) << 8);
++		emmc_write(EMMC_MSDC_CFG, config);
++		deadline = emmc_now_ms() + 20;
++		while ((emmc_read(EMMC_MSDC_CFG) & EMMC_CFG_CKSTB) == 0) {
++			if (emmc_now_ms() > deadline) {
++				return -1;
++			}
 +		}
 +	}
 +	emmc_write(EMMC_MSDC_INTEN, 0);
@@ -390,7 +391,7 @@ index 997a4ab..665f59e 100644
 +	unsigned int i;
 +	int attempt;
 +
-+	if (emmc_failed || emmc_hooked) {
++	if (emmc_failed) {
 +		return;
 +	}
 +	if (emmc_index + 1 >= emmc_log_sectors) {
@@ -415,6 +416,14 @@ index 997a4ab..665f59e 100644
 +		(void)emmc_wait_ready(1000);
 +	}
 +	if (attempt == 3) {
++		/* The console's own sequence no longer works; hand the block to the driver. */
++		if (native_msdc_console_sink &&
++		    native_msdc_console_sink(emmc_log_lba + 1 + emmc_index, emmc_sector) == 0) {
++			if ((emmc_index % EMMC_HEADER_EVERY) == 0) {
++				emmc_write_header();
++			}
++			return;
++		}
 +		emmc_failed = true;
 +		return;
 +	}
@@ -494,47 +503,6 @@ index 997a4ab..665f59e 100644
 +	.receive_data = emmc_receive_data,
 +	.device = SERIAL_EMMC
 +};
-+
-+/*
-+ * Called by the storage driver between its own transfers, when the controller is free:
-+ * the timer flush races with a transfer in flight, fails, and after three attempts the
-+ * console disables itself for the rest of the boot.
-+ */
-+void
-+pe_serial_emmc_flush(void)
-+{
-+	unsigned int i;
-+	int attempt;
-+
-+	if (emmc_failed) {
-+		return;
-+	}
-+	emmc_hooked = true;
-+	if (emmc_index + 1 >= emmc_log_sectors) {
-+		emmc_failed = true;
-+		return;
-+	}
-+	for (i = emmc_used; i < EMMC_SECTOR; i++) {
-+		emmc_sector[i] = 0;
-+	}
-+	for (attempt = 0; attempt < 3; attempt++) {
-+		emmc_clean(emmc_sector, EMMC_SECTOR);
-+		if (emmc_write_block(emmc_log_lba + 1 + emmc_index, emmc_sector) == 0) {
-+			break;
-+		}
-+		(void)emmc_command(0x0000438Cu, 0, NULL, 250);
-+		emmc_write(EMMC_MSDC_INT, 0xFFFFFFFFu);
-+		(void)emmc_fifo_clear();
-+		(void)emmc_wait_ready(1000);
-+	}
-+	if (attempt == 3) {
-+		emmc_failed = true;
-+		return;
-+	}
-+	if ((emmc_index % EMMC_HEADER_EVERY) == 0) {
-+		emmc_write_header();
-+	}
-+}
 +#endif /* XNU_EMMC_SERIAL */
 +
 +/*****************************************************************************/
