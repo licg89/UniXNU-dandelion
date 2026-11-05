@@ -147,7 +147,7 @@ DEVICE_MODEL = "dandelion"
 
 [payload]
 volume = "DANDELION"
-size_mib = 72   # 64 MiB of files plus the FAT slack; the kernel grew with the verifier and virtio helper
+size_mib = 60   # the boot partition is 64 MiB; the kernel plus the verifier and the virtio helper need 53 MiB of files
 loader = "firmware"
 title = "UniXNU"
 kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1",

@@ -2237,3 +2237,45 @@ XNU 的 make 不跟踪编译开关变化：打开 `XNU_OWNER_ROOT_*` 后 `bsd_in
 
 `D:\aios\out3\boot-ownerroot.img`（sha256 `3f87b8e8…`）：块设备 + 精确签名 + 空桩 +
 owner-root audit/trust 全部在内。
+
+---
+
+## 0.39 块哈希失败的真正原因：carve 偏移算错（2026-11-05 13:1x）
+
+### 诊断日志给出了答案
+
+```
+NativeMsdc: verify 0 len 4096 data 00000000 00000000 got 9952a041 want bc908a6c
+```
+
+- `len 4096` → 长度正确（排除"校验长度不对"）；
+- `data 00000000` → 窗口首块确实是零（OS 窗口开头是保护性 MBR，前 8 字节为零）；
+- `got 9952a041` → **内核算出的哈希与宿主对真实块的哈希完全一致**；
+- `want bc908a6c` → 信封里的表是**另一份 carve** 的哈希。
+
+### 根因
+
+签名脚本里写的是 `dd bs=4M skip=$((OFFSET / BLOCK))`，而 `OFFSET / BLOCK = 1048576 / 4194304 = 0`
+（整数除法）—— 于是 carve 从**镜像开头**（SHNGROOT manifest）开始，而驱动服务的是 **+1 MiB** 处的窗口。
+两边差 1 MiB，每块都不符；宿主侧验证之所以通过，是因为它验的也是同一份错误的 carve。
+
+宿主上能直接看到这个错误：错误 carve 的首 8 字节是 `53484e47524f4f54` = `"SHNGROOT"`。
+
+### 修复与固化
+
+- 用 1 MiB 块（偏移正好一个块，不会再丢）carve：`bs=1M skip=1 count=5797` + `truncate` 到精确长度
+  → 首 8 字节 `0000000000000000`，宿主验证 `PASS: all 1483785 blocks`；
+- 新增 `scripts/sign-window.py`：显式做算术、**拒绝非 MiB 对齐的偏移**、carve 后立即用 kit 的
+  OpenSSL provider 验证信封，不通过就退出 —— 以后不会再出现"签名与 carve 一致但都错"的情况。
+
+### 另一个坑：boot 分区只有 64 MiB
+
+把 `[payload] size_mib` 提到 72 后，boot 镜像 76 MB，`fastboot flash boot` 报
+`FAILED (remote: 'size too large')`。内核加了 verifier + virtio helper 后文件约 53 MiB，
+`size_mib = 60` 是可用的最大值（60 + FAT 开销 ≤ 64）。
+
+### 当前待确认
+
+镜像已按新信封重新刷入（`userdata-signed.img` sha256 `C7BD8B1C…`），下一次启动的日志里
+`want` 应等于 `got`（`9952a041`）。若仍不相等，说明策略区在设备上的位置与驱动读取的位置不一致，
+下一步给驱动加打印（region 起点 + 信封 magic + generation）定位。
