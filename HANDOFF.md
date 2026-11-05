@@ -2330,3 +2330,51 @@ SystemOS union (libSystem resolved)"*，即那种配置下 AMFI 接受缓存。
 3. 兜底方案：给 AMFI 的 CT-policy 比较打补丁（`"unsuitable CT policy"` 字符串已在
    `kernel.macho` 的 0x1228ad7 处定位到，可用 `AppleMobileFileIntegrity` 的 `__TEXT_EXEC`
    范围 0xfffffff004aaa000+132584 反查引用）。
+
+---
+
+## 0.41 AMFI 缓存策略：四条路都试过，卡在这里（2026-11-05 22:0x–23:1x）
+
+### 已完成的事实（都有日志）
+
+```
+NativeMsdc: OS verified against its signed policy
+NativeMsdc: SystemOS verified against its signed policy
+NativeMsdc: published SystemOS / published OS
+apfs: mount-complete volume DawnUpdate21H461…（真实 OS 卷）
+load_init_program: attempting to load /sbin/launchd     ← exec 通过
+dyld cache 找到：/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64
+AMFI: 该缓存 adhoc 签名 → 'unsuitable CT policy 0 for this platform/device'
+dyld: code signature registration for shared cache failed
+launchd 退出 namespace 6 subcode 0x1（LIBSYSTEM，libSystem 未加载）
+```
+
+### 试过并排除的
+
+| 尝试 | 证据 |
+| --- | --- |
+| 只带 OS 的 Apple trust cache | AMFI 仍拒绝缓存 |
+| OS + SystemOS 两份合并（bundle sha256 `7416ca4f…`，与 marble 记录的 two-module original bundle 一致）| `loaded external trust cache module: 0 / 1` 两个都加载，仍拒绝 |
+| `OWNER_CACHE_CARRIER`（`/private/preboot`）代替 union | 同样拒绝 → 与挂载路径无关 |
+| 把 **dyld cache 自己的 cdhash** 加进 trust cache（`fcdb9268e40dc7599ae3f26c4116d5ab0329ead2`，从 SystemOS carve 的 `cache+0x74000` SuperBlob 里的 CodeDirectory 解出，identifier `com.apple.dyld.cache.arm64.universal`）| 三个模块都加载，仍拒绝 → **CT policy 检查先于 trust cache 查找** |
+
+### 逆向尝试（未果）
+
+- `"unsuitable CT policy"` 字符串在 `kernel.macho` 文件偏移 `0x1228ad7`（VA `0xfffffff0042e0ad7`，在 AMFI `__TEXT` 范围 `0xfffffff0042db6c0+45395` 内）；
+- 扫描全部可执行段的 `adrp+add/sub`（含 shift 0/12）与 `ldr literal` 形式：**0 处引用**；
+- 扫描全镜像里指向该 VA 的 8 字节指针：**0 个槽位**。
+
+结论：这条日志不是通过常规引用生成的（或 AMFI 的判定代码不在这份预链接像里），所以"给 AMFI 打字节补丁"目前没有落点。**不建议**继续盲目反汇编。
+
+### 明天的方向（按可行性排序）
+
+1. **未验证根**（`OWNER_ROOT_AUDIT/TRUST=n`）：marble 记录明确写这种配置下 *"launchd started with the SystemOS union (libSystem resolved)"*。
+   阻塞点是 `bsd_init` 补丁的应用不稳定：同一份源码在两次构建中一次带框架的
+   `offline-owner-root-binding-audit` 片段、一次不带。解决办法：
+   - 用**无上下文的单行补丁**（`@@ -N,1 +N,1 @@`，只替换 `panic(...)` 那一行）；
+   - 或者用框架的 **payload `text_fixups`**（`/chosen/text-fixups`，官方支持在签名后改字节）。
+2. **查 AMFI 判定来源**：把 `AppleMobileFileIntegrity` kext 单独反汇编（它的 `__TEXT_EXEC`
+   范围 `0xfffffff004aaa000 + 132584`），找 `ct_policy` 比较与返回路径；也可以对比
+   `AppleImage4`/`AMFI` 在 kernelcache 原始镜像里的位置，确认预链接是否正确搬运了该段。
+3. **社区确认**：框架的 Telegram/GitHub 讨论里应有"verified root + dyld shared cache"的结论，
+   这是最省时间的路。
