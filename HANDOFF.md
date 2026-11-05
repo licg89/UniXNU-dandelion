@@ -2279,3 +2279,54 @@ NativeMsdc: verify 0 len 4096 data 00000000 00000000 got 9952a041 want bc908a6c
 镜像已按新信封重新刷入（`userdata-signed.img` sha256 `C7BD8B1C…`），下一次启动的日志里
 `want` 应等于 `got`（`9952a041`）。若仍不相等，说明策略区在设备上的位置与驱动读取的位置不一致，
 下一步给驱动加打印（region 起点 + 信封 magic + generation）定位。
+
+---
+
+## 0.40 到达用户态：launchd 执行，卡在 dyld 共享缓存的签名策略（2026-11-05 21:0x–22:3x）
+
+### 整条链路现在通了
+
+```
+eMMC → GPT → ios 分区（30 GiB，独立于 userdata）
+  → SHNGROOT manifest → 窗口块设备（OS + SystemOS 两个条目）
+  → VerifiedRoot 逐块校验：OS verified / SystemOS verified
+  → APFS 挂载真实 OS 卷 → owner-root 接受（不再 rootvp panic）
+  → /sbin/launchd exec 成功（sheng-skip-cs=1 清掉了 AMFI 的 ip_mac_return）
+  → dyld 找到共享缓存（SystemOS union / preboot 载体两条路都试过）
+  → AMFI 拒绝缓存签名：'is adhoc signed' + 'unsuitable CT policy 0 for this platform/device'
+```
+
+launchd 因此以 `namespace 6 subcode 0x1`（LIBSYSTEM，`Library not loaded:
+/usr/lib/libSystem.B.dylib`）退出。
+
+### 已排除的方向（都有日志证据）
+
+| 尝试 | 结果 |
+| --- | --- |
+| 只带 OS 的 Apple trust cache | AMFI 仍拒绝缓存 |
+| **OS + SystemOS 两份合并**（`scripts/merge_trustcache.py`，bundle sha256 `7416ca4f…`，与 marble 记录里的 "two-module original trust bundle" 完全一致）| 两个模块都加载（`loaded external trust cache module: 0 / 1`），AMFI 仍拒绝 |
+| `OWNER_CACHE_CARRIER`（`/private/preboot` 载体）代替 union | 同样拒绝，说明不是挂载路径的问题 |
+| 从 carve 里直接取 dyld cache 算 cdhash | cache 不在 OS 卷（扫描 `dyld_v1` 无命中），在 SystemOS cryptex 的 APFS 里；`fsapfsmount` 这个包没编进 FUSE，挂载不了 |
+
+### 当前的判断
+
+`OWNER_ROOT_TRUST=1` 会让 AMFI 按 owner 根的策略检查缓存签名（缓存是 adhoc 的 IPSW 版本），
+而参考设备 `marble-milacy` 的实现要点是**未验证根**：记录明确写 *"launchd started with the
+SystemOS union (libSystem resolved)"*，即那种配置下 AMFI 接受缓存。
+
+### 未验证根实验为何没做完
+
+按 marble 的思路改成 `OWNER_ROOT_AUDIT/TRUST=n` + 自己的 `bsd_init` 补丁（`root-unverified=1`
+放行）时，补丁无法稳定应用：同一份源码在两次构建中 `bsd_init.c` 一次带框架的
+`offline-owner-root-binding-audit` 片段、一次不带，从一次捕获生成的补丁在下一次必然失败。
+为不把时间耗在补丁机制上，配置已回退到"已验证根"（它已经能到 AMFI 缓存检查这一步）。
+
+### 下一步（明天从这里开始）
+
+1. 让补丁稳定：把 `root-unverified` 的 hunk 改成**对两种树都成立**的形式（例如只改
+   `panic(...)` 这一行，`@@ -N,1 +N,1 @@` 无上下文），或用框架的 `text-fixup` 机制在
+   payload 里做字节补丁；
+2. 若未验证根确实让 AMFI 接受缓存，再逐步恢复 `OWNER_ROOT_TRUST=1` 找出真正影响 AMFI 的开关；
+3. 兜底方案：给 AMFI 的 CT-policy 比较打补丁（`"unsuitable CT policy"` 字符串已在
+   `kernel.macho` 的 0x1228ad7 处定位到，可用 `AppleMobileFileIntegrity` 的 `__TEXT_EXEC`
+   范围 0xfffffff004aaa000+132584 反查引用）。

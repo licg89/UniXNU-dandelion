@@ -33,9 +33,11 @@ dandelion-msdc.patch
 # zzyc-owner-skip-launch-constraints.patch
 
 #
-# dandelion-root-authorize.patch is superseded: CONFIG_XNU_OWNER_ROOT_AUDIT/TRUST now enable
-# the framework's offline-owner-root-binding-audit, which does the same check and is the
-# documented path.  The file stays in the tree for reference.
+# Root acceptance without the owner-root trust switch: the reference record shows the
+# unverified-root configuration is the one where AMFI accepts the dyld shared cache and
+# launchd's libSystem resolves, while CONFIG_XNU_OWNER_ROOT_TRUST makes AMFI insist on owner
+# signatures the IPSW's cache does not carry.  This patch stops the bsd_init panic as long as
+# the eMMC driver vouches for the mounted root, and leaves AMFI's policy alone.
 #
 # dandelion-root-authorize.patch
 #
