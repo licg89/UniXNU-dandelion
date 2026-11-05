@@ -150,6 +150,14 @@ volume = "DANDELION"
 size_mib = 60   # the boot partition is 64 MiB; the kernel plus the verifier and the virtio helper need 53 MiB of files
 loader = "firmware"
 title = "UniXNU"
+#
+# The OS volume's Apple trust cache, taken from the IPSW (Firmware/044-76040-038.dmg.trustcache).
+# Without it the payload carries only our own owner_trust_cache, whose entries are the mockfs
+# fixtures, so AMFI refuses every Apple-signed image on the real root and kills launchd with
+# OS_REASON_EXEC / EXEC_EXIT_REASON_SECURITY_POLICY (namespace 9, code 0x8).  The payload step
+# accepts this file only if its SHA-256 is the one recorded here.
+#
+trust_cache_sha256 = "4563bdbf6ed8f72237d45dbba3ccde432634338f95c10d79d5d4631678a97c7c"
 kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1",
                "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480"]
 #
