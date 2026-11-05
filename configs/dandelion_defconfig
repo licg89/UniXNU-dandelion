@@ -26,6 +26,16 @@ CONFIG_XNU_TRUST_CACHE_RUNTIME=y
 #
 CONFIG_XNU_OWNER_ROOT_AUDIT=y
 CONFIG_XNU_OWNER_ROOT_TRUST=y
+#
+# The dyld shared cache: launchd now execs (AMFI is past) but fails with "no dyld cache" for
+# /usr/lib/libSystem.B.dylib.  The cache travels in the SystemOS cryptex, so that window needs
+# its own signed policy entry (it has one now), has to be mounted, and the owner cache carrier
+# has to come up at startup.
+#
+CONFIG_XNU_OWNER_CACHE_MOUNT=y
+CONFIG_XNU_OWNER_CACHE_STARTUP=y
+CONFIG_XNU_OWNER_BOOT_MANIFEST=y
+CONFIG_XNU_OWNER_UNION_SYSTEMOS=y
 CONFIG_XNU_NATIVE_VIRTIO_BLOCK=y
 # The eMMC driver verifies every published block against the owner policy, so the
 # build gates accept it as verified block storage (local deviation, documented in
