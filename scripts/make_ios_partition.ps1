@@ -3,13 +3,13 @@
 # Run with the phone booted into Android and USB debugging authorised:
 #   powershell -ExecutionPolicy Bypass -File D:\aios\_work\make_ios_partition.ps1
 #
-# It dumps the primary GPT, carves a 24 GiB `ios` partition out of the tail of userdata,
+# It dumps the primary GPT, carves a 30 GiB `ios` partition out of the tail of userdata,
 # writes both GPT copies back, reformats the (now smaller) userdata and flashes the iOS
 # image into `ios`.  After this, an iOS test is only `fastboot flash boot` + reboot, and
 # Android - including developer options and the USB debugging grant - stays as it is.
 
 param(
-  [double] $IosGiB = 24,
+  [double] $IosGiB = 30,
   [string] $Serial = 'QS55XCPRCA9LDA5T',
   [string] $Image = 'D:\aios\out3\userdata-signed.img'
 )

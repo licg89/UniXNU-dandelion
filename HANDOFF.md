@@ -2123,14 +2123,14 @@ iOS 镜像原来放在 userdata **偏移 0**（SHNGROOT manifest 的固定位置
 超级块也在那里 —— 两者互斥，所以每次 iOS 测试都要 `fastboot flash userdata`（6.5 分钟），
 之后 Android 必须 `fastboot -w` 重设（开发者选项、USB 调试授权全部丢失）。
 
-**方案：给 iOS 单独一个 GPT 分区 `ios`**（24 GiB，可调），userdata 相应缩小到约 30 GB：
+**方案：给 iOS 单独一个 GPT 分区 `ios`**（按你的要求设为 **30 GiB**），userdata 相应缩小到 21.8 GiB：
 
 | 收益 | |
 | --- | --- |
 | 不再刷 userdata | iOS 镜像只刷一次到 `ios`：`fastboot flash ios userdata-signed.img` |
 | Android 一直可用 | `/data` 不再被覆盖，开发者选项与 USB 调试授权保留 |
 | 每次测试 | `fastboot flash boot` + 重启 + `adb root` 读日志 |
-| iOS 空间 | 24 GiB（当前镜像 9.4 GB，余量足够以后加 Data 卷） |
+| iOS 空间 | 30 GiB（当前镜像 9.4 GB，余量足够以后加 Data 卷） |
 
 ### 已完成的代码
 
@@ -2157,3 +2157,20 @@ iOS 镜像原来放在 userdata **偏移 0**（SHNGROOT manifest 的固定位置
   `-w` 流程先重启一次（脚本里已这么做）。
 - 分区表的唯一 GUID 用固定值（`0102…10`），文档记录，便于识别。
 - 持久化 store（`native-msdc-persist`）现在落在 `ios` 分区内；等 Data 卷真正启用时再单独规划。
+
+### GPT 编辑的离线自检（已通过）
+
+用一块与真机同形的合成 GPT（122,142,720 扇区、userdata 13,385,728..122,021,854）跑
+`make_ios_partition.py --ios-gib 30`，校验结果：
+
+```
+primary: header CRC ok True, entries at LBA 2, entries CRC 0x3458b95a
+backup:  header CRC ok True, entries at LBA 122142688, entries CRC 0x3458b95a
+primary entries CRC ok: True   backup entries CRC ok: True
+primary and backup tables identical: True
+  [1] userdata   13385728..59107294   21.8 GiB
+  [2] ios        59107295..122021854  30.0 GiB
+```
+
+即两份 GPT 一致、CRC 全对、`ios` 精确占据 userdata 原尾部。真机上执行时脚本会先把
+原 GPT dump 到 `D:\aios\out3\gpt-dump.bin`，出问题可以直接写回。

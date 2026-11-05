@@ -7,7 +7,7 @@ flash and an Android re-setup.  With its own GPT partition the iOS data area is 
 Android keeps its filesystem, and the driver reads `ios` in preference to `userdata`
 (NativeMsdc.h gptFindData).
 
-    make_ios_partition.py <gpt-dump> <output-prefix> [--ios-gib 24]
+    make_ios_partition.py <gpt-dump> <output-prefix> [--ios-gib 30]
 
 The dump is sectors 0..33 of the disk (primary GPT).  The script writes
 <prefix>-primary.bin (34 sectors from LBA 0) and <prefix>-backup.bin (33 sectors that go
@@ -26,7 +26,7 @@ SECTORS = 34
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('dump', type=pathlib.Path, help='sectors 0..33 of the disk')
 parser.add_argument('prefix', type=pathlib.Path)
-parser.add_argument('--ios-gib', type=float, default=24.0)
+parser.add_argument('--ios-gib', type=float, default=30.0)
 parser.add_argument('--name', default='ios')
 args = parser.parse_args()
 
