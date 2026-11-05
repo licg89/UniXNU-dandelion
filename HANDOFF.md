@@ -2393,3 +2393,41 @@ launchd 退出 namespace 6 subcode 0x1（LIBSYSTEM，libSystem 未加载）
 
 当前配置已恢复为能走到 AMFI 判定的那一版（`OWNER_ROOT_AUDIT/TRUST=y`），
 series 只保留已验证可用的六个补丁。
+
+## 0.43 AMFI 拒绝点已精确定位（2026-11-05 23:4x）
+
+### 方法上的关键突破
+
+之前扫描"没有引用"是**方法错误**：我用的是 substring
+（`"unsuitable CT policy"`）的地址，而编译器物化的是**整个字面量的开头**：
+
+```
+b"AMFI: '%s': unsuitable CT policy %#llx for this platform/device, rejecting signature.\n"
+b"AMFI: '%s' is adhoc signed.\n"
+```
+
+从 substring 往回找到前一个 NUL 得到字面量起点，再用 `adrp + add/sub` 扫描，两处引用立刻命中：
+
+| 字面量 | VA | 引用它的代码 |
+| --- | --- | --- |
+| `AMFI: '%s': unsuitable CT policy %#llx ...` | `0xfffffff0042e0acb` | **`0xfffffff004ab634c`** |
+| `AMFI: '%s' is adhoc signed.` | `0xfffffff0042e0ceb` | **`0xfffffff004ab6090`** |
+
+两处都在 `AppleMobileFileIntegrity.__TEXT_EXEC`（`0xfffffff004aaa000 + 0x205e8`）内，
+说明**判定代码确实在预链接镜像里**，只是字符串引用是"字面量起点 + adrp/add"，不是指针表。
+
+### 扫描器的可靠性已验证
+
+用同一扫描器找我们自己补丁的字符串
+`"DANDELION-EXEC: load_machfile"`（VA `0xfffffff0070c6033`）→ 命中 1 处
+（`0xfffffff00773d8ec`），证明算法正确，之前的 0 命中确实是 substring 偏移造成的。
+
+### 下一步（有明确落点）
+
+1. 反汇编 `0xfffffff004ab6000–0xfffffff004ab6500`：这一区段包含两条消息的设置处；
+   找 `ct_policy` 的比较和通往 `0xfffffff004ab634c`（CT 消息）的条件分支，
+   把该条件分支改成"直接走接受路径"即可（或改成读一个启动参数）；
+2. 补丁方式：内核是我们自己构建的，预链接后对 `kernel.macho` 做字节改写即可
+   （Apple kext 在预链接里没有运行时签名校验）；
+3. 验证：改完启动，看是否还打印那两行 AMFI 消息、launchd 是否不再
+   `no dyld cache`。
