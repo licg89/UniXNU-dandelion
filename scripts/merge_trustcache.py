@@ -18,9 +18,10 @@ import sys
 import pathlib
 
 out = pathlib.Path(sys.argv[1])
-sources = [pathlib.Path(name) for name in sys.argv[2:]]
-if not sources:
-    sys.exit('give at least one .trustcache file')
+sources = [pathlib.Path(name) for name in sys.argv[2:] if not name.startswith('--extra=')]
+extras = [name.split('=', 1)[1] for name in sys.argv[2:] if name.startswith('--extra=')]
+if not sources and not extras:
+    sys.exit('give at least one .trustcache file or --extra=<cdhash>')
 
 modules = []
 for source in sources:
@@ -43,6 +44,19 @@ for source in sources:
         sys.exit(f'{source}: module v{version} with {count} entries in {len(payload)} bytes')
     print(f'{source.name}: module v2, {count} entries')
     modules.append(payload)
+
+# An extra cdhash (for example the dyld shared cache, which the IPSW trust caches do not list)
+# becomes a module of its own; AMFI's adhoc acceptance is a trust-cache lookup by cdhash.
+if extras:
+    entries = bytearray()
+    for value in sorted(extras):
+        cdhash = bytes.fromhex(value.strip())
+        if len(cdhash) != 20:
+            sys.exit(f'--extra={value}: a cdhash is 20 bytes')
+        entries += cdhash + b'\x02' + b'\x00\x00\x00'      # sha256 hash type, no flags
+    module = struct.pack('<I', 2) + b'DANDELIONCACHE01' + bytes(3) + struct.pack('<I', len(extras))
+    modules.append(module + bytes(entries))
+    print(f'extra module: {len(extras)} cdhash entries')
 
 count = len(modules)
 head = 4 + 4 * count
