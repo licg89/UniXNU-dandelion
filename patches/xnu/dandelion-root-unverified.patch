@@ -1,15 +1,5 @@
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
-@@ -943,7 +943,11 @@
- 			/* enforce sealedness */
- 			int autherr = VNOP_IOCTL(rootvnode, FSIOC_KERNEL_ROOTAUTH, NULL, 0, vfs_context_kernel());
- 			if (autherr) {
+@@ -946,1 +946,1 @@
 -				panic("rootvp not authenticated after mounting");
-+				if (!PE_parse_boot_arg("root-unverified")) {
-+					panic("rootvp not authenticated after mounting");
-+				} else {
-+					printf("DANDELION: root accepted unverified (root-unverified=1)\n");
-+				}
- 			}
- 		}
- 	}
++				{ extern int native_msdc_root_unverified; if (!native_msdc_root_unverified) panic("rootvp not authenticated after mounting"); }

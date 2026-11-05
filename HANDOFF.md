@@ -2378,3 +2378,18 @@ launchd 退出 namespace 6 subcode 0x1（LIBSYSTEM，libSystem 未加载）
    `AppleImage4`/`AMFI` 在 kernelcache 原始镜像里的位置，确认预链接是否正确搬运了该段。
 3. **社区确认**：框架的 Telegram/GitHub 讨论里应有"verified root + dyld shared cache"的结论，
    这是最省时间的路。
+
+## 0.42 两条误导线索的记录（2026-11-05 23:0x）
+
+1. **`amfi-only-platform-code` 不是我们的 ADT 属性**。我在 payload 里搜到这个字符串
+   （0x1718d96），一度以为框架把 AMFI 钉在平台策略；实际上下文是
+   `...amfi-only-platform-code\0"AMFI: no amfi-only-plat...` —— 它是 **AMFI 自己的日志文本**，
+   随 `kernel.macho` 进入 payload。DTS 与 board.toml 都没有这个属性。
+2. **无上下文单行补丁同样不稳定**。`dandelion-root-unverified.patch` 用
+   `@@ -946,1 +946,1 @@` 只替换 `panic(...)` 一行，仍然报
+   `patch does not apply` —— 说明两次构建的 `bsd_init.c` 里那一行**本身**就不同（不只是上下文）。
+   因此"未验证根"这条路线在补丁机制上暂时不可行，除非换成 payload `text_fixups`
+   或修改框架生成源码树的方式。
+
+当前配置已恢复为能走到 AMFI 判定的那一版（`OWNER_ROOT_AUDIT/TRUST=y`），
+series 只保留已验证可用的六个补丁。

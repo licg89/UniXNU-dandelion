@@ -125,6 +125,10 @@ extern "C" volatile uint32_t native_msdc_busy = 0;
 // the area's base sector instead of the partition's first sector.
 uint64_t gAreaBytes = 0;
 uint64_t gAreaBaseSector = 0;
+
+// bsd_init asks this instead of panicking on an unauthenticated root; the branch is taken when
+// the root-unverified boot argument is present (development bring-up only).
+extern "C" int native_msdc_root_unverified = 0;
 constexpr uint64_t kDmaPhysicalMask = 0x00000000fffff000ULL;
 constexpr uint32_t kDmaSelfTestSector = 0x40;
 constexpr unsigned kDmaSelfTestBlocks = 4;
@@ -717,6 +721,7 @@ bool hostFindLayout (const char **why)
   IOLog ("NativeMsdc: userdata sectors %llu..%llu\n", gpt.userdataFirst, gpt.userdataLast);
   gAreaBytes = partitionSectors * kSector;
   gAreaBaseSector = gpt.userdataFirst;
+  native_msdc_root_unverified = int (bootArgument ("root-unverified", 1, 0));
   IOLog ("NativeMsdc: data partition sectors %llu..%llu (%llu MiB)\n",
          gpt.userdataFirst, gpt.userdataLast, gAreaBytes / (1024 * 1024));
   if (partitionSectors < kManifestBytes / kSector ||
