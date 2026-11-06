@@ -18,8 +18,12 @@ sheng-platform-power.patch
 # guess at OS_REASON_EXEC / EXEC_EXIT_REASON_BAD_MACHO.  Remove once the mockfs
 # fixture runs.
 #
-dandelion-exec-diag.patch
-dandelion-4k-diag.patch
+# Temporary diagnostics, retired after they named the real failure (ETIMEDOUT from the
+# storage driver).  Their panics would otherwise fire on any later exec/namei failure and hide
+# the next real error.  The files are kept for reference.
+#
+# dandelion-exec-diag.patch
+# dandelion-4k-diag.patch
 #
 # Instantiates the vendored MSDC driver on the board's IOPlatformDevice, since it
 # is linked into the kernel instead of being loaded as a kext.
