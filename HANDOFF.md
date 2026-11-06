@@ -3076,3 +3076,66 @@ payload_bytes        62,914,560（60 MiB，未触发 57 MiB 的容量上限 ✓�
 - RamBlock 是否以 `md0`/IOMedia 发布 seed 并挂载；
 - `Failed to open swap file 30`（EROFS）是否消失；
 - launchd 之后是否出现 `/private/var` 或第一个用户态服务。
+
+---
+
+## 0.56 Data 卷成功挂载；dyld 缓存不可见是下一个问题（2026-11-07 03:0x）
+
+### 诊断 panic 的输出（`dandelion-owner-diag.patch`，临时）
+
+```
+D4K owner: cache=0 stage=6 auth=1 union=1 mnt=0 ro=1 recheck=1 | data=0 stage=4 ro=0
+           | root=0xfffffff5b28072e0
+```
+
+逐项解读（源码见 `offline-owner-systemos-mount.patch`）：
+
+| 字段 | 值 | 含义 |
+| --- | --- | --- |
+| `cache` | 0 | `native_owner_cache_prepare` 返回 0 = 成功 |
+| `stage` | 6 | 走到最后一步 |
+| `auth` | 1 | `cache_authorized` 为真（readonly + apfs + verified-block + union 全部满足）|
+| `union` | 1 | `native_union` 为真：`vnode_mountedhere(os_root)==cache_mount && rootvnode==mounted_root` |
+| `mnt` | 0 | 挂载成功；`ro=1` 只读；`recheck=1` 根复核通过 |
+| **`data`** | **0** | **`native_owner_data_prepare` 成功** |
+| **`data stage`** | **4** | 走到最后一步（已校验设备号、非只读、apfs）|
+| **`data ro`** | **0** | **Data 卷可写** —— EROFS 的对立面 |
+
+即：**CI 生成的 Data seed 已经完整走通** —— RamBlock 发布（日志里 `disk1` =
+65536 块 = 256 MiB）、内核按 `XNU_OWNER_DATA_VOLUME_UUID` 选中它、挂到
+`/private/var`、校验为可写 APFS ✓。
+
+### `Failed to open swap file 30` 是假线索
+
+`vm_swap_init` 早于 `native_owner_data_prepare`（后者在 bsd_init 末尾、launchd 之前），
+所以创建 swap 文件时 `/private/var` 还没挂载 —— EROFS 是必然的，不是故障。
+Data 挂载成功之后 swap 可以再建。
+
+### 新的真实问题：dyld 缓存不可见
+
+屏幕上：
+
+```
+initproc failed to start -- namespace 6 subcode 0x1
+Library not loaded: /usr/lib/libSystem.B.dylib
+reason: tried: ... (no such file, no dyld cache)
+```
+
+owner 层全部成功（union=1、cache 挂载成功），但 dyld 找不到缓存。
+
+**静态验证（本机，不需要设备）**：
+
+| 镜像 | `com.apple.dyld` | `dyld_shared_cache_arm64` |
+| --- | --- | --- |
+| OS 根卷（`os-apfs.img`，由 `udif.py` 从 IPSW 解出） | 0 | 0 |
+| **SystemOS cryptex**（`044-76034-038.dmg`） | **70** | **226** |
+
+cryptex 内还有 `System/Library/Caches/com.apple.dyld`（8 处）✓ —— 说明缓存相对卷根
+就在这个路径上，union 合并后理论上应可见。
+
+### 下一步
+
+已加入临时诊断（`D4K paths:` panic），用 `vnode_lookup` 分别查
+`/usr/lib/dyld`、`/System/Library/Caches/com.apple.dyld`、该目录下的
+`dyld_shared_cache_arm64`、`/private/var/tmp`，四个 errno 会指出是哪一层不可见：
+0 = 可见；2(ENOENT) = 不存在；20(ENOTDIR) = 中间组件不是目录。

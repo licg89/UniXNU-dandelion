@@ -1,17 +1,25 @@
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -8188,7 +8188,14 @@
+@@ -8188,7 +8188,22 @@
  #if defined(XNU_OWNER_DATA_MOUNT) && XNU_OWNER_DATA_MOUNT
  	int data_error = native_owner_data_prepare(p, (user_addr_t)scratch_addr);
  	if (data_error) panic("offline scratch Data mount failed: %d", data_error);
  #endif
-+	panic("D4K owner: cache=%d stage=%d auth=%d union=%d mnt=%d ro=%d recheck=%d "
-+	    "| data=%d stage=%d ro=%d | root=%p",
-+	    native_owner_cache_status, native_owner_cache_stage, native_owner_cache_authorized,
-+	    native_owner_cache_native_union, native_owner_cache_mount_status,
-+	    native_owner_cache_readonly, native_owner_cache_root_recheck,
-+	    native_owner_data_status, native_owner_data_stage, native_owner_data_readonly,
-+	    (void *)rootvnode);
++	{
++		vnode_t p1 = NULLVP, p2 = NULLVP, p3 = NULLVP, p4 = NULLVP;
++		vfs_context_t ctx = vfs_context_current();
++		int e1 = vnode_lookup("/usr/lib/dyld", 0, &p1, ctx);
++		int e2 = vnode_lookup("/System/Library/Caches/com.apple.dyld", 0, &p2, ctx);
++		int e3 = vnode_lookup("/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
++		                      0, &p3, ctx);
++		int e4 = vnode_lookup("/private/var/tmp", 0, &p4, ctx);
++		panic("D4K paths: dyld=%d cachedir=%d cachefile=%d vartmp=%d",
++		    e1, e2, e3, e4);
++		if (p1) vnode_put(p1);
++		if (p2) vnode_put(p2);
++		if (p3) vnode_put(p3);
++		if (p4) vnode_put(p4);
++	}
  #if CONFIG_MEMORYSTATUS
  	(void) memorystatus_init_at_boot_snapshot();
  #endif /* CONFIG_MEMORYSTATUS */
