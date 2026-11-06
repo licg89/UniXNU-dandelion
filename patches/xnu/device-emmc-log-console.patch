@@ -24,7 +24,7 @@ diff --git a/pexpert/arm/pe_serial.c b/pexpert/arm/pe_serial.c
 index 997a4ab..665f59e 100644
 --- a/pexpert/arm/pe_serial.c
 +++ b/pexpert/arm/pe_serial.c
-@@ -591,6 +591,485 @@
+@@ -591,6 +591,473 @@
  
  /*****************************************************************************/
  
@@ -107,13 +107,6 @@ index 997a4ab..665f59e 100644
 +static uint32_t emmc_index;
 +static uint32_t emmc_used;
 +static bool emmc_failed;
-+/*
-+ * Provided by the storage driver (weak, so a board without it still links).  The console's
-+ * own polled-PIO sequence stops working once the driver has touched the card, and its
-+ * recovery only buys three attempts; the driver's transfer path is the one the whole port
-+ * trusts, so a failed block is retried through it.
-+ */
-+extern int native_msdc_console_sink(uint32_t lba, const void *data) __attribute__((weak));
 +static uint8_t emmc_sector[EMMC_SECTOR] __attribute__((aligned(64)));
 +
 +static uint32_t
@@ -416,15 +409,10 @@ index 997a4ab..665f59e 100644
 +		(void)emmc_wait_ready(1000);
 +	}
 +	if (attempt == 3) {
-+		/* The console's own sequence no longer works; hand the block to the driver. */
-+		if (native_msdc_console_sink &&
-+		    native_msdc_console_sink(emmc_log_lba + 1 + emmc_index, emmc_sector) == 0) {
-+			if ((emmc_index % EMMC_HEADER_EVERY) == 0) {
-+				emmc_write_header();
-+			}
-+			return;
-+		}
-+		emmc_failed = true;
++		/* Keep the block buffered.  These flushes run from IOLog inside driver transfers,
++		 * where the controller is busy, so the first attempts after the driver starts
++		 * always fail; setting emmc_failed here is what silenced the console for the rest
++		 * of the boot.  The next flush tries again. */
 +		return;
 +	}
 +
