@@ -2567,3 +2567,58 @@ shared_region: [1(launchd)] check_np(...) vm_shared_region_start_address() faile
 
 `boot-biglog.img`（sha256 `89882976…`）：合法三模块 bundle + CT 数据级补丁 +
 14 MB 控制台日志窗口。日志从 flashinfo 分区起始 LBA（122,109,919）读取。
+
+---
+
+## 0.47 下午绕弯的原因：lret=4 是 LOAD_FAILURE，不是 LOAD_BADMACHO（2026-11-06 20:0x）
+
+### 事实
+
+`dandelion-exec-diag.patch` 的 panic 给出：
+
+```
+DANDELION-EXEC: load_machfile lret=4 errno=85 cputype=16777228
+                flags=0 filetype=2 ncmds=22 @kern_exec.c:1351
+```
+
+`cputype=0x100000C`（ARM64 ✓）、`filetype=2`（MH_EXECUTE ✓）、`ncmds=22` ✓ 都正常。
+但 `bsd/kern/mach_loader.h` 的枚举是：
+
+```c
+#define LOAD_SUCCESS    0
+#define LOAD_BADARCH    1
+#define LOAD_BADMACHO   2
+#define LOAD_SHLIB      3
+#define LOAD_FAILURE    4   /* lret=4 是这个 */
+#define LOAD_NOSPACE    5
+#define LOAD_PROTECT    6
+#define LOAD_RESOURCE   7
+#define LOAD_ENOENT     8
+#define LOAD_IOERROR    9
+#define LOAD_DECRYPTFAIL 10
+```
+
+**lret=4 = LOAD_FAILURE（Miscellaneous error）**，不是 BADMACHO ✗。之前把
+`mach_loader.c` 里 14 处、44 处 `LOAD_BADMACHO` 返回改成 panic，一次都没触发 —— 因为它们
+根本不在失败路径上。这也解释了为什么屏幕一直是同一条 `DANDELION-EXEC`（我们自己的
+panic 在 `load_machfile` 失败时打印，而插桩点在更里面、且是另一种返回码 ✗）。
+
+### 处置
+
+`dandelion-4k-diag.patch` 改为对 `mach_loader.c` 中**全部 86 处非成功返回**插桩
+（LOAD_FAILURE / NOSPACE / PROTECT / RESOURCE / ENOENT / IOERROR / DECRYPTFAIL /
+BADARCH / BADMACHO / SHLIB），每处 panic 带行号与返回码：`D4K line NNN: LOAD_XXX`。
+下一次启动的屏幕会直接指出失败点（提交 `0c4d216`，镜像 `137f9ecd…`）。
+
+### 教训
+
+**诊断前先核对常量的定义**，不要凭名字推断数值。一下午的插桩都建立在
+"4 = BADMACHO" 这个未经验证的假设上。
+
+### 仍未解决的环境问题（不影响上面这条）
+
+内核 eMMC 控制台在 verified-root 启动后停止写入，日志稳定停在
+`VM Swap Subsystem is ON`（约 172 行）✗。已排除：地址/分区错（固件块可写 ✓）、
+ADT 节点丢失（节点在 ✓）、驱动没恢复 CFG（HostSession 会恢复 ✓）、门控饿死、
+定时刷写并发、跨模块调用（pexpert 与 kext 符号不互通，链接失败 ✗）、
+失败后永久静默（已改成不放弃 ✓）。目前改用 **panic 屏**作为可靠诊断通道 ✓。
