@@ -465,20 +465,14 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
   if (gHost.poisoned) return kIOReturnNotReady;
   if (!blocks || blocks > kMaxBlocks || sector >= gHost.diskSectors || blocks > gHost.diskSectors - sector)
     return kIOReturnBadArgument;
+  // No retry here on purpose: a retried read can leave a partially refreshed buffer, and the
+  // verified reader hashes every block, so a retry after a stall becomes a hash mismatch and a
+  // refused window -- the boot stopped at "offline owner SystemOS mount failed: 80" when this was
+  // tried.  The longer command deadline above is the safe part of that change.
   IOReturn result;
-  for (unsigned attempt = 0; attempt < 2; ++attempt) {
-    if (write) result = hostWrite (uint32_t (sector), buffer, blocks);
-    else if (gHost.dmaEnabled) result = hostReadDma (uint32_t (sector), buffer, blocks);
-    else result = hostReadPio (kCmdReadSingle, uint32_t (sector), buffer, blocks);
-    if (result == kIOReturnSuccess) break;
-    // One transaction can stall while the rest of the volume stays healthy (the boot log shows
-    // exactly that on disk3).  Put the card back in the transfer state and try once more.
-    uint32_t response = 0;
-    (void) hostCommand (kCmdStop, 0, Data::None, &response);
-    wr (kMsdcIntr, 0xFFFFFFFFu);
-    wr (kMsdcFifoCs, rd (kMsdcFifoCs) | kFifoClear);
-    (void) waitClear (kMsdcFifoCs, kFifoClear);
-  }
+  if (write) result = hostWrite (uint32_t (sector), buffer, blocks);
+  else if (gHost.dmaEnabled) result = hostReadDma (uint32_t (sector), buffer, blocks);
+  else result = hostReadPio (kCmdReadSingle, uint32_t (sector), buffer, blocks);
   if (result != kIOReturnSuccess) __atomic_fetch_add (&native_msdc_failures, 1, __ATOMIC_RELAXED);
   else __atomic_fetch_add (write ? &native_msdc_writes : &native_msdc_reads, 1, __ATOMIC_RELAXED);
   return result;
