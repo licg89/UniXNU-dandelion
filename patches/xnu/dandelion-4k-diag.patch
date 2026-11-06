@@ -1,0 +1,124 @@
+--- a/bsd/kern/mach_loader.c
++++ b/bsd/kern/mach_loader.c
+@@ -2125,7 +2125,7 @@
+ #endif /* __arm64__ */
+ 	}
+ 	if (lcp->cmdsize < segment_command_size) {
+-		DEBUG4K_ERROR("LOAD_BADMACHO cmdsize %d < %zu\n", lcp->cmdsize, segment_command_size);
++		panic("LOAD_BADMACHO cmdsize %d < %zu\n", lcp->cmdsize, segment_command_size);
+ 		return LOAD_BADMACHO;
+ 	}
+ 	total_section_size = lcp->cmdsize - segment_command_size;
+@@ -2157,7 +2157,7 @@
+ 	 */
+ 	if (scp->fileoff + scp->filesize < scp->fileoff ||
+ 	    scp->fileoff + scp->filesize > (uint64_t)macho_size) {
+-		DEBUG4K_ERROR("LOAD_BADMACHO fileoff 0x%llx filesize 0x%llx macho_size 0x%llx\n", scp->fileoff, scp->filesize, (uint64_t)macho_size);
++		panic("LOAD_BADMACHO fileoff 0x%llx filesize 0x%llx macho_size 0x%llx\n", scp->fileoff, scp->filesize, (uint64_t)macho_size);
+ 		return LOAD_BADMACHO;
+ 	}
+ 	/*
+@@ -2165,14 +2165,14 @@
+ 	 * within the load command size.
+ 	 */
+ 	if (total_section_size / single_section_size < scp->nsects) {
+-		DEBUG4K_ERROR("LOAD_BADMACHO 0x%zx 0x%zx %d\n", total_section_size, single_section_size, scp->nsects);
++		panic("LOAD_BADMACHO 0x%zx 0x%zx %d\n", total_section_size, single_section_size, scp->nsects);
+ 		return LOAD_BADMACHO;
+ 	}
+ 	/*
+ 	 * Make sure the segment is page-aligned in the file.
+ 	 */
+ 	if (os_add_overflow(pager_offset, scp->fileoff, &file_offset)) {
+-		DEBUG4K_ERROR("LOAD_BADMACHO file_offset: 0x%llx + 0x%llx\n", pager_offset, scp->fileoff);
++		panic("LOAD_BADMACHO file_offset: 0x%llx + 0x%llx\n", pager_offset, scp->fileoff);
+ 		return LOAD_BADMACHO;
+ 	}
+ 	file_size = scp->filesize;
+@@ -2183,7 +2183,7 @@
+ 			 * we can't mmap() it if it's not at least 4KB-aligned
+ 			 * in the file
+ 			 */
+-			DEBUG4K_ERROR("LOAD_BADMACHO file_offset 0x%llx\n", file_offset);
++			panic("LOAD_BADMACHO file_offset 0x%llx\n", file_offset);
+ 			return LOAD_BADMACHO;
+ 		}
+ 	} else
+@@ -2196,7 +2196,7 @@
+ 		 * was what this process believe is the page size, so let's
+ 		 * fail here too for the sake of consistency.
+ 		 */
+-		DEBUG4K_ERROR("LOAD_BADMACHO file_offset 0x%llx\n", file_offset);
++		panic("LOAD_BADMACHO file_offset 0x%llx\n", file_offset);
+ 		return LOAD_BADMACHO;
+ 	}
+ 
+@@ -2211,7 +2211,7 @@
+ 		if (cs_debug) {
+ 			printf("section outside code signature\n");
+ 		}
+-		DEBUG4K_ERROR("LOAD_BADMACHO end_offset 0x%llx fileoff 0x%llx filesize 0x%llx\n", result->cs_end_offset, scp->fileoff, scp->filesize);
++		panic("LOAD_BADMACHO end_offset 0x%llx fileoff 0x%llx filesize 0x%llx\n", result->cs_end_offset, scp->fileoff, scp->filesize);
+ 		return LOAD_BADMACHO;
+ 	}
+ 
+@@ -2219,12 +2219,12 @@
+ 		if (cs_debug) {
+ 			printf("vmaddr too large\n");
+ 		}
+-		DEBUG4K_ERROR("LOAD_BADMACHO vmaddr 0x%llx slide 0x%llx vm_offset 0x%llx\n", scp->vmaddr, slide, (uint64_t)vm_offset);
++		panic("LOAD_BADMACHO vmaddr 0x%llx slide 0x%llx vm_offset 0x%llx\n", scp->vmaddr, slide, (uint64_t)vm_offset);
+ 		return LOAD_BADMACHO;
+ 	}
+ 
+ 	if (scp->vmsize > SIZE_MAX) {
+-		DEBUG4K_ERROR("LOAD_BADMACHO vmsize 0x%llx\n", scp->vmsize);
++		panic("LOAD_BADMACHO vmsize 0x%llx\n", scp->vmsize);
+ 		return LOAD_BADMACHO;
+ 	}
+ 
+@@ -2257,7 +2257,7 @@
+ 		 */
+ 		vm_end = (vm_map_offset_t)(vm_offset + vm_size);
+ 		if (vm_end < vm_offset) {
+-			DEBUG4K_ERROR("LOAD_BADMACHO vm_end 0x%llx vm_offset 0x%llx vm_size 0x%llx\n", (uint64_t)vm_end, (uint64_t)vm_offset, (uint64_t)vm_size);
++			panic("LOAD_BADMACHO vm_end 0x%llx vm_offset 0x%llx vm_size 0x%llx\n", (uint64_t)vm_end, (uint64_t)vm_offset, (uint64_t)vm_size);
+ 			return LOAD_BADMACHO;
+ 		}
+ 
+@@ -2309,7 +2309,7 @@
+ #if !defined(XNU_TARGET_OS_OSX)
+ 		/* not PAGEZERO: should not be mapped at address 0 */
+ 		if (filetype != MH_DYLINKER && (imgp->ip_flags & IMGPF_ROSETTA) == 0 && scp->vmaddr == 0) {
+-			DEBUG4K_ERROR("LOAD_BADMACHO filetype %d vmaddr 0x%llx\n", filetype, scp->vmaddr);
++			panic("LOAD_BADMACHO filetype %d vmaddr 0x%llx\n", filetype, scp->vmaddr);
+ 			return LOAD_BADMACHO;
+ 		}
+ #endif /* !defined(XNU_TARGET_OS_OSX) */
+@@ -2329,7 +2329,7 @@
+ 
+ 		if (file_offset - file_start > FOURK_PAGE_MASK ||
+ 		    file_end - file_offset - file_size > FOURK_PAGE_MASK) {
+-			DEBUG4K_ERROR("LOAD_BADMACHO file_start / file_size wrap "
++			panic("LOAD_BADMACHO file_start / file_size wrap "
+ 			    "[0x%llx:0x%llx] -> [0x%llx:0x%llx]\n",
+ 			    file_offset,
+ 			    file_offset + file_size,
+@@ -2363,7 +2363,7 @@
+ 
+ 		if (file_offset - file_start > effective_page_mask ||
+ 		    file_end - file_offset - file_size > effective_page_mask) {
+-			DEBUG4K_ERROR("LOAD_BADMACHO file_start / file_size wrap "
++			panic("LOAD_BADMACHO file_start / file_size wrap "
+ 			    "[0x%llx:0x%llx] -> [0x%llx:0x%llx]\n",
+ 			    file_offset,
+ 			    file_offset + file_size,
+@@ -2392,7 +2392,7 @@
+ 		 */
+ 		if (result->ro_vm_start != MACH_VM_MIN_ADDRESS ||
+ 		    result->ro_vm_end != MACH_VM_MIN_ADDRESS) {
+-			DEBUG4K_ERROR("LOAD_BADMACHO segment flags [%x] "
++			panic("LOAD_BADMACHO segment flags [%x] "
+ 			    "multiple segments with SG_READ_ONLY flag\n",
+ 			    scp->flags);
+ 			return LOAD_BADMACHO;
