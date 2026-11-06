@@ -2811,3 +2811,74 @@ panics 屏与固件日志（同分区 +30,512）是可靠通道。
 trust cache 模块头 bug、`lret` 常量表、变量式返回插桩、
 `namei` errno 60、读完成修复、EROFS 30、Data seed 的 macOS 依赖、
 刷机前必须确认 fastboot 在线（曾因设备不在 USB 而刷成 Android 原生 boot 的假象）。
+
+---
+
+## 0.51 GitHub Actions 生成 Data seed 的方案（2026-11-07 00:3x）
+
+### 为什么用 CI
+
+`docs/zh/guide/userdata.md` §4：可写 Data 卷来自 `unixnu build payload --data-ramdisk`
+传进来的 **APFS Data seed**，而 `seed-data-grow.py` / `seed-data-skip-setup.py` /
+`make-data-seed.py` / `prepare-owner-data-fixture.py` 全部调用 macOS 的
+`hdiutil` / `diskutil` 创建并挂载 APFS。本机 Windows+WSL 没有这些工具，也没有
+可用的 APFS 写工具（`fsapfsmount` 无 FUSE）—— 这是硬依赖，无 Linux 替代路径。
+GitHub Actions 的 `macos-26` runner 有。
+
+### 已加入仓库的产物（提交 `5e26f59`）
+
+| 文件 | 作用 |
+| --- | --- |
+| `.github/workflows/data-seed.yml` | `workflow_dispatch`，macos-26，下载 pin 过的 21H461 IPSW、校验 OS member、挂载、生成 seed、上传 |
+| `scripts/build-data-seed.py` | 从 `--os-mount` 的 `/private/var` 建 APFS OwnerData 卷并用 DarwinBoot 的 DBRDISK1 writer 打包（改编自 NX769J 的通用实现）|
+| `scripts/test_build_data_seed.py` | 10 个不需要 hdiutil 的单元测试，本机全部通过 ✓ |
+
+**21H461 专属输入**（来自 `UniXNU/profiles/os/ipados-17.7.11-21H461/profile.toml`）：
+
+```
+IPSW_URL   https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw
+OS_MEMBER  044-76040-038.dmg   sha256 3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d
+```
+
+Apple CDN 已验证仍返回 HTTP 200（content-length 6,835,124,840）。IPSW 整体 hash
+没有记录，因此 workflow 校验**提取出的 OS member** 的 pin（比整体 hash 更可靠）。
+
+### 本地验证已过
+
+- YAML 解析 ✓（11 步、runs-on macos-26）；
+- `build-data-seed.py` 语法 ✓；
+- `test_build_data_seed.py` 10/10 通过 ✓。
+
+### 推送状态（待用户操作）
+
+`git push` 被 GitHub 拒绝：
+
+```
+refusing to allow a Personal Access Token to create or update workflow
+`.github/workflows/apfs-fixture.yml` without `workflow` scope
+```
+
+- 远程默认分支是 **`main`**，本地是 `master`（远程 `master` 已重定向）；
+- 远程 `main` 停在 `19c9e3e`，本地 `5e26f59` —— 中间 100+ 本地提交未推；
+- **需要用户换一个勾了 `repo` + `workflow` 的 token**（现有 token 只有 `repo`），
+  或直接在 GitHub 网页新建 workflow 文件（网页登录不受 PAT scope 限制）。
+
+### seed 回来后的本机步骤（顺序固定）
+
+1. 下载 CI artifact `dandelion-data-seed.tar.gz`，解出 `dandelion-data.dbr`
+   与 `dandelion-data.dbr.json`（含 `volume_uuid`）；
+2. `configs/dandelion_defconfig` 增加：
+   ```
+   CONFIG_XNU_OWNER_DATA_MOUNT=y
+   CONFIG_XNU_NATIVE_RAM_BLOCK=y
+   CONFIG_XNU_OWNER_DATA_VOLUME_UUID="<报告里的 volume_uuid>"
+   ```
+   注意 build script 421–442：`OWNER_DATA_MOUNT=1` 要求 `OWNER_BOOT_MANIFEST=1`
+   （我们已有 ✓），且 `OWNER_DATA_MOUNT=1 + NATIVE_RAM_BLOCK=1` 时**必须**给出
+   观测到的 Data 卷 UUID，不能留空 —— UUID 每次 seed 构建都变。
+3. `[payload.adt]` 增加 `packed_data_ramdisk = true`（DBRDISK1 走 PackedRAMDisk，
+   `payload.py:190` 据此选 `--packed-data-ramdisk`）；board.toml 已含 RamBlock 组件 ✓；
+4. `unixnu build kernel`（开关变化会触发 kern_exec.o 重编）→
+   `unixnu build payload --data-ramdisk dandelion-data.dbr` → `unixnu bootimg`；
+5. 刷入验证：`Failed to open swap file 30` 应消失，`/private/var` 可写，
+   launchd 进入第一个用户态服务。
