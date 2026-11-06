@@ -2984,3 +2984,36 @@ Due to capacity constraints, jobs targeting macOS arm64 runners may experience l
    `OWNER_DATA_MOUNT` / `NATIVE_RAM_BLOCK` / `OWNER_DATA_VOLUME_UUID` /
    `packed_data_ramdisk`；
 3. 重建 kernel → payload `--data-ramdisk` → bootimg → 刷入验证 EROFS 消失。
+
+---
+
+## 0.54 公开仓库解除 CI 账单阻塞（2026-11-07 01:4x）
+
+### 处置
+
+用户指出：把仓库改成 public 即可用 GitHub 免费提供的 hosted runner
+（私有仓库的 macOS minutes 受账户支付状态限制）。
+
+- `PATCH /repos/licg89/UniXNU-dandelion` `{"private":false}` → `private = False` ✓；
+- 重新 `workflow_dispatch` → HTTP 204，新 run
+  **42263833632**（https://github.com/licg89/UniXNU-dandelion/actions/runs/42263833632）；
+- 轮询显示状态从 `queued` → **`in_progress`** ✓ —— runner 已分配，正在下载 IPSW。
+  这与 42256955170（0 个 step、5 分钟内以账单注解失败）形成对照。
+
+其余两个仓库（uefi-dandelion、UniXNU-mt6765-common）仍保持私有 ✓；
+`UniXNU` 是 fork，无法改可见性。
+
+### 公开带来的安全清理（提交 `6b02774`）
+
+- `scripts/make_repos_private.sh` / `scripts/verify_repos.sh` 曾硬编码旧 PAT
+  `ghp_nRdNNXav…`；现改为从 `GITHUB_TOKEN` 环境变量读取 ✓；
+- 旧 token 已失效（API `HTTP 401`），但仍在 2 个历史提交
+  （`64827de`、`6a7baec`）中可见 —— **待办：CI 结束后重写历史清除**，
+  现在不重写是因为会改变 `head_sha`、打断正在排队的 run；
+- 当前工作树已无 PAT 形状的字符串 ✓。
+
+### CI 成功后自动做的事（已挂后台 `poll_seed2.sh`）
+
+run 完成且 `conclusion=success` 时自动下载 artifact 到
+`D:\aios\out3\dandelion-data-seed.zip`；失败则拉取 check-run 注解自动诊断。
+拿到 seed 后按 §0.51 的固定 5 步执行。
