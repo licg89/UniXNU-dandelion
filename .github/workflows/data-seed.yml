@@ -1,0 +1,170 @@
+name: Data seed
+
+# Build the writable APFS Data seed for `unixnu build payload --data-ramdisk`.
+# Every step needs macOS hdiutil/diskutil, so this runs on a hosted macOS runner.
+#
+# The iPadOS 17.7.11 (21H461) restore image is not redistributable: it is
+# downloaded from Apple's CDN at run time and deleted again. Only the seed
+# (.dbr, a packed DBRDISK1 ramdisk) and its JSON report are uploaded.
+#
+# The seed holds the OS volume's initial /private/var plus the empty dirs the
+# userland expects. Its volume UUID is new on each run and is printed in the run
+# summary and in <name>.dbr.json; feed it to the kernel config as
+# XNU_OWNER_DATA_VOLUME_UUID when the Data volume is mounted.
+#
+# Adapted from the NX769J port's data-seed workflow (Asultop/UniXNU-NX769J
+# 2a265af); the generator is generic and takes --os-mount, so only the IPSW
+# inputs below are dandelion-specific.
+
+on:
+  workflow_dispatch:
+    inputs:
+      size_mib:
+        description: Data container size in MiB (256 is a RAM seed; up to 1 TiB is accepted)
+        required: true
+        default: "256"
+      unixnu_ref:
+        description: UniXNU ref for drivers/DarwinBoot/Test/packed_ramdisk.py
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+env:
+  # iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw, pinned in
+  # UniXNU/profiles/os/ipados-17.7.11-21H461/profile.toml [ipsw].url
+  IPSW_URL: https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw
+  # The OS member's sha256 is pinned in the same profile [ipsw.sha256]; verifying
+  # the member is stronger than an overall IPSW hash and avoids re-pinning a 6.8 GiB file.
+  OS_MEMBER: 044-76040-038.dmg
+  OS_MEMBER_SHA256: 3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d
+  SIZE_MIB: ${{ inputs.size_mib || '256' }}
+  UNIXNU_REF: ${{ inputs.unixnu_ref || 'main' }}
+
+jobs:
+  seed:
+    runs-on: macos-26
+    timeout-minutes: 180
+    steps:
+      - name: Check out this device repository
+        uses: actions/checkout@v4
+        with:
+          path: device
+          persist-credentials: false
+
+      - name: Check out UniXNU (for DarwinBoot's packed_ramdisk.py)
+        uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: ${{ env.UNIXNU_REF }}
+          path: unixnu
+          persist-credentials: false
+
+      - name: Fetch the DarwinBoot submodule
+        run: |
+          set -euo pipefail
+          git -C unixnu submodule update --init --depth 1 drivers/DarwinBoot
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Fetch the 21H461 restore image
+        run: |
+          set -euo pipefail
+          trap 'echo "::error title=Fetch the restore image::$BASH_COMMAND"' ERR
+          mkdir -p "$RUNNER_TEMP/ipsw"
+          curl -fSL --retry 3 --retry-delay 5 -o "$RUNNER_TEMP/ipsw/restore.ipsw" "$IPSW_URL"
+          ls -lh "$RUNNER_TEMP/ipsw/restore.ipsw"
+
+      - name: Extract and verify the OS member
+        run: |
+          set -euo pipefail
+          trap 'echo "::error title=Extract the OS member::$BASH_COMMAND"' ERR
+          python3 - <<'PY'
+          import hashlib, os, zipfile
+          from pathlib import Path
+          ipsw = Path(os.environ['RUNNER_TEMP']) / 'ipsw/restore.ipsw'
+          out = Path(os.environ['RUNNER_TEMP']) / 'os'
+          out.mkdir(parents=True, exist_ok=True)
+          member = os.environ['OS_MEMBER']
+          with zipfile.ZipFile(ipsw) as archive, archive.open(member) as source:
+              digest = hashlib.sha256()
+              with (out / member).open('wb') as target:
+                  while chunk := source.read(8 * 1024 * 1024):
+                      target.write(chunk)
+                      digest.update(chunk)
+          got = digest.hexdigest()
+          want = os.environ['OS_MEMBER_SHA256']
+          if got != want:
+              raise SystemExit(f'{member} hashes to {got}, expected {want}')
+          print(f'{member} {got} extracted and verified')
+          PY
+          rm -f "$RUNNER_TEMP/ipsw/restore.ipsw"
+          df -h "$RUNNER_TEMP"
+
+      - name: Mount the OS volume read-only
+        run: |
+          set -euo pipefail
+          trap 'echo "::error title=Mount the OS volume::$BASH_COMMAND"' ERR
+          mkdir -p "$RUNNER_TEMP/os-mount"
+          hdiutil attach -readonly -nobrowse -owners off \
+            -mountpoint "$RUNNER_TEMP/os-mount" "$RUNNER_TEMP/os/$OS_MEMBER"
+
+      - name: Build the seed
+        id: seed
+        run: |
+          set -euo pipefail
+          trap 'echo "::error title=Build the seed::$BASH_COMMAND"' ERR
+          mkdir -p "$RUNNER_TEMP/out"
+          set +e
+          python3 device/scripts/build-data-seed.py \
+            --os-mount "$RUNNER_TEMP/os-mount" \
+            --output "$RUNNER_TEMP/out/dandelion-data.dbr" \
+            --size-mib "$SIZE_MIB" \
+            --unixnu unixnu \
+            --work "$RUNNER_TEMP/seed-work" > "$RUNNER_TEMP/out/build-data-seed.log" 2>&1
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/out/build-data-seed.log"
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=build-data-seed::$(tail -n 1 "$RUNNER_TEMP/out/build-data-seed.log")"
+            exit "$status"
+          fi
+          uuid=$(python3 -c "import json,os;print(json.load(open(os.environ['RUNNER_TEMP']+'/out/dandelion-data.dbr.json'))['volume_uuid'])")
+          {
+            echo "device $(git -C device rev-parse HEAD)"
+            echo "unixnu $(git -C unixnu rev-parse HEAD)"
+            echo "size_mib $SIZE_MIB"
+            echo "volume_uuid $uuid"
+            shasum -a 256 "$RUNNER_TEMP/out/dandelion-data.dbr"
+          } | tee "$RUNNER_TEMP/out/inputs.txt"
+          echo "::notice title=Data volume UUID::$uuid"
+          {
+            echo '### Seed'
+            echo '```'
+            cat "$RUNNER_TEMP/out/inputs.txt"
+            echo '```'
+            echo '```json'
+            cat "$RUNNER_TEMP/out/dandelion-data.dbr.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Unmount the OS volume
+        if: always()
+        run: hdiutil detach "$RUNNER_TEMP/os-mount" -force || true
+
+      - name: Package the seed
+        run: |
+          set -euo pipefail
+          tar -C "$RUNNER_TEMP/out" -czf "$RUNNER_TEMP/dandelion-data-seed.tar.gz" \
+            dandelion-data.dbr dandelion-data.dbr.json inputs.txt build-data-seed.log
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: dandelion-data-seed
+          path: ${{ runner.temp }}/dandelion-data-seed.tar.gz
+          if-no-files-found: error
+          retention-days: 7
