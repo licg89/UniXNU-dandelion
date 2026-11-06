@@ -2933,3 +2933,54 @@ payload 的硬限制 `content > size_mib * 0.95`（60 MiB → 57 MiB）会拒绝
 payload；当前 kernel 等文件约 53 MiB，packed seed 一般只几 MiB（参考 alioth：
 3 GiB 逻辑种子 packed 后 1.2 MB），若超限需把 `size_mib` 提到 boot 分区允许的
 上限（64 MiB）。
+
+---
+
+## 0.53 CI 账单拦截；Linux 侧 UDIF→APFS 路径已验证（2026-11-07 01:0x–01:3x）
+
+### Data seed CI run 结果：失败，但原因不在 workflow
+
+run `42256955170`（Data seed）`completed / failure`，5 分钟内结束、0 个 step。
+check-run annotation：
+
+```
+The job was not started because recent account payments have failed or your spending
+limit needs to be increased. Please check the 'Billing & plans' section in your settings
+Due to capacity constraints, jobs targeting macOS arm64 runners may experience longer queue times.
+```
+
+即 **GitHub 账户付费/额度问题**，需要在 Billing & plans 处理；workflow 本身没有被
+执行过，不能据此判断它是否正确。`workflow_dispatch` 与 push 都是成功的（§0.52）。
+
+### Linux 侧的新进展（不依赖 macOS）
+
+| 步骤 | 结果 |
+| --- | --- |
+| 框架 `scripts/unixnu/udif.py` 解 `044-76040-038.dmg` | ✅ 6,077,580,800 字节裸磁盘镜像（文档明确说 Linux 用它代替 hdiutil）|
+| GPT 解析 | ✅ `EFI PART` @0x200，APFS 容器分区从 LBA 34（0x4400）开始 |
+| 切出容器 + `fsapfsinfo` | ✅ 卷 UUID `04769D26-2CA0-4825-B443-E2E5F88300F2`（与根卷一致）、卷名 `DawnUpdate21H461...OS`、1 个卷 |
+| `packed_ramdisk.pack()` 要求 | ✅ 只要页对齐的原始镜像（≤1 TiB），不关心是不是 APFS —— seed 的本质是"原始镜像 + DBRDISK1 打包" |
+| 读 `/private/var` 文件内容 | ❌ `fsapfsmount` 编译时无 FUSE 支持（"No sub system to mount APFS format"），且无 Python APFS 库 |
+
+**结论**：本机已经能拿到**可读元数据的 APFS 容器**，但拿不到里面的文件树；
+要完全绕开 macOS，还缺一个能读 APFS 文件的工具（或补 FUSE 支持）。
+优先级：先处理 GitHub Billing（最快），其次才是本机补 APFS 读能力。
+
+### 文档记录已同步（用户要求）
+
+- `porting.toml`：从复制的示例模板改为实测状态（14 个 area，
+  configuration/firmware/cpu/memory=verified，
+  storage/userspace/diagnostics=in_progress，其余 planned），
+  storage/userspace 两个 area 写入了真实的日志证据与当前墙（提交 `eefee9c`）；
+- `MORNING.md`：从过时的"待验证"改为当前项目总览（提交 `91566fe`）；
+- 说明：`/root/work/UniXNU/docs/zh/` 是**上游框架官方文档**的本地镜像，
+  属于 `UniXNU/UniXNU`，不写入设备私有进度；项目进度的载体是
+  HANDOFF / porting.toml / MORNING.md。
+
+### 当前待办（不变）
+
+1. 处理 GitHub Billing & plans，重跑 `data-seed.yml` → 拿 `.dbr` + `volume_uuid`；
+2. `scripts/enable-data-volume.py <uuid> <seed>` → 开
+   `OWNER_DATA_MOUNT` / `NATIVE_RAM_BLOCK` / `OWNER_DATA_VOLUME_UUID` /
+   `packed_data_ramdisk`；
+3. 重建 kernel → payload `--data-ramdisk` → bootimg → 刷入验证 EROFS 消失。
