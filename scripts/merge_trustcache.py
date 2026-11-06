@@ -54,7 +54,9 @@ if extras:
         if len(cdhash) != 20:
             sys.exit(f'--extra={value}: a cdhash is 20 bytes')
         entries += cdhash + b'\x02' + b'\x00\x00\x00'      # sha256 hash type, no flags
-    module = struct.pack('<I', 2) + b'DANDELIONCACHE01' + bytes(3) + struct.pack('<I', len(extras))
+    # The module header is exactly version(4) + uuid(16) + count(4); "DANDELIONCACHE01" is
+    # already sixteen bytes, and adding padding here is what broke the previous bundle.
+    module = struct.pack('<I', 2) + b'DANDELIONCACHE01' + struct.pack('<I', len(extras))
     modules.append(module + bytes(entries))
     print(f'extra module: {len(extras)} cdhash entries')
 
