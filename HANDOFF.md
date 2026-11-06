@@ -2748,3 +2748,66 @@ persistent store**（userdata 末尾的保留区），**不会**凭空产生 `/p
 
 固件 `Compromised Data` ✅ → 内核日志 ✅ → AMFI CT policy ✅ → 根卷认证 ✅ →
 `launchd` exec 通过 ✅ → **下一关：可写 Data 卷 / `/private/var`**（需要 macOS 生成 seed）。
+
+---
+
+## 0.50 收尾状态（2026-11-07 00:0x）
+
+### 最后一轮的日志（跑满 6 分钟以上、完整读取）
+
+```
+attempting to load 3 external trust cache modules / loaded 0,1,2
+OS verified / SystemOS verified / published SystemOS / volume ready / published OS
+BSD root: disk3s1
+mount-complete volume DawnUpdate21H461.J120J121J207J208OS
+is_root_hash_authentication_required: Root Volume, root hash authentication is required
+VM Swap Subsystem is ON
+Failed to open swap file 30                       ← EROFS（只读文件系统）
+vm_swap_create_file failed @ 267 secs
+mount-complete volume DawnUpdate21H461.J120J121J207J208SystemCryptex
+load_init_program: attempting to load /sbin/launchd
+DANDELION-EXEC: clearing policy answer 0 (pid 1)
+shared_region: [1(launchd)] check_np(...) vm_shared_region_start_address() failed   ← 共享区为空，正常
+```
+
+`D4K namei` / `DANDELION-EXEC: load_machfile ...` panic **不再出现** ✓ ——
+读超时修复（§0.48）生效，dyld 路径解析成功、launchd exec 通过。
+
+### 屏幕照片（IMG_5892.JPG）
+
+顶部三条色带按 `guide/debugging.md` §颜色条：绿色（DarwinBoot 交接）、
+蓝色（内核入口已执行）、品红（到达打开 MMU 前）—— 链路完好 ✓。
+
+### 今天刷入的最后一个镜像
+
+`boot-biglog.img`（sha256 `107f076f…`）：
+- 两个诊断 panic 已从 series 移除（`0f0b888`），避免以后误报；
+- 保留全部修复：trust cache 模块头、CT 补丁、14 MB 日志窗口、
+  读完成判定 + 10 秒命令超时。
+- 已确认 fastboot 在线后刷入并启动 ✓。
+
+### 未解决 / 下一关
+
+**可写 Data 卷**：`Failed to open swap file 30` = EROFS，根因是没有 `/private/var`。
+Data seed 必须用 macOS 的 `hdiutil`/`diskutil` 建 APFS（`userdata.md` §4、
+`seed-data-grow.py`、`seed-data-skip-setup.py`、`make-data-seed.py` 全部依赖），
+本机 Windows+WSL 无此工具，无 Linux 替代路径（§0.49）。
+
+**控制台**：驱动启动后日志稳定停在 `VM Swap Subsystem is ON` 附近，
+panics 屏与固件日志（同分区 +30,512）是可靠通道。
+
+**性能**：策略区 73 MB @ 320 KB/s ≈ 227 秒，`vm_swap_create_file failed @ 267 secs`
+里的 267 秒正是它 + 启动的耗时；`native-msdc-dma=1` 可试（需通过 PIO 比对自检）。
+
+### 明早的第一步
+
+1. 确认这轮干净镜像的启动结果与上面一致（无诊断 panic）；
+2. 准备 macOS 环境生成 Data seed（这是继续往下走的唯一硬依赖）；
+3. Data 卷之后的顺序：swap/`/private/var` → 第一个用户态服务 → 显示 → 输入/GPU。
+
+### 全部证据链已记录
+
+§0.42–§0.50：两条误导线索、AMFI 判定定位、控制台静默根因、
+trust cache 模块头 bug、`lret` 常量表、变量式返回插桩、
+`namei` errno 60、读完成修复、EROFS 30、Data seed 的 macOS 依赖、
+刷机前必须确认 fastboot 在线（曾因设备不在 USB 而刷成 Android 原生 boot 的假象）。
