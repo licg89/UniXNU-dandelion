@@ -82,25 +82,33 @@ evidence = [
 
 [[area]]
 id = "storage"
-status = "verified"
+status = "in_progress"
 components = []
 paths = ["drivers/ShengUfs", "scripts/*ufs*", "scripts/*storage*", "scripts/*userdata*", "scripts/*root*"]
-inputs = ["Identify the storage and root hardware, resources and existing component interfaces for this board."]
-configuration = ["Record the board.toml fields, DTS properties and defconfig values used for storage and root."]
-procedure = ["Follow the storage and root stage in the porting guide and record the actual commands."]
-findings = ["Collect the first storage and root observation, its cause when established, and the resulting implementation decision."]
-completion = ["Host: register, clock, link and SMMU facts match the board inventory.", "Reads: SCSI capacity, GPT and known blocks are correct; OS/SystemOS windows stay within userdata.", "Root: the configured volume mounts and launchd starts. Persistence: writes survive reboot within the allocated Data region."]
-limits = ["Hardware inputs and implementation are pending for this example board."]
-next_action = ["Inventory the required storage and root inputs before implementation."]
+inputs = ["MT6762G MSDC0 at 0x11230000; userdata partition and the flashinfo log partition measured on the device GPT (see dts/dandelion.dts and HANDOFF 0.28)."]
+configuration = ["NativeMsdc vendored driver, SHNGROOT manifest, two VerifiedRoot policy entries, ios GPT partition, native-msdc-root=1 / native-msdc-area=20480 / native-msdc-persist=1."]
+procedure = ["unixnu build kernel / payload / bootimg; fastboot flash ios and boot; collect_nowipe.ps1 pulls the flashinfo console block."]
+findings = [
+  "eMMC bring-up, EXT_CSD, GPT and the signed-policy read all work (73 MB at about 320 KB/s).",
+  "The trust cache bundle was rejected by the firmware as Compromised Data until the third module's uuid was corrected from 19 to 16+4+count bytes; scripts/verify_trustcache.py now validates the layout before flashing.",
+  "The kernel console writes through the eMMC; its window was moved to the start of flashinfo and grown to 28672 sectors so the whole boot fits.",
+  "namei(/usr/lib/dyld) returned errno 60 (ETIMEDOUT) because hostReadPio waited for a consumed XferDone interrupt even after all bytes were drained; accepting a drained FIFO and idle controller, with a 10 s deadline, let launchd exec pass.",
+]
+completion = ["OS and SystemOS verify and publish; the real APFS root mounts; root hash authentication passes; launchd execs; diagnostics no longer panic. Persistence: not yet, the writable Data volume is the next stage."]
+limits = ["Failed to open swap file 30 (EROFS): there is no writable /private/var yet.", "The Data seed needs macOS hdiutil/diskutil; the GitHub Actions run was blocked by account billing, and a Linux UDIF/APFS path is being investigated.", "The console still stops writing once the storage driver runs, so the panic screen and firmware log are the reliable channels."]
+next_action = ["Build the writable Data seed, set OWNER_DATA_MOUNT / NATIVE_RAM_BLOCK / OWNER_DATA_VOLUME_UUID, add packed_data_ramdisk, rebuild and verify the swap error disappears."]
 evidence = [
-  "adb shell ls -l /dev/block/by-name/ => userdata=mmcblk0p41 (df: 52G total, 20G avail), flashinfo=mmcblk0p43, super=mmcblk0p38, metadata=mmcblk0p14, cache=mmcblk0p40 (362M)",
-  "The previous attempt drives MSDC0 0x11230000 in PIO mode and writes the kernel log to flashinfo; that path is proven on this device",
-  "Decision: userdata (p41) is the root volume for milestone 3 - 52 GB, far more than a userland needs",
+  "attempting to load 3 external trust cache modules / loaded 0,1,2 / completed loading",
+  "OS verified / SystemOS verified / published SystemOS / SystemOS volume ready / published OS",
+  "BSD root: disk3s1 / mount-complete volume DawnUpdate21H461.J120J121J207J208OS / Root Volume, root hash authentication is required",
+  "load_init_program: attempting to load /sbin/launchd / DANDELION-EXEC: clearing policy answer 0 (pid 1)",
+  "D4K namei: path=/usr/lib/dyld raw_errno=60 @mach_loader.c:3794 (before the read fix); no longer present after it",
+  "Failed to open swap file 30 / vm_swap_create_file failed @ 267 secs (EROFS, current wall)",
 ]
 
 [[area]]
 id = "display"
-status = "verified"
+status = "planned"
 components = []
 paths = ["package/*Display*", "package/*Framebuffer*", "package/*Backlight*", "package/AppleARMBacklight.cpp", "package/GeniI2c*", "scripts/*display*", "scripts/*gop*", "scripts/*framebuffer*"]
 inputs = ["Identify the display hardware, resources and existing component interfaces for this board."]
@@ -118,7 +126,7 @@ evidence = [
 
 [[area]]
 id = "input"
-status = "verified"
+status = "planned"
 components = []
 paths = ["drivers/ShengHidInput", "drivers/ShengNovatekTouch", "package/*Touch*", "package/*Button*", "scripts/*touch*", "scripts/*hid*"]
 inputs = ["Identify the input hardware, resources and existing component interfaces for this board."]
@@ -210,7 +218,7 @@ evidence = []
 
 [[area]]
 id = "diagnostics"
-status = "planned"
+status = "in_progress"
 components = []
 paths = ["scripts/check-*", "scripts/probe-*", "scripts/audit-*", "scripts/read-*", "scripts/prepare-*", "scripts/data/**", "package/tests/**", "package/*Tests*", "package/*Diagnostic*", "package/*Probe*", "package/Boot*", "package/linux-log/**", "unixnu.lock"]
 inputs = ["Identify the diagnostics hardware, resources and existing component interfaces for this board."]
@@ -221,3 +229,28 @@ completion = ["Each claimed milestone has a reproducible command, a matching sou
 limits = ["Hardware inputs and implementation are pending for this example board."]
 next_action = ["Inventory the required diagnostics inputs before implementation."]
 evidence = []
+
+
+[[area]]
+id = "userspace"
+status = "in_progress"
+components = ["RamBlock", "XnuPrelink", "DarwinBoot"]
+paths = ["package/NativeMsdc.cpp", "patches/xnu/**", "configs/dandelion_defconfig", ".github/workflows/data-seed.yml"]
+inputs = ["iPadOS 17.7.11 (21H461) IPSW, trust caches, SystemOS cryptex, owner-root policy."]
+configuration = ["CONFIG_XNU_OWNER_ROOT_AUDIT/TRUST, OWNER_CACHE_MOUNT/STARTUP/BOOT_MANIFEST, OWNER_UNION_SYSTEMOS; AMFI CT decision patched at 0xfffffff004ab6334 (cset -> mov w8,#0)."]
+procedure = ["Build kernel with the board patches, patch the prelinked AMFI decision, package payload with the three-module trust bundle, flash and read the console/panic screen."]
+findings = [
+  "AMFI refused the dyld shared cache with 'unsuitable CT policy 0'; forcing the platform-flag answer makes the message disappear.",
+  "Owner-root audit and root hash authentication pass; launchd execs and the skip-cs policy answer is cleared.",
+  "The shared_region start_address failure is the normal empty-region answer on first exec, not a fault.",
+  "lret=4 is LOAD_FAILURE, not LOAD_BADMACHO; the actual failure was ETIMEDOUT from the storage driver (see storage).",
+]
+completion = ["launchd exec passes; the dyld cache registers; the next wall is the writable Data volume."]
+limits = ["No /private/var yet; no first userspace service; no display/input/GPU work."]
+next_action = ["Deliver the Data seed and verify launchd reaches its first service."]
+evidence = [
+  "DANDELION-EXEC / D4K namei diagnostics retired after they named the real cause",
+  "IMG_5892.JPG: green/blue/magenta loader-handoff bars, kernel entry executed",
+  "HANDOFF 0.42-0.52 records the full evidence chain",
+  "GitHub Actions run 42256955170 (Data seed) failed before starting: account billing/spending limit",
+]
