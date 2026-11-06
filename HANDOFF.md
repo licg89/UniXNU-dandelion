@@ -2882,3 +2882,54 @@ refusing to allow a Personal Access Token to create or update workflow
    `unixnu build payload --data-ramdisk dandelion-data.dbr` → `unixnu bootimg`；
 5. 刷入验证：`Failed to open swap file 30` 应消失，`/private/var` 可写，
    launchd 进入第一个用户态服务。
+
+---
+
+## 0.52 CI 已推送并触发（2026-11-07 01:0x）
+
+### 事故与解决
+
+- 旧 PAT `ghp_nRdNNXav…` 原本只有 `repo`，push 含 `.github/workflows/*` 的提交被拒：
+  `refusing to allow a Personal Access Token to create or update workflow without workflow scope`；
+  用户改权限后该 token 字符串失效（`401 Bad credentials`）；
+  用户提供新 token（含 `workflow` scope）后**推送成功** ✓。
+- 远程默认分支是 **`main`**，本地是 `master`；`master` 在远程返回 Moved Permanently。
+  用 `git push <token>@github.com/... HEAD:refs/heads/main` 推送：
+  `19c9e3e..9120aff`，远程 `main` 头 = `9120aff` ✓。
+- 认证方式：`http.extraheader` 对该 git 无效（会要求输入用户名），必须把 token 放进 URL ✓。
+
+### run
+
+`workflow_dispatch`（size_mib=256, unixnu_ref=main）→ HTTP 204 ✓：
+
+```
+Data seed | https://github.com/licg89/UniXNU-dandelion/actions/runs/42256955170
+```
+
+状态 `queued`（macOS runner 排队，正常；`Data seed` workflow 在 GitHub 上是 `active`）。
+当前 run 用的是推送时的 `9120aff` 版本；此后本地的改动不影响它。
+
+### 远程依赖已用 API 验证
+
+- `UniXNU/UniXNU` 的 `drivers/DarwinBoot` 是子模块 ✓；
+- `UniXNU/DarwinBoot` 的 `Test/packed_ramdisk.py` 存在，且 `pack(source, destination)`
+  与 `build-data-seed.py` 的调用一致 ✓；
+- Apple CDN 的 21H461 IPSW 返回 200（6,835,124,840 字节）✓；
+- OS member `044-76040-038.dmg` 的 sha256 pin 来自 21H461 profile ✓。
+
+### 待办
+
+1. 后台脚本 `poll_and_fetch_seed.sh` 每 60 秒查 run，完成后自动下载 artifact 到
+   `D:\aios\out3\dandelion-data-seed.zip`；
+2. 解出 `dandelion-data.dbr` + `.json`（含 `volume_uuid`）；
+3. 运行 `scripts/enable-data-volume.py <uuid> <seed>`（提交 `5a091d3`）设置
+   OWNER_DATA_MOUNT / NATIVE_RAM_BLOCK / OWNER_DATA_VOLUME_UUID / packed_data_ramdisk；
+4. 重建 kernel → payload `--data-ramdisk <seed>` → bootimg → 刷入；
+5. 验证 `Failed to open swap file 30` 消失、`/private/var` 可写。
+
+### 已知风险
+
+payload 的硬限制 `content > size_mib * 0.95`（60 MiB → 57 MiB）会拒绝过大的
+payload；当前 kernel 等文件约 53 MiB，packed seed 一般只几 MiB（参考 alioth：
+3 GiB 逻辑种子 packed 后 1.2 MB），若超限需把 `size_mib` 提到 boot 分区允许的
+上限（64 MiB）。
