@@ -109,9 +109,9 @@ volatile uint32_t native_msdc_integrity_failures = 0;
 namespace {
 
 // One command and its data phase.  A 64 KiB PIO block takes about 0.2 s at the measured
-// 320 KB/s, so a second was already marginal under APFS load; three leaves room for a
-// stalled FIFO drain without hiding a真 hardware fault.
-constexpr uint64_t kCommandTimeoutNs = 3000000000ULL;
+// A 64 KiB PIO block takes about 0.2 s at the measured 320 KB/s.  Ten seconds leaves
+// generous room for a slow card under APFS load without hiding a real hardware fault.
+constexpr uint64_t kCommandTimeoutNs = 10000000000ULL;
 constexpr uint64_t kBusyTimeoutNs = 5000000000ULL;        // programming after a write, cache flush
 constexpr unsigned kDmaDescriptorBytes = 4096;             // GPD at 0, BD at 64; the buffer follows
 constexpr unsigned kTransferBytes = kMaxBlocks * kSector;
@@ -291,6 +291,11 @@ IOReturn hostReadPio (unsigned opcode, uint32_t argument, uint8_t *buffer, uint3
         }
       }
       if (done && offset == total) return kIOReturnSuccess;
+      // All bytes are in the buffer and the controller is idle: the XferDone interrupt may
+      // have been consumed by the same status read, so do not wait for a bit that will never
+      // come.  This is what used to turn a completed read into ETIMEDOUT (errno 60).
+      if (offset == total && !(rd (kSdcSts) & kStsSdcBusy) &&
+          !(rd (kMsdcFifoCs) & 255u)) return kIOReturnSuccess;
     } while (mach_absolute_time () < end);
   }
   if (multi) (void) hostCommand (kCmdStop, 0, Data::None, &response);
