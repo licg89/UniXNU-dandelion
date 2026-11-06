@@ -2687,3 +2687,64 @@ Exiting boot services. A green bar ... marks the loader handoff before the kerne
 
 固件阶段没有失败；"黄条只走一点"多半是内核在读 73 MB 策略区（约 4 分钟）期间屏幕
 几乎不动。
+
+---
+
+## 0.49 下一步的硬依赖：Data seed 需要 macOS（2026-11-06 23:3x）
+
+### 今晚最后的状态
+
+- 修好读超时后，`DANDELION-EXEC` / `D4K namei` 消失，日志走到
+  `load_init_program` / `DANDELION-EXEC: clearing policy answer 0` / `shared_region ...` ✓；
+- `Failed to open swap file 30` = **EROFS**（已核对 `errno.h`：`EROFS=30`、`ETIMEDOUT=60`），
+  不再是超时；根因是**没有可写的 Data 卷**；
+- 一次"黄条只走一点"的观察是**假象**：读回设备 boot 分区发现当时刷的是 Android 原生
+  boot（`kernel_size=13,907,597`、含 `ANDROID!`、无 `UniXNU`），不是我们的镜像
+  （`kernel_size=771,005`）。已在确认 fastboot 在线后重新刷入修复镜像 ✓。
+  **教训：刷机前必须确认 `fastboot devices` 非空，不能只看 `Writing ... OKAY`。**
+
+### Data 卷的官方流程（环境依赖，本机做不了）
+
+`docs/zh/guide/userdata.md` §4 与 `skip-setup.md`：
+
+```sh
+./unixnu build payload --data-ramdisk data.dbr [--skip-setup]
+```
+
+- 可写 Data 卷来自 **payload 里的 Data ramdisk seed**（`Payloads/scratch-data.img`）；
+- `scripts/seed-data-grow.py`、`scripts/seed-data-skip-setup.py` 以及
+  `UniXNU-fork/scripts/make-data-seed.py` 都调用 macOS 的 **`hdiutil` / `diskutil`**
+  创建和挂载 APFS（`hdiutil create -fs APFS`）；seed 还要从 IPSW 的 OS 挂载拷
+  `/private/var` 原始目录；
+- 本机是 Windows + WSL，没有 `hdiutil`/`diskutil`，也没有可用的 APFS 写工具
+  （`fsapfsmount` 无 FUSE）。因此**真正的 Data seed 必须在 macOS 上生成**，或在别的
+  已具备 APFS 工具的 Linux 环境生成后把 `.dbr` 拷过来。
+
+### 澄清：`native-msdc-persist=2` 不是 Data 卷
+
+`NativeMsdc.cpp`：`persist=1` 证明只读，`=2` 才把 `allowWrites` 传给窗口；但
+`configure()` 里 `writable = allowWrites && !(entry.flags & kWindowReadOnly)`，我们
+manifest 里 OS/SystemOS 两个窗口都是只读窗口。所以改 `persist=2` 只会开放**驱动自己的
+persistent store**（userdata 末尾的保留区），**不会**凭空产生 `/private/var`。
+`/private/var` 必须由 Data ramdisk seed 提供。
+
+### 可选的后续路线（按代价排序）
+
+1. **在 macOS 上生成 Data seed**：按 `userdata.md` §4 用 `hdiutil`/`diskutil` 建 APFS
+   Data 卷，`seed-data-grow.py --gib N` 调整到目标大小，`--skip-setup` 标记 Setup 完成，
+   再把 `.dbr` 拷到本机，`build payload --data-ramdisk <seed>`；
+2. **无 Data 卷继续调试用户态**：把 swap 关掉（`vm_swap` 相关 boot arg / 忽略 EROFS），
+   看 launchd 是否能继续到第一个用户态服务 —— 但 `/private/var` 迟早还是必需的；
+3. **优化启动速度**：策略区 73 MB @ 320 KB/s ≈ 227 秒，是"长时间没日志/屏幕不动"的
+   主要原因；可试 `native-msdc-dma=1`（驱动有 PIO 比对自检，通过才启用）。
+
+### 仍未解决
+
+- 内核 eMMC 控制台在驱动启动后停止写入（稳定停在 `VM Swap Subsystem is ON` 附近），
+  panics 屏是可靠通道；
+- 显示/输入/GPU/Wi-Fi/电池等板级服务均未开始。
+
+### 今晚（整天）的最终进度
+
+固件 `Compromised Data` ✅ → 内核日志 ✅ → AMFI CT policy ✅ → 根卷认证 ✅ →
+`launchd` exec 通过 ✅ → **下一关：可写 Data 卷 / `/private/var`**（需要 macOS 生成 seed）。
