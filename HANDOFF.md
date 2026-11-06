@@ -2622,3 +2622,68 @@ BADARCH / BADMACHO / SHLIB），每处 panic 带行号与返回码：`D4K line N
 ADT 节点丢失（节点在 ✓）、驱动没恢复 CFG（HostSession 会恢复 ✓）、门控饿死、
 定时刷写并发、跨模块调用（pexpert 与 kext 符号不互通，链接失败 ✗）、
 失败后永久静默（已改成不放弃 ✓）。目前改用 **panic 屏**作为可靠诊断通道 ✓。
+
+---
+
+## 0.48 exec 通过；根因是读超时，已修（2026-11-06 23:1x）
+
+### 精确定位
+
+`D4K namei: path=/usr/lib/dyld raw_errno=60 (ETIMEDOUT) @mach_loader.c:3794`
+
+- 60 = ETIMEDOUT（已核对 `bsd/sys/errno.h`：ENOENT=2, EACCES=13, ENOTDIR=20,
+  **EROFS=30**, **ETIMEDOUT=60**, ELOOP=62）；
+- `get_macho_vnode()` 的 `namei()` 失败发生在解析 dyld 路径时 —— 不是 Mach-O 解析、
+  不是路径不存在、不是权限，而是**读磁盘超时**；
+- 与日志里 `disk3: I/O timeout` / `buf_biowait() failed, error = 60` /
+  `got err 60 reading blknum 90747` / `vm_swap_create_file failed` 完全同源。
+
+### 为什么下午绕了弯
+
+- `lret=4` 是 `LOAD_FAILURE`（4），不是 `LOAD_BADMACHO`（2）—— 常量表见
+  `bsd/kern/mach_loader.h`；
+- `load_machfile`/`parse_machfile` 多用 `ret = LOAD_FAILURE; ... return ret;`（变量式返回），
+  前几轮只插桩 `return LOAD_XXX;` 字面量形式，全部漏掉；
+- 最终对 86 处字面量 + 15 处变量式返回插桩，命中 `D4K line 3798`。
+
+### 修复
+
+`hostReadPio` 原先必须同时看到 `kIntXferDone` 中断位且收齐数据才成功；该位被状态读取
+消费后，即使缓冲已完整也会轮询到超时。现在：
+
+1. `offset == total && !(SDC_STS & BUSY) && FIFO 空` 也算完成 ✓；
+2. 命令超时 3 秒 → **10 秒**（64 KiB @ 320 KB/s ≈ 0.2 秒）✓；
+3. **不重试**（半刷新缓冲会破坏 verified 块哈希，早上已证伪）✓。
+
+提交 `36b6062`，镜像 `227f9ab0…`。
+
+### 结果
+
+- 屏幕上 `DANDELION-EXEC` / `D4K namei` 都消失 ✓ —— dyld 路径解析成功、exec 通过；
+- 日志已能写到 `load_init_program` / `DANDELION-EXEC: clearing policy answer 0` /
+  `shared_region ... check_np(...)` ✓；
+- `Failed to open swap file 30` = **EROFS**（只读文件系统），不再是超时 ✓ —— 因为
+  `native-msdc-persist=1` 语义是"证明只读"，`=2` 才开放写入；且 Data 卷尚未建立。
+  这是预期内、非致命的。
+
+### 下一步
+
+1. **Data 卷 / `/private/var`**：把 `native-msdc-persist` 从 1 改为 2，并按
+   `docs/zh/guide/userdata.md` 与 `skip-setup.md` 的 seed 流程建立可写 Data 卷；
+   需要 `[payload.adt] root_match_volume_uuid` 指向 Data 卷（当前指向 OS 卷）。
+2. **策略区读取 227 秒**：73 MB @ 320 KB/s，是启动慢/"黄条只走一点"的原因；
+   优化分块或启用 DMA（`native-msdc-dma=1`，需先通过 PIO 比对自检）。
+3. 控制台在驱动启动后仍会停止写入，日志稳定停在 `VM Swap Subsystem is ON` 附近；
+   诊断改用 panic 屏。
+
+### 固件日志（同分区 +30,512）证明链路完好
+
+```
+DARWINBOOT: inputs validated; exiting boot services
+DARWINBOOT: hand-off to the kernel
+kernel va/pa, entry, args, video, command line 均已打印并校验
+Exiting boot services. A green bar ... marks the loader handoff before the kernel branch.
+```
+
+固件阶段没有失败；"黄条只走一点"多半是内核在读 73 MB 策略区（约 4 分钟）期间屏幕
+几乎不动。
