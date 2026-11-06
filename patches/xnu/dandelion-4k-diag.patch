@@ -1,124 +1,329 @@
 --- a/bsd/kern/mach_loader.c
 +++ b/bsd/kern/mach_loader.c
-@@ -2125,7 +2125,7 @@
+@@ -470,6 +470,7 @@
+ 
+ 	if (os_add_overflow(file_offset, macho_size, &total_size) ||
+ 	    total_size > file_size) {
++		panic("D4K line %d: LOAD_BADMACHO", 473);
+ 		return LOAD_BADMACHO;
+ 	}
+ 
+@@ -638,6 +639,7 @@
  #endif /* __arm64__ */
+ 		{
+ 			vm_map_deallocate(map); /* will lose pmap reference too */
++			panic("D4K line %d: LOAD_BADMACHO", 641);
+ 			return LOAD_BADMACHO;
+ 		}
+ 	}
+@@ -647,6 +649,7 @@
+ 		/* 64 bit ARM binary must have "hard page zero" of 4GB to cover the lower 32 bit address space */
+ 		if (vm_map_has_hard_pagezero(map, 0x100000000) == FALSE) {
+ 			vm_map_deallocate(map); /* will lose pmap reference too */
++			panic("D4K line %d: LOAD_BADMACHO", 650);
+ 			return LOAD_BADMACHO;
+ 		}
+ 	}
+@@ -912,6 +915,7 @@
+ 	    (off_t)cmds_size > macho_size ||
+ 	    round_page_overflow(cmds_size, &alloc_size) ||
+ 	    alloc_size > INT_MAX) {
++		panic("D4K line %d: LOAD_BADMACHO", 915);
+ 		return LOAD_BADMACHO;
+ 	}
+ 
+@@ -934,6 +938,7 @@
+ 		{
+ 			/* We must be able to read in as much as the mach_header indicated */
+ 			kfree_data(addr, alloc_size);
++			panic("D4K line %d: LOAD_BADMACHO", 937);
+ 			return LOAD_BADMACHO;
+ 		}
+ 	}
+@@ -1757,12 +1762,15 @@
+ 			delta_file = (uint64_t)APPLE_UNPROTECTED_HEADER_SIZE;
+ 			delta_file -= slice_off;
+ 			if (os_convert_overflow(delta_file, &delta_map)) {
++				panic("D4K line %d: LOAD_BADMACHO", 1760);
+ 				return LOAD_BADMACHO;
+ 			}
+ 			if (os_add_overflow(map_addr, delta_map, &map_addr)) {
++				panic("D4K line %d: LOAD_BADMACHO", 1763);
+ 				return LOAD_BADMACHO;
+ 			}
+ 			if (os_sub_overflow(map_size, delta_map, &map_size)) {
++				panic("D4K line %d: LOAD_BADMACHO", 1766);
+ 				return LOAD_BADMACHO;
+ 			}
+ 		}
+@@ -1861,6 +1869,7 @@
+ 
+ 	if (vm_end < vm_start ||
+ 	    file_end < file_start) {
++		panic("D4K line %d: LOAD_BADMACHO", 1864);
+ 		return LOAD_BADMACHO;
+ 	}
+ 	if (vm_end == vm_start ||
+@@ -2126,6 +2135,7 @@
  	}
  	if (lcp->cmdsize < segment_command_size) {
--		DEBUG4K_ERROR("LOAD_BADMACHO cmdsize %d < %zu\n", lcp->cmdsize, segment_command_size);
-+		panic("LOAD_BADMACHO cmdsize %d < %zu\n", lcp->cmdsize, segment_command_size);
+ 		DEBUG4K_ERROR("LOAD_BADMACHO cmdsize %d < %zu\n", lcp->cmdsize, segment_command_size);
++		panic("D4K line %d: LOAD_BADMACHO", 2129);
  		return LOAD_BADMACHO;
  	}
  	total_section_size = lcp->cmdsize - segment_command_size;
-@@ -2157,7 +2157,7 @@
- 	 */
+@@ -2158,6 +2168,7 @@
  	if (scp->fileoff + scp->filesize < scp->fileoff ||
  	    scp->fileoff + scp->filesize > (uint64_t)macho_size) {
--		DEBUG4K_ERROR("LOAD_BADMACHO fileoff 0x%llx filesize 0x%llx macho_size 0x%llx\n", scp->fileoff, scp->filesize, (uint64_t)macho_size);
-+		panic("LOAD_BADMACHO fileoff 0x%llx filesize 0x%llx macho_size 0x%llx\n", scp->fileoff, scp->filesize, (uint64_t)macho_size);
+ 		DEBUG4K_ERROR("LOAD_BADMACHO fileoff 0x%llx filesize 0x%llx macho_size 0x%llx\n", scp->fileoff, scp->filesize, (uint64_t)macho_size);
++		panic("D4K line %d: LOAD_BADMACHO", 2161);
  		return LOAD_BADMACHO;
  	}
  	/*
-@@ -2165,14 +2165,14 @@
- 	 * within the load command size.
+@@ -2166,6 +2177,7 @@
  	 */
  	if (total_section_size / single_section_size < scp->nsects) {
--		DEBUG4K_ERROR("LOAD_BADMACHO 0x%zx 0x%zx %d\n", total_section_size, single_section_size, scp->nsects);
-+		panic("LOAD_BADMACHO 0x%zx 0x%zx %d\n", total_section_size, single_section_size, scp->nsects);
+ 		DEBUG4K_ERROR("LOAD_BADMACHO 0x%zx 0x%zx %d\n", total_section_size, single_section_size, scp->nsects);
++		panic("D4K line %d: LOAD_BADMACHO", 2169);
  		return LOAD_BADMACHO;
  	}
  	/*
- 	 * Make sure the segment is page-aligned in the file.
+@@ -2173,6 +2185,7 @@
  	 */
  	if (os_add_overflow(pager_offset, scp->fileoff, &file_offset)) {
--		DEBUG4K_ERROR("LOAD_BADMACHO file_offset: 0x%llx + 0x%llx\n", pager_offset, scp->fileoff);
-+		panic("LOAD_BADMACHO file_offset: 0x%llx + 0x%llx\n", pager_offset, scp->fileoff);
+ 		DEBUG4K_ERROR("LOAD_BADMACHO file_offset: 0x%llx + 0x%llx\n", pager_offset, scp->fileoff);
++		panic("D4K line %d: LOAD_BADMACHO", 2176);
  		return LOAD_BADMACHO;
  	}
  	file_size = scp->filesize;
-@@ -2183,7 +2183,7 @@
- 			 * we can't mmap() it if it's not at least 4KB-aligned
+@@ -2184,6 +2197,7 @@
  			 * in the file
  			 */
--			DEBUG4K_ERROR("LOAD_BADMACHO file_offset 0x%llx\n", file_offset);
-+			panic("LOAD_BADMACHO file_offset 0x%llx\n", file_offset);
+ 			DEBUG4K_ERROR("LOAD_BADMACHO file_offset 0x%llx\n", file_offset);
++			panic("D4K line %d: LOAD_BADMACHO", 2187);
  			return LOAD_BADMACHO;
  		}
  	} else
-@@ -2196,7 +2196,7 @@
- 		 * was what this process believe is the page size, so let's
+@@ -2197,6 +2211,7 @@
  		 * fail here too for the sake of consistency.
  		 */
--		DEBUG4K_ERROR("LOAD_BADMACHO file_offset 0x%llx\n", file_offset);
-+		panic("LOAD_BADMACHO file_offset 0x%llx\n", file_offset);
+ 		DEBUG4K_ERROR("LOAD_BADMACHO file_offset 0x%llx\n", file_offset);
++		panic("D4K line %d: LOAD_BADMACHO", 2200);
  		return LOAD_BADMACHO;
  	}
  
-@@ -2211,7 +2211,7 @@
- 		if (cs_debug) {
+@@ -2212,6 +2227,7 @@
  			printf("section outside code signature\n");
  		}
--		DEBUG4K_ERROR("LOAD_BADMACHO end_offset 0x%llx fileoff 0x%llx filesize 0x%llx\n", result->cs_end_offset, scp->fileoff, scp->filesize);
-+		panic("LOAD_BADMACHO end_offset 0x%llx fileoff 0x%llx filesize 0x%llx\n", result->cs_end_offset, scp->fileoff, scp->filesize);
+ 		DEBUG4K_ERROR("LOAD_BADMACHO end_offset 0x%llx fileoff 0x%llx filesize 0x%llx\n", result->cs_end_offset, scp->fileoff, scp->filesize);
++		panic("D4K line %d: LOAD_BADMACHO", 2215);
  		return LOAD_BADMACHO;
  	}
  
-@@ -2219,12 +2219,12 @@
- 		if (cs_debug) {
+@@ -2220,11 +2236,13 @@
  			printf("vmaddr too large\n");
  		}
--		DEBUG4K_ERROR("LOAD_BADMACHO vmaddr 0x%llx slide 0x%llx vm_offset 0x%llx\n", scp->vmaddr, slide, (uint64_t)vm_offset);
-+		panic("LOAD_BADMACHO vmaddr 0x%llx slide 0x%llx vm_offset 0x%llx\n", scp->vmaddr, slide, (uint64_t)vm_offset);
+ 		DEBUG4K_ERROR("LOAD_BADMACHO vmaddr 0x%llx slide 0x%llx vm_offset 0x%llx\n", scp->vmaddr, slide, (uint64_t)vm_offset);
++		panic("D4K line %d: LOAD_BADMACHO", 2223);
  		return LOAD_BADMACHO;
  	}
  
  	if (scp->vmsize > SIZE_MAX) {
--		DEBUG4K_ERROR("LOAD_BADMACHO vmsize 0x%llx\n", scp->vmsize);
-+		panic("LOAD_BADMACHO vmsize 0x%llx\n", scp->vmsize);
+ 		DEBUG4K_ERROR("LOAD_BADMACHO vmsize 0x%llx\n", scp->vmsize);
++		panic("D4K line %d: LOAD_BADMACHO", 2228);
  		return LOAD_BADMACHO;
  	}
  
-@@ -2257,7 +2257,7 @@
- 		 */
+@@ -2258,6 +2276,7 @@
  		vm_end = (vm_map_offset_t)(vm_offset + vm_size);
  		if (vm_end < vm_offset) {
--			DEBUG4K_ERROR("LOAD_BADMACHO vm_end 0x%llx vm_offset 0x%llx vm_size 0x%llx\n", (uint64_t)vm_end, (uint64_t)vm_offset, (uint64_t)vm_size);
-+			panic("LOAD_BADMACHO vm_end 0x%llx vm_offset 0x%llx vm_size 0x%llx\n", (uint64_t)vm_end, (uint64_t)vm_offset, (uint64_t)vm_size);
+ 			DEBUG4K_ERROR("LOAD_BADMACHO vm_end 0x%llx vm_offset 0x%llx vm_size 0x%llx\n", (uint64_t)vm_end, (uint64_t)vm_offset, (uint64_t)vm_size);
++			panic("D4K line %d: LOAD_BADMACHO", 2261);
  			return LOAD_BADMACHO;
  		}
  
-@@ -2309,7 +2309,7 @@
- #if !defined(XNU_TARGET_OS_OSX)
+@@ -2310,6 +2329,7 @@
  		/* not PAGEZERO: should not be mapped at address 0 */
  		if (filetype != MH_DYLINKER && (imgp->ip_flags & IMGPF_ROSETTA) == 0 && scp->vmaddr == 0) {
--			DEBUG4K_ERROR("LOAD_BADMACHO filetype %d vmaddr 0x%llx\n", filetype, scp->vmaddr);
-+			panic("LOAD_BADMACHO filetype %d vmaddr 0x%llx\n", filetype, scp->vmaddr);
+ 			DEBUG4K_ERROR("LOAD_BADMACHO filetype %d vmaddr 0x%llx\n", filetype, scp->vmaddr);
++			panic("D4K line %d: LOAD_BADMACHO", 2313);
  			return LOAD_BADMACHO;
  		}
  #endif /* !defined(XNU_TARGET_OS_OSX) */
-@@ -2329,7 +2329,7 @@
- 
- 		if (file_offset - file_start > FOURK_PAGE_MASK ||
- 		    file_end - file_offset - file_size > FOURK_PAGE_MASK) {
--			DEBUG4K_ERROR("LOAD_BADMACHO file_start / file_size wrap "
-+			panic("LOAD_BADMACHO file_start / file_size wrap "
- 			    "[0x%llx:0x%llx] -> [0x%llx:0x%llx]\n",
- 			    file_offset,
+@@ -2335,6 +2355,7 @@
  			    file_offset + file_size,
-@@ -2363,7 +2363,7 @@
+ 			    (uint64_t) file_start,
+ 			    (uint64_t) file_end);
++			panic("D4K line %d: LOAD_BADMACHO", 2338);
+ 			return LOAD_BADMACHO;
+ 		}
  
- 		if (file_offset - file_start > effective_page_mask ||
- 		    file_end - file_offset - file_size > effective_page_mask) {
--			DEBUG4K_ERROR("LOAD_BADMACHO file_start / file_size wrap "
-+			panic("LOAD_BADMACHO file_start / file_size wrap "
- 			    "[0x%llx:0x%llx] -> [0x%llx:0x%llx]\n",
- 			    file_offset,
+@@ -2369,6 +2390,7 @@
  			    file_offset + file_size,
-@@ -2392,7 +2392,7 @@
- 		 */
- 		if (result->ro_vm_start != MACH_VM_MIN_ADDRESS ||
- 		    result->ro_vm_end != MACH_VM_MIN_ADDRESS) {
--			DEBUG4K_ERROR("LOAD_BADMACHO segment flags [%x] "
-+			panic("LOAD_BADMACHO segment flags [%x] "
+ 			    (uint64_t) file_start,
+ 			    (uint64_t) file_end);
++			panic("D4K line %d: LOAD_BADMACHO", 2372);
+ 			return LOAD_BADMACHO;
+ 		}
+ 	}
+@@ -2395,6 +2417,7 @@
+ 			DEBUG4K_ERROR("LOAD_BADMACHO segment flags [%x] "
  			    "multiple segments with SG_READ_ONLY flag\n",
  			    scp->flags);
++			panic("D4K line %d: LOAD_BADMACHO", 2398);
  			return LOAD_BADMACHO;
+ 		}
+ 
+@@ -2567,6 +2590,7 @@
+ 
+ 	if ((uulp->cmdsize < sizeof(struct uuid_command)) ||
+ 	    (((char *)uulp + sizeof(struct uuid_command)) > command_end)) {
++		panic("D4K line %d: LOAD_BADMACHO", 2570);
+ 		return LOAD_BADMACHO;
+ 	}
+ 
+@@ -2588,9 +2612,11 @@
+ 	uint32_t min_sdk;
+ 
+ 	if (vmc->cmdsize < sizeof(*vmc)) {
++		panic("D4K line %d: LOAD_BADMACHO", 2591);
+ 		return LOAD_BADMACHO;
+ 	}
+ 	if (*found_version_cmd == TRUE) {
++		panic("D4K line %d: LOAD_BADMACHO", 2594);
+ 		return LOAD_BADMACHO;
+ 	}
+ 	*found_version_cmd = TRUE;
+@@ -2653,6 +2679,7 @@
+ 	kern_return_t   ret;
+ 
+ 	if (epc->cmdsize < sizeof(*epc)) {
++		panic("D4K line %d: LOAD_BADMACHO", 2656);
+ 		return LOAD_BADMACHO;
+ 	}
+ 	if (result->thread_count != 0) {
+@@ -2675,10 +2702,12 @@
+ 			 * overflowing value, since this will have a guard page added to it
+ 			 * and be rounded to page boundaries
+ 			 */
++			panic("D4K line %d: LOAD_BADMACHO", 2678);
+ 			return LOAD_BADMACHO;
+ 		}
+ 		result->user_stack_size = epc->stacksize;
+ 		if (os_add_overflow(epc->stacksize, PAGE_SIZE, &result->user_stack_alloc_size)) {
++			panic("D4K line %d: LOAD_BADMACHO", 2682);
+ 			return LOAD_BADMACHO;
+ 		}
+ 		result->custom_stack = TRUE;
+@@ -2776,6 +2805,7 @@
+ 	int customstack = 0;
+ 	mach_vm_offset_t addr;
+ 	if (tcp->cmdsize < sizeof(*tcp)) {
++		panic("D4K line %d: LOAD_BADMACHO", 2779);
+ 		return LOAD_BADMACHO;
+ 	}
+ 	if (result->thread_count != 0) {
+@@ -2875,6 +2905,7 @@
+ 	 */
+ 	while (total_size > 0) {
+ 		if (total_size < 2 * sizeof(uint32_t)) {
++			panic("D4K line %d: LOAD_BADMACHO", 2878);
+ 			return LOAD_BADMACHO;
+ 		}
+ 
+@@ -2920,11 +2951,13 @@
+ 	uint32_t        stack_size;
+ 
+ 	if (total_size == 0) {
++		panic("D4K line %d: LOAD_BADMACHO", 2923);
+ 		return LOAD_BADMACHO;
+ 	}
+ 
+ 	while (total_size > 0) {
+ 		if (total_size < 2 * sizeof(uint32_t)) {
++			panic("D4K line %d: LOAD_BADMACHO", 2928);
+ 			return LOAD_BADMACHO;
+ 		}
+ 
+@@ -2932,10 +2965,12 @@
+ 		size = *ts++;
+ 		if (UINT32_MAX - 2 < size ||
+ 		    UINT32_MAX / sizeof(uint32_t) < size + 2) {
++			panic("D4K line %d: LOAD_BADMACHO", 2935);
+ 			return LOAD_BADMACHO;
+ 		}
+ 		stack_size = (size + 2) * sizeof(uint32_t);
+ 		if (stack_size > total_size) {
++			panic("D4K line %d: LOAD_BADMACHO", 2939);
+ 			return LOAD_BADMACHO;
+ 		}
+ 		total_size -= stack_size;
+@@ -2977,6 +3012,7 @@
+ 	*entry_point = MACH_VM_MIN_ADDRESS;
+ 	while (total_size > 0) {
+ 		if (total_size < 2 * sizeof(uint32_t)) {
++			panic("D4K line %d: LOAD_BADMACHO", 2980);
+ 			return LOAD_BADMACHO;
+ 		}
+ 
+@@ -2984,10 +3020,12 @@
+ 		size = *ts++;
+ 		if (UINT32_MAX - 2 < size ||
+ 		    UINT32_MAX / sizeof(uint32_t) < size + 2) {
++			panic("D4K line %d: LOAD_BADMACHO", 2987);
+ 			return LOAD_BADMACHO;
+ 		}
+ 		entry_size = (size + 2) * sizeof(uint32_t);
+ 		if (entry_size > total_size) {
++			panic("D4K line %d: LOAD_BADMACHO", 2991);
+ 			return LOAD_BADMACHO;
+ 		}
+ 		total_size -= entry_size;
+@@ -3069,6 +3107,7 @@
+ 	} *dyld_data;
+ 
+ 	if (lcp->cmdsize < sizeof(*lcp) || lcp->name.offset >= lcp->cmdsize) {
++		panic("D4K line %d: LOAD_BADMACHO", 3072);
+ 		return LOAD_BADMACHO;
+ 	}
+ 
+@@ -3078,6 +3117,7 @@
+ 	size_t maxsz = lcp->cmdsize - lcp->name.offset;
+ 	size_t namelen = strnlen(name, maxsz);
+ 	if (namelen >= maxsz) {
++		panic("D4K line %d: LOAD_BADMACHO", 3081);
+ 		return LOAD_BADMACHO;
+ 	}
+ 
+@@ -3118,6 +3158,7 @@
+ 
+ #if !(DEVELOPMENT || DEBUG)
+ 	if (0 != strcmp(name, DEFAULT_DYLD_PATH)) {
++		panic("D4K line %d: LOAD_BADMACHO", 3121);
+ 		return LOAD_BADMACHO;
+ 	}
+ #endif
+@@ -3607,6 +3648,7 @@
+ 	kern_return_t kr;
+ 
+ 	if (eip->cmdsize < sizeof(*eip)) {
++		panic("D4K line %d: LOAD_BADMACHO", 3610);
+ 		return LOAD_BADMACHO;
+ 	}
+ 
+@@ -3623,6 +3665,7 @@
+ 		cryptname = "com.apple.null";
+ 		break;
+ 	default:
++		panic("D4K line %d: LOAD_BADMACHO", 3626);
+ 		return LOAD_BADMACHO;
+ 	}
+ 
+@@ -3722,6 +3765,7 @@
+ 	}
+ 
+ 	/* if we get here, did not find anything */
++	panic("D4K line %d: LOAD_BADMACHO", 3725);
+ 	return LOAD_BADMACHO;
+ 
+ remap_now:
