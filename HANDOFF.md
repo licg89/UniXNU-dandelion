@@ -3017,3 +3017,62 @@ Due to capacity constraints, jobs targeting macOS arm64 runners may experience l
 run 完成且 `conclusion=success` 时自动下载 artifact 到
 `D:\aios\out3\dandelion-data-seed.zip`；失败则拉取 check-run 注解自动诊断。
 拿到 seed 后按 §0.51 的固定 5 步执行。
+
+---
+
+## 0.55 Data seed 已接入并构建成功（2026-11-07 02:1x）
+
+### CI 成果（run 42263833632，12/12 step success）
+
+```
+magic        DBRDISK1（packed）
+volume_uuid  BB07C39B-F799-45FC-ABAD-A3D797ECF9A8
+size_mib     256（逻辑 268,435,456 字节；packed 后 981 KiB）
+files        39，file_bytes 611,715（21H461 OS 卷的 /private/var，跳过 staged_system_apps）
+output_sha256 25d4e3c1…（与 payload 记录一致）
+os_launchd_sha256 8cec9a3c…（与框架 build-target-dyld-fixture.py 的 21H461 期望值一致 ✓）
+```
+
+公开仓库后 runner 立刻分配，印证 §0.54 的判断。
+
+### 接入的四处改动（提交 `4bbbd31`）
+
+| 位置 | 改动 |
+| --- | --- |
+| `configs/dandelion_defconfig` | `OWNER_DATA_MOUNT=y`、`NATIVE_RAM_BLOCK=y`、`OWNER_DATA_VOLUME_UUID="BB07C39B-…"` |
+| `board.toml [payload.adt]` | `packed_data_ramdisk = true`（payload.py:190 据此选 `--packed-data-ramdisk`）|
+| 构建命令 | `unixnu build payload --data-ramdisk <dandelion-data.dbr>` |
+| 驱动构建 | `build-native-msdc.py --block-devices 1 --verified-root --ufs-store-abi` |
+
+### 两个真实的框架约束（不是绕过，是补齐）
+
+1. **两个 transport 的 bindings 记录**：`NATIVE_RAM_BLOCK` + `NATIVE_VIRTIO_BLOCK` 同时开时，
+   `build-xnu-4k-baseline.sh:744` 会读两个归档旁的 `bindings.json`，校验
+   `compiled_object_sha256` 与对象一致、且两者导入的原始符号相同。macOS 侧由
+   `build-virtio-mmio-bindings.py`（xcrun）生成；本机新增
+   `scripts/write-transport-bindings.py`，用我们**自己从 dispatch table 推导的 18 个
+   `IOBlockStorageDevice` 符号**（`derive-storage-symbols.py` 的产物）写成期望的 schema，
+   并就地计算每个对象的哈希 —— 断言的都是实测值。
+2. **对象命名不一致**：框架按归档名推导对象名（`libVirtioMmioBlock.a` → `VirtioMmioBlock.o`），
+   而 `build-arm-driver.py` 按运行时标识符命名（`NativeVirtioBlock.o`）。脚本为二者建立**硬链接**，
+   保证同一份字节。
+3. **`native_ufs_store_*` 未定义**：`NativeRamBlock` 以弱符号导入这套 store API，
+   而 eMMC 驱动只在 `NATIVE_MSDC_UFS_STORE_ABI` 下导出别名。新增 `--ufs-store-abi` 开关后
+   链接通过 ✓（源码注释也说明不能与 NativeUfs 同时链接）。
+
+### 构建结果
+
+```
+kernel=0 errors=0    （CT 补丁在重建后重新应用：0x1a9f17e8 → 0x52800008 ✓）
+payload=0            data_ramdisk_sha256 25d4e3c1… ✓
+bootimg=0            017a14b6… (63,688,704 bytes)
+payload_bytes        62,914,560（60 MiB，未触发 57 MiB 的容量上限 ✓）
+```
+
+镜像 `D:\aios\out3\boot-data.img` 已刷入（确认 fastboot 在线后）。
+
+### 待验证（下一次启动的日志）
+
+- RamBlock 是否以 `md0`/IOMedia 发布 seed 并挂载；
+- `Failed to open swap file 30`（EROFS）是否消失；
+- launchd 之后是否出现 `/private/var` 或第一个用户态服务。
