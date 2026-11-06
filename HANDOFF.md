@@ -3208,3 +3208,69 @@ CT 补丁（`0x52800008`）+ 14 MB 控制台窗口。**待刷入验证**。
 2. 16 KiB 缓存布局与 4 KiB 内核的页大小适配（框架 `native-4k-user-abi` 已改子 map shift，
    但 dyld 自身可能另有检查）；
 3. AMFI 对缓存签名/映射的额外要求（CT 补丁只改了 CT policy 判定）。
+
+---
+
+## 0.58 carrier 路线：Data 卷与 cryptex 都挂上了，dyld 缓存仍是墙（2026-11-07 04:0x）
+
+### carrier 配置下的完整启动日志（210 行，无 panic）
+
+```
+attempting to load 3 external trust cache modules / loaded 0,1,2 / completed
+disk5s1 mount-complete volume DawnUpdate21H461.J120J121J207J208OS        (kernel_task)
+disk3s1 mounting volume ...SystemCryptex, requested by: init (pid 1)
+disk3s1 mount-complete volume ...SystemCryptex
+NativeMsdc: store at sector 119400391, 65539 blocks, mode 1
+dev_init:306: disk2 device_handle block size 4096 block count 65536
+disk2s1 mounting volume OwnerData, requested by: init (pid 1)
+handle_mount:817: disk2s1 vol-uuid: BB07C39B-F799-45FC-ABAD-A3D797ECF9A8
+disk2s1 mount-complete volume OwnerData
+load_init_program: attempting to load /sbin/launchd
+DANDELION-EXEC: clearing policy answer 0 (pid 1)
+shared_region: [1(launchd)] check_np(...) vm_shared_region_start_address() failed
+```
+
+**里程碑：CI 生成的 Data seed 以 `OwnerData` 卷被 APFS 挂载成功**，UUID 与 CI 报告
+完全一致 ✓；SystemCryptex 也由 init 挂载 ✓。日志里没有真正的 panic
+（只有两条无害的 `debug_log_init: Error!! gPanicBase is still not initialized`）。
+
+### 已排除的假设（按顺序）
+
+| 假设 | 结论 |
+| --- | --- |
+| 路径不可见 | ❌ 已排除：`dyld=0 cachedir=0 cachefile=0 vartemp=0`（四个 lookup 全部成功）|
+| union 未建立 | ❌ 已排除：`union=1 auth=1` |
+| Data 卷挂载失败 | ❌ 已排除：`data=0 stage=4 ro=0`（可写）|
+| 缓存不在该卷 | ❌ 已排除：静态检查 cryptex 内 `com.apple.dyld` 70 处、`dyld_shared_cache_arm64` 226 处 |
+| 未设置 DYLD_SHARED_CACHE_DIR | ❌ 已排除：carrier 配置下源码会设置该环境变量 |
+
+### 当前唯一未解的墙
+
+`shared_region: check_np(...) vm_shared_region_start_address() failed` 之后 dyld 报
+`no dyld cache`。`vm_shared_region_start_address` 返回 `KERN_INVALID_ADDRESS` 当且仅当
+`sr_first_mapping == -1`（共享区为空，见 §0.44 抓到的源码）。
+
+也就是说：**内核从未把 dyld 缓存映射进 shared region**，而 dyld 期望它在那儿。
+`XNU_OWNER_CACHE_STARTUP=1` 只做 `dyld_flags |= 8` + `commpage_update_dyld_flags()`
+（owner 链模式），**不做预映射**（源码 `offline-owner-systemos-mount.patch:164`）。
+
+真实 iOS 由内核在启动早期把 preboot 里的缓存映射进 shared region。要复刻它，
+需要 `vm_shared_region.c` 侧的工作（`shared_region_map_and_slide_np` 的内核侧等价物，
+或在 `native_owner_cache_prepare` 成功后主动建立映射）。
+
+### 下一步候选（按代价排序）
+
+1. **在内核里主动建立 shared region 映射**：在 `native_owner_cache_prepare` 成功之后，
+   调用 shared region 的映射接口，把 `/private/preboot/.../dyld_shared_cache_arm64`
+   映射进 `shared_region`，使 `check_np` 返回成功 —— 这是最接近真实 iOS 的做法；
+2. **确认 dyld 是否真的收到 `DYLD_SHARED_CACHE_DIR`**：在 launchd 的 argv/envp 上做一次
+   dump（panic 打印 envp 指针内容），排除环境未传递；
+3. 参考 `docs/zh/devices/marble-milacy.md`（§0.41 记录它用 union 跑通了 libSystem）——
+   确认它是否另有 `vm_shared_region` 改动。
+
+### 收尾状态
+
+- 手机刷回 Android（`collect_carrier.ps1` 完成），可正常使用 ✓；
+- 仓库提交到 `4dfff44` 及之后的记录；远程 `main` 已同步；
+- 镜像资产：`boot-data.img`（carrier 版 `808435ad…`）、`boot-biglog.img`、
+  `userdata-signed.img`、CI seed（`dandelion-data.dbr`，981 KiB）。
