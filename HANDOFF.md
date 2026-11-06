@@ -3274,3 +3274,73 @@ shared_region: [1(launchd)] check_np(...) vm_shared_region_start_address() faile
 - 仓库提交到 `4dfff44` 及之后的记录；远程 `main` 已同步；
 - 镜像资产：`boot-data.img`（carrier 版 `808435ad…`）、`boot-biglog.img`、
   `userdata-signed.img`、CI seed（`dandelion-data.dbr`，981 KiB）。
+
+---
+
+## 0.59 carrier 授权链诊断（已刷入，等下一次读取）（2026-11-07 04:5x）
+
+### 为什么需要它
+
+`offline-owner-cache-carrier.patch` 在 `vm_unix.c` 里用
+`native_owner_shared_cache_carrier()` 授权 dyld 的 `shared_region_map_and_slide_np`。
+它有一串**全部必须成立**的条件（任一失败就静默拒绝，因为
+`SHARED_REGION_TRACE_ERROR` 在非调试构建里被编译掉）：
+
+1. `process_root == rootvnode`；
+2. root 与 cache 挂载都必须是只读 APFS 且**不是同一个挂载**；
+3. root 设备 == `native_verified_block_volume_device("04769D26-…")`；
+4. cache 设备 == `native_verified_block_volume_device("8846FE78-…")`（SystemCryptex）；
+5. `vnode_lookup("/private/preboot/System/Library/Caches/com.apple.dyld")` 成功、
+   是 `VDIR`、且其挂载 == cache 挂载；
+6. `vnode_parent(cache_file) == 该目录 vnode`；
+7. `native_verified_block_root_authorized(root_device)`。
+
+所以"dyld 报 no dyld cache 且没有日志"完全可能来自其中任意一条 ✗。
+
+### 已加入的诊断（`dandelion-owner-diag.patch`，已刷入）
+
+在 `native_owner_cache_prepare` / `native_owner_data_prepare` 成功之后
+panic 一次，把上面可复现的部分全部打出来：
+
+```
+D4K carrier: edir=<errno> efile=<errno> eroot=<errno> dir=<0|1> reg=<0|1>
+             dirmnt=<0|1> same=<0|1> root_same=<0|1> diff=<0|1>
+             | dev=<selected device path> sel=<dev> mnt=<dev>
+```
+
+- `edir` / `efile`：`/private/preboot/System/Library/Caches/com.apple.dyld`（目录与文件）
+  的 lookup errno；
+- `dir` / `reg`：目录是 VDIR、文件是 VREG；
+- `same`：目录与文件在同一挂载；
+- `root_same`：进程根就是 rootvnode；`diff`：root 与 cache 不在同一挂载；
+- `dev` / `sel` / `mnt`：`native_owner_cache_prepare` 解析出的设备路径、选中设备号、实际挂载设备号。
+
+镜像 `boot-data.img`（sha256 `302b7816…`），已刷入设备并启动（04:0x）。
+设备在约 5–6 分钟后 panic，`panic()` 的输出会**同时**进 panic 屏和 eMMC 控制台，
+因此控制台日志里一定能拿到这一行。
+
+### 早上怎么取（一条命令）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\aios\_work\morning-carrier.ps1
+```
+
+手机先按住电源 10 秒、再 `音量下 + 电源` 进 fastboot。脚本会：刷回 Android boot（不擦除）→
+等 adb → `adb root` → 读 flashinfo → **打印 `D4K carrier:` 那一行**以及 owner/cryptex/
+dyld/launchd 相关的全部行 → 最后把日志块清零，供下一轮使用。
+
+### 读到之后的分支
+
+| `D4K carrier` 结果 | 结论与下一步 |
+| --- | --- |
+| `edir≠0` | `/private/preboot/...` 目录不存在 → cryptex 没挂到 `/private/preboot`（或挂载点不同），改挂载点或改 carrier 的期望路径 |
+| `reg=0` 或 `efile≠0` | 该目录下没有 `dyld_shared_cache_arm64` → 缓存文件名/子缓存布局不同，改为指向实际的子缓存 |
+| `same=0` | 目录与文件不在同一挂载 → 目录来自 OS 卷、文件来自 cryptex，需让 carrier 接受 |
+| `diff=0` | root 与 cache 在同一挂载 → 说明 cryptex 其实挂到了 `/`（union 语义残留）|
+| `sel≠mnt` | 设备号不一致 → `native_verified_block_volume_device` 选错设备 |
+| 全部成立但仍失败 | 授权通过、映射仍失败 → 转向在 `native_owner_cache_prepare` 里主动建立映射 |
+
+### 当前设备状态
+
+手机挂着（panic 后停在菜单/循环），**需要按电源才能读日志** —— 这是唯一无法自动化的步骤。
+仓库已提交，远程 `main` 同步。
