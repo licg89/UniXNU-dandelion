@@ -108,7 +108,10 @@ volatile uint32_t native_msdc_integrity_failures = 0;
 
 namespace {
 
-constexpr uint64_t kCommandTimeoutNs = 1000000000ULL;     // one command and its data phase
+// One command and its data phase.  A 64 KiB PIO block takes about 0.2 s at the measured
+// 320 KB/s, so a second was already marginal under APFS load; three leaves room for a
+// stalled FIFO drain without hiding a真 hardware fault.
+constexpr uint64_t kCommandTimeoutNs = 3000000000ULL;
 constexpr uint64_t kBusyTimeoutNs = 5000000000ULL;        // programming after a write, cache flush
 constexpr unsigned kDmaDescriptorBytes = 4096;             // GPD at 0, BD at 64; the buffer follows
 constexpr unsigned kTransferBytes = kMaxBlocks * kSector;
@@ -463,9 +466,19 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
   if (!blocks || blocks > kMaxBlocks || sector >= gHost.diskSectors || blocks > gHost.diskSectors - sector)
     return kIOReturnBadArgument;
   IOReturn result;
-  if (write) result = hostWrite (uint32_t (sector), buffer, blocks);
-  else if (gHost.dmaEnabled) result = hostReadDma (uint32_t (sector), buffer, blocks);
-  else result = hostReadPio (kCmdReadSingle, uint32_t (sector), buffer, blocks);
+  for (unsigned attempt = 0; attempt < 2; ++attempt) {
+    if (write) result = hostWrite (uint32_t (sector), buffer, blocks);
+    else if (gHost.dmaEnabled) result = hostReadDma (uint32_t (sector), buffer, blocks);
+    else result = hostReadPio (kCmdReadSingle, uint32_t (sector), buffer, blocks);
+    if (result == kIOReturnSuccess) break;
+    // One transaction can stall while the rest of the volume stays healthy (the boot log shows
+    // exactly that on disk3).  Put the card back in the transfer state and try once more.
+    uint32_t response = 0;
+    (void) hostCommand (kCmdStop, 0, Data::None, &response);
+    wr (kMsdcIntr, 0xFFFFFFFFu);
+    wr (kMsdcFifoCs, rd (kMsdcFifoCs) | kFifoClear);
+    (void) waitClear (kMsdcFifoCs, kFifoClear);
+  }
   if (result != kIOReturnSuccess) __atomic_fetch_add (&native_msdc_failures, 1, __ATOMIC_RELAXED);
   else __atomic_fetch_add (write ? &native_msdc_writes : &native_msdc_reads, 1, __ATOMIC_RELAXED);
   return result;
