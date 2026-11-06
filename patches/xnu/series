@@ -55,5 +55,5 @@ dandelion-skip-cs.patch
 #
 # TEMPORARY diagnostic: panic with the owner cache/Data status right before launchd loads.
 #
-dandelion-owner-diag.patch
+# dandelion-owner-diag.patch   (retired: it answered)
 # dandelion-root-unverified.patch   (blocked: the framework's tree is not reproducible)

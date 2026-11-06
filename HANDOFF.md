@@ -3139,3 +3139,72 @@ cryptex 内还有 `System/Library/Caches/com.apple.dyld`（8 处）✓ —— �
 `/usr/lib/dyld`、`/System/Library/Caches/com.apple.dyld`、该目录下的
 `dyld_shared_cache_arm64`、`/private/var/tmp`，四个 errno 会指出是哪一层不可见：
 0 = 可见；2(ENOENT) = 不存在；20(ENOTDIR) = 中间组件不是目录。
+
+---
+
+## 0.57 缓存路径全部可见，问题在 dyld 的加载方式 → 切到 cache carrier（2026-11-07 03:2x）
+
+### 决定性诊断
+
+```
+D4K paths: dyld=0  cachedir=0  cachefile=0  vartemp=0
+```
+
+四个 `vnode_lookup` **全部返回 0**（都存在），包括
+`/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64` 本身。
+
+**结论：不是可见性、不是挂载、不是 union 的问题** ✗。内核在 launchd 之前能看到缓存文件，
+而 dyld 仍然报 `no dyld cache` —— 失败发生在 **dyld 如何拿到这个缓存**这一步：
+iOS 的 dyld 期望内核把缓存预先映射进 shared region（通过 `shared_region_*`），
+或者需要显式给出 `DYLD_SHARED_CACHE_DIR`。我们的 union 路线两者都没有：
+`XNU_OWNER_UNION_SYSTEMOS=1` 时框架故意**不**设置 `DYLD_*` 环境变量
+（源码里那段 copyout 被 `#if !defined(XNU_OWNER_UNION_SYSTEMOS)` 跳过），
+依赖 union 让默认路径可见。
+
+### 静态验证（本机完成，不需要设备）
+
+| 镜像 | `com.apple.dyld` | `dyld_shared_cache_arm64` |
+| --- | --- | --- |
+| OS 根卷（`os-apfs.img`，由 `udif.py` 从 IPSW 解出） | 0 | 0 |
+| **SystemOS cryptex**（`044-76034-038.dmg`） | **70** | **226** |
+
+cryptex 内部路径 `System/Library/Caches/com.apple.dyld`（8 处）✓。
+缓存头解析出一个真实的子缓存：
+`dyld_v1   arm64`，`addr 0x1800000 size 0x74000 maxProt 5 initProt 5`
+（与 §0.40 记录的 `+0x74000` 签名位置一致）。
+
+### 采用的下一个路线：cache carrier
+
+框架为这个症状提供了另一条文档化路径（`offline-owner-cache-carrier.patch`，影响
+`vm_unix.o` 的 shared region 代码）：
+
+```c
+const char *directory = "/private/preboot/System/Library/Caches/com.apple.dyld";
+const char *environment = "DYLD_SHARED_CACHE_DIR=/private/preboot/System/Library/Caches/com.apple.dyld";
+const char *fallback = "DYLD_FALLBACK_LIBRARY_PATH=/private/preboot/usr/lib";
+```
+
+即把 SystemOS 挂到 `/private/preboot` 并**显式**把缓存目录告诉 dyld。
+配置切换（提交见下）：
+
+```
+CONFIG_XNU_OWNER_UNION_SYSTEMOS=n
+CONFIG_XNU_OWNER_CACHE_CARRIER=y
+```
+
+约束（`build-xnu-4k-baseline.sh:523`）：`OWNER_CACHE_CARRIER=1` 要求
+`OWNER_CACHE_STARTUP=1` ✓（我们本来就是）。同时把 `dandelion-owner-diag.patch`
+从 series 退役 —— 它已完成使命，留着会在到达 launchd 前就 panic。
+
+### 产物
+
+`boot-data.img`（sha256 `808435ad…`）：carrier 配置 + Data seed（`25d4e3c1…`）+
+CT 补丁（`0x52800008`）+ 14 MB 控制台窗口。**待刷入验证**。
+
+### 若 carrier 仍不行，后续假设（按可测性排序）
+
+1. dyld 需要内核预先 map 缓存 → 检查 `shared_region` 相关 boot arg / 看是否需要在
+   `vm_shared_region` 里主动加载；
+2. 16 KiB 缓存布局与 4 KiB 内核的页大小适配（框架 `native-4k-user-abi` 已改子 map shift，
+   但 dyld 自身可能另有检查）；
+3. AMFI 对缓存签名/映射的额外要求（CT 补丁只改了 CT policy 判定）。
