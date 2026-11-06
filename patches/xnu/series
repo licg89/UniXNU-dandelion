@@ -52,4 +52,8 @@ dandelion-msdc.patch
 # The argument is off by default: a properly trusted image never needs it.
 #
 dandelion-skip-cs.patch
+#
+# TEMPORARY diagnostic: panic with the owner cache/Data status right before launchd loads.
+#
+dandelion-owner-diag.patch
 # dandelion-root-unverified.patch   (blocked: the framework's tree is not reproducible)
