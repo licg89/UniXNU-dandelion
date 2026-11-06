@@ -8,7 +8,15 @@
  		return LOAD_BADMACHO;
  	}
  
-@@ -638,6 +639,7 @@
+@@ -503,6 +504,7 @@
+ 	    (vm_map_size_t) 0,
+ 	    pmap_flags);
+ 	if (pmap == NULL) {
++		panic("D4K line %d: LOAD_RESOURCE", 506);
+ 		return LOAD_RESOURCE;
+ 	}
+ 	map = vm_map_create_options(pmap, 0,
+@@ -638,6 +640,7 @@
  #endif /* __arm64__ */
  		{
  			vm_map_deallocate(map); /* will lose pmap reference too */
@@ -16,7 +24,7 @@
  			return LOAD_BADMACHO;
  		}
  	}
-@@ -647,6 +649,7 @@
+@@ -647,6 +650,7 @@
  		/* 64 bit ARM binary must have "hard page zero" of 4GB to cover the lower 32 bit address space */
  		if (vm_map_has_hard_pagezero(map, 0x100000000) == FALSE) {
  			vm_map_deallocate(map); /* will lose pmap reference too */
@@ -24,7 +32,74 @@
  			return LOAD_BADMACHO;
  		}
  	}
-@@ -912,6 +915,7 @@
+@@ -683,6 +687,7 @@
+ 		kret = task_start_halt(task);
+ 		if (kret != KERN_SUCCESS) {
+ 			vm_map_deallocate(map); /* will lose pmap reference too */
++			panic("D4K line %d: LOAD_FAILURE", 686);
+ 			return LOAD_FAILURE;
+ 		}
+ 		proc_transcommit(p, 0);
+@@ -831,6 +836,7 @@
+ 	 *	Break infinite recursion
+ 	 */
+ 	if (depth > 2) {
++		panic("D4K line %d: LOAD_FAILURE", 834);
+ 		return LOAD_FAILURE;
+ 	}
+ 
+@@ -849,12 +855,14 @@
+ 	 */
+ 	if (((cpu_type_t)(header->cputype & ~CPU_ARCH_MASK) != (cpu_type() & ~CPU_ARCH_MASK))
+ 	    ) {
++		panic("D4K line %d: LOAD_BADARCH", 852);
+ 		return LOAD_BADARCH;
+ 	}
+ 
+ 	if (!grade_binary(header->cputype,
+ 	    header->cpusubtype & ~CPU_SUBTYPE_MASK,
+ 	    header->cpusubtype & CPU_SUBTYPE_MASK, TRUE)) {
++		panic("D4K line %d: LOAD_BADARCH", 858);
+ 		return LOAD_BADARCH;
+ 	}
+ 
+@@ -863,11 +871,13 @@
+ 	switch (header->filetype) {
+ 	case MH_EXECUTE:
+ 		if (depth != 1 && depth != 3) {
++			panic("D4K line %d: LOAD_FAILURE", 866);
+ 			return LOAD_FAILURE;
+ 		}
+ 		if (header->flags & MH_DYLDLINK) {
+ 			/* Check properties of dynamic executables */
+ 			if (!(header->flags & MH_PIE) && pie_required(header->cputype, header->cpusubtype & ~CPU_SUBTYPE_MASK)) {
++				panic("D4K line %d: LOAD_FAILURE", 871);
+ 				return LOAD_FAILURE;
+ 			}
+ 			result->needs_dynlinker = TRUE;
+@@ -880,18 +890,21 @@
+ 		} else {
+ 			/* Check properties of static executables (disallowed except for development) */
+ #if !(DEVELOPMENT || DEBUG)
++			panic("D4K line %d: LOAD_FAILURE", 883);
+ 			return LOAD_FAILURE;
+ #endif
+ 		}
+ 		break;
+ 	case MH_DYLINKER:
+ 		if (depth != 2) {
++			panic("D4K line %d: LOAD_FAILURE", 889);
+ 			return LOAD_FAILURE;
+ 		}
+ 		is_dyld = TRUE;
+ 		break;
+ 
+ 	default:
++		panic("D4K line %d: LOAD_FAILURE", 895);
+ 		return LOAD_FAILURE;
+ 	}
+ 
+@@ -912,6 +925,7 @@
  	    (off_t)cmds_size > macho_size ||
  	    round_page_overflow(cmds_size, &alloc_size) ||
  	    alloc_size > INT_MAX) {
@@ -32,7 +107,23 @@
  		return LOAD_BADMACHO;
  	}
  
-@@ -934,6 +938,7 @@
+@@ -920,6 +934,7 @@
+ 	 */
+ 	addr = kalloc_data(alloc_size, Z_WAITOK);
+ 	if (addr == NULL) {
++		panic("D4K line %d: LOAD_NOSPACE", 923);
+ 		return LOAD_NOSPACE;
+ 	}
+ 
+@@ -927,6 +942,7 @@
+ 	    UIO_SYSSPACE, 0, vfs_context_ucred(imgp->ip_vfs_context), &resid, p);
+ 	if (error) {
+ 		kfree_data(addr, alloc_size);
++		panic("D4K line %d: LOAD_IOERROR", 930);
+ 		return LOAD_IOERROR;
+ 	}
+ 
+@@ -934,6 +950,7 @@
  		{
  			/* We must be able to read in as much as the mach_header indicated */
  			kfree_data(addr, alloc_size);
@@ -40,7 +131,15 @@
  			return LOAD_BADMACHO;
  		}
  	}
-@@ -1757,12 +1762,15 @@
+@@ -1549,6 +1566,7 @@
+ 		}
+ 
+ 		if (imgp->ip_simulator_binary != IMGPF_SB_TRUE) {
++			panic("D4K line %d: LOAD_BADARCH", 1552);
+ 			return LOAD_BADARCH;
+ 		}
+ 	}
+@@ -1757,12 +1775,15 @@
  			delta_file = (uint64_t)APPLE_UNPROTECTED_HEADER_SIZE;
  			delta_file -= slice_off;
  			if (os_convert_overflow(delta_file, &delta_map)) {
@@ -56,7 +155,23 @@
  				return LOAD_BADMACHO;
  			}
  		}
-@@ -1861,6 +1869,7 @@
+@@ -1791,6 +1812,7 @@
+ 		/* The DSMOS pager can only be used by apple signed code */
+ 		struct cs_blob * blob = csvnode_get_blob(vp, file_off);
+ 		if (blob == NULL || !blob->csb_platform_binary || blob->csb_platform_path) {
++			panic("D4K line %d: LOAD_FAILURE", 1794);
+ 			return LOAD_FAILURE;
+ 		}
+ 
+@@ -1803,6 +1825,7 @@
+ 	}
+ 
+ 	if (kr != KERN_SUCCESS) {
++		panic("D4K line %d: LOAD_FAILURE", 1806);
+ 		return LOAD_FAILURE;
+ 	}
+ 	return LOAD_SUCCESS;
+@@ -1861,6 +1884,7 @@
  
  	if (vm_end < vm_start ||
  	    file_end < file_start) {
@@ -64,7 +179,31 @@
  		return LOAD_BADMACHO;
  	}
  	if (vm_end == vm_start ||
-@@ -2126,6 +2135,7 @@
+@@ -1929,6 +1953,7 @@
+ 				VM_INHERIT_DEFAULT);
+ 		}
+ 		if (ret != KERN_SUCCESS) {
++			panic("D4K line %d: LOAD_NOSPACE", 1932);
+ 			return LOAD_NOSPACE;
+ 		}
+ 		cur_offset += cur_end - cur_start;
+@@ -2004,6 +2029,7 @@
+ 				VM_INHERIT_DEFAULT);
+ 		}
+ 		if (ret != KERN_SUCCESS) {
++			panic("D4K line %d: LOAD_NOSPACE", 2007);
+ 			return LOAD_NOSPACE;
+ 		}
+ 		cur_offset += cur_end - cur_start;
+@@ -2046,6 +2072,7 @@
+ 				VM_INHERIT_DEFAULT);
+ 		}
+ 		if (ret != KERN_SUCCESS) {
++			panic("D4K line %d: LOAD_NOSPACE", 2049);
+ 			return LOAD_NOSPACE;
+ 		}
+ 		cur_offset += cur_end - cur_start;
+@@ -2126,6 +2153,7 @@
  	}
  	if (lcp->cmdsize < segment_command_size) {
  		DEBUG4K_ERROR("LOAD_BADMACHO cmdsize %d < %zu\n", lcp->cmdsize, segment_command_size);
@@ -72,7 +211,7 @@
  		return LOAD_BADMACHO;
  	}
  	total_section_size = lcp->cmdsize - segment_command_size;
-@@ -2158,6 +2168,7 @@
+@@ -2158,6 +2186,7 @@
  	if (scp->fileoff + scp->filesize < scp->fileoff ||
  	    scp->fileoff + scp->filesize > (uint64_t)macho_size) {
  		DEBUG4K_ERROR("LOAD_BADMACHO fileoff 0x%llx filesize 0x%llx macho_size 0x%llx\n", scp->fileoff, scp->filesize, (uint64_t)macho_size);
@@ -80,7 +219,7 @@
  		return LOAD_BADMACHO;
  	}
  	/*
-@@ -2166,6 +2177,7 @@
+@@ -2166,6 +2195,7 @@
  	 */
  	if (total_section_size / single_section_size < scp->nsects) {
  		DEBUG4K_ERROR("LOAD_BADMACHO 0x%zx 0x%zx %d\n", total_section_size, single_section_size, scp->nsects);
@@ -88,7 +227,7 @@
  		return LOAD_BADMACHO;
  	}
  	/*
-@@ -2173,6 +2185,7 @@
+@@ -2173,6 +2203,7 @@
  	 */
  	if (os_add_overflow(pager_offset, scp->fileoff, &file_offset)) {
  		DEBUG4K_ERROR("LOAD_BADMACHO file_offset: 0x%llx + 0x%llx\n", pager_offset, scp->fileoff);
@@ -96,7 +235,7 @@
  		return LOAD_BADMACHO;
  	}
  	file_size = scp->filesize;
-@@ -2184,6 +2197,7 @@
+@@ -2184,6 +2215,7 @@
  			 * in the file
  			 */
  			DEBUG4K_ERROR("LOAD_BADMACHO file_offset 0x%llx\n", file_offset);
@@ -104,7 +243,7 @@
  			return LOAD_BADMACHO;
  		}
  	} else
-@@ -2197,6 +2211,7 @@
+@@ -2197,6 +2229,7 @@
  		 * fail here too for the sake of consistency.
  		 */
  		DEBUG4K_ERROR("LOAD_BADMACHO file_offset 0x%llx\n", file_offset);
@@ -112,7 +251,7 @@
  		return LOAD_BADMACHO;
  	}
  
-@@ -2212,6 +2227,7 @@
+@@ -2212,6 +2245,7 @@
  			printf("section outside code signature\n");
  		}
  		DEBUG4K_ERROR("LOAD_BADMACHO end_offset 0x%llx fileoff 0x%llx filesize 0x%llx\n", result->cs_end_offset, scp->fileoff, scp->filesize);
@@ -120,7 +259,7 @@
  		return LOAD_BADMACHO;
  	}
  
-@@ -2220,11 +2236,13 @@
+@@ -2220,11 +2254,13 @@
  			printf("vmaddr too large\n");
  		}
  		DEBUG4K_ERROR("LOAD_BADMACHO vmaddr 0x%llx slide 0x%llx vm_offset 0x%llx\n", scp->vmaddr, slide, (uint64_t)vm_offset);
@@ -134,7 +273,7 @@
  		return LOAD_BADMACHO;
  	}
  
-@@ -2258,6 +2276,7 @@
+@@ -2258,6 +2294,7 @@
  		vm_end = (vm_map_offset_t)(vm_offset + vm_size);
  		if (vm_end < vm_offset) {
  			DEBUG4K_ERROR("LOAD_BADMACHO vm_end 0x%llx vm_offset 0x%llx vm_size 0x%llx\n", (uint64_t)vm_end, (uint64_t)vm_offset, (uint64_t)vm_size);
@@ -142,7 +281,15 @@
  			return LOAD_BADMACHO;
  		}
  
-@@ -2310,6 +2329,7 @@
+@@ -2302,6 +2339,7 @@
+ 
+ 		if (ret != KERN_SUCCESS) {
+ 			DEBUG4K_ERROR("LOAD_FAILURE ret 0x%x\n", ret);
++			panic("D4K line %d: LOAD_FAILURE", 2305);
+ 			return LOAD_FAILURE;
+ 		}
+ 		return LOAD_SUCCESS;
+@@ -2310,6 +2348,7 @@
  		/* not PAGEZERO: should not be mapped at address 0 */
  		if (filetype != MH_DYLINKER && (imgp->ip_flags & IMGPF_ROSETTA) == 0 && scp->vmaddr == 0) {
  			DEBUG4K_ERROR("LOAD_BADMACHO filetype %d vmaddr 0x%llx\n", filetype, scp->vmaddr);
@@ -150,7 +297,7 @@
  			return LOAD_BADMACHO;
  		}
  #endif /* !defined(XNU_TARGET_OS_OSX) */
-@@ -2335,6 +2355,7 @@
+@@ -2335,6 +2374,7 @@
  			    file_offset + file_size,
  			    (uint64_t) file_start,
  			    (uint64_t) file_end);
@@ -158,7 +305,7 @@
  			return LOAD_BADMACHO;
  		}
  
-@@ -2369,6 +2390,7 @@
+@@ -2369,6 +2409,7 @@
  			    file_offset + file_size,
  			    (uint64_t) file_start,
  			    (uint64_t) file_end);
@@ -166,7 +313,7 @@
  			return LOAD_BADMACHO;
  		}
  	}
-@@ -2395,6 +2417,7 @@
+@@ -2395,6 +2436,7 @@
  			DEBUG4K_ERROR("LOAD_BADMACHO segment flags [%x] "
  			    "multiple segments with SG_READ_ONLY flag\n",
  			    scp->flags);
@@ -174,7 +321,53 @@
  			return LOAD_BADMACHO;
  		}
  
-@@ -2567,6 +2590,7 @@
+@@ -2428,6 +2470,7 @@
+ 		    result);
+ 		if (ret) {
+ 			DEBUG4K_ERROR("LOAD_NOSPACE start 0x%llx end 0x%llx ret 0x%x\n", (uint64_t)vm_start, (uint64_t)vm_end, ret);
++			panic("D4K line %d: LOAD_NOSPACE", 2431);
+ 			return LOAD_NOSPACE;
+ 		}
+ 
+@@ -2443,6 +2486,7 @@
+ 
+ 			if (tmp == NULL) {
+ 				DEBUG4K_ERROR("LOAD_RESOURCE delta_size 0x%llx ret 0x%x\n", delta_size, ret);
++				panic("D4K line %d: LOAD_RESOURCE", 2446);
+ 				return LOAD_RESOURCE;
+ 			}
+ 
+@@ -2451,6 +2495,7 @@
+ 
+ 			if (rc) {
+ 				DEBUG4K_ERROR("LOAD_FAILURE copyout 0x%llx 0x%llx\n", map_addr + scp->filesize, delta_size);
++				panic("D4K line %d: LOAD_FAILURE", 2454);
+ 				return LOAD_FAILURE;
+ 			}
+ 		}
+@@ -2473,11 +2518,13 @@
+ 
+ 		if (os_add_overflow(vm_start, file_end - file_start, &tmp_start)) {
+ 			DEBUG4K_ERROR("LOAD_NOSPACE tmp_start: 0x%llx + 0x%llx\n", (uint64_t)vm_start, (uint64_t)(file_end - file_start));
++			panic("D4K line %d: LOAD_NOSPACE", 2476);
+ 			return LOAD_NOSPACE;
+ 		}
+ 
+ 		if (os_add_overflow(tmp_start, delta_size, &tmp_end)) {
+ 			DEBUG4K_ERROR("LOAD_NOSPACE tmp_end: 0x%llx + 0x%llx\n", (uint64_t)tmp_start, (uint64_t)delta_size);
++			panic("D4K line %d: LOAD_NOSPACE", 2481);
+ 			return LOAD_NOSPACE;
+ 		}
+ 
+@@ -2498,6 +2545,7 @@
+ 		    result);
+ 		if (kr != KERN_SUCCESS) {
+ 			DEBUG4K_ERROR("LOAD_NOSPACE 0x%llx 0x%llx kr 0x%x\n", (unsigned long long)tmp_start, (uint64_t)delta_size, kr);
++			panic("D4K line %d: LOAD_NOSPACE", 2501);
+ 			return LOAD_NOSPACE;
+ 		}
+ 	}
+@@ -2567,6 +2615,7 @@
  
  	if ((uulp->cmdsize < sizeof(struct uuid_command)) ||
  	    (((char *)uulp + sizeof(struct uuid_command)) > command_end)) {
@@ -182,7 +375,7 @@
  		return LOAD_BADMACHO;
  	}
  
-@@ -2588,9 +2612,11 @@
+@@ -2588,9 +2637,11 @@
  	uint32_t min_sdk;
  
  	if (vmc->cmdsize < sizeof(*vmc)) {
@@ -194,7 +387,7 @@
  		return LOAD_BADMACHO;
  	}
  	*found_version_cmd = TRUE;
-@@ -2653,6 +2679,7 @@
+@@ -2653,9 +2704,11 @@
  	kern_return_t   ret;
  
  	if (epc->cmdsize < sizeof(*epc)) {
@@ -202,7 +395,11 @@
  		return LOAD_BADMACHO;
  	}
  	if (result->thread_count != 0) {
-@@ -2675,10 +2702,12 @@
++		panic("D4K line %d: LOAD_FAILURE", 2659);
+ 		return LOAD_FAILURE;
+ 	}
+ 
+@@ -2675,10 +2728,12 @@
  			 * overflowing value, since this will have a guard page added to it
  			 * and be rounded to page boundaries
  			 */
@@ -215,7 +412,55 @@
  			return LOAD_BADMACHO;
  		}
  		result->custom_stack = TRUE;
-@@ -2776,6 +2805,7 @@
+@@ -2689,6 +2744,7 @@
+ 	/* use default location for stack */
+ 	ret = thread_userstackdefault(&addr, result->is_64bit_addr);
+ 	if (ret != KERN_SUCCESS) {
++		panic("D4K line %d: LOAD_FAILURE", 2692);
+ 		return LOAD_FAILURE;
+ 	}
+ 
+@@ -2697,6 +2753,7 @@
+ 
+ 	if (result->using_lcmain || result->entry_point != MACH_VM_MIN_ADDRESS) {
+ 		/* Already processed LC_MAIN or LC_UNIXTHREAD */
++		panic("D4K line %d: LOAD_FAILURE", 2700);
+ 		return LOAD_FAILURE;
+ 	}
+ 
+@@ -2706,6 +2763,7 @@
+ 
+ 	ret = thread_state_initialize( thread );
+ 	if (ret != KERN_SUCCESS) {
++		panic("D4K line %d: LOAD_FAILURE", 2709);
+ 		return LOAD_FAILURE;
+ 	}
+ 
+@@ -2737,6 +2795,7 @@
+ 	/* use default location for stack */
+ 	ret = thread_userstackdefault(&addr, result->is_64bit_addr);
+ 	if (ret != KERN_SUCCESS) {
++		panic("D4K line %d: LOAD_FAILURE", 2740);
+ 		return LOAD_FAILURE;
+ 	}
+ 
+@@ -2746,6 +2805,7 @@
+ 
+ 	if (result->using_lcmain || result->entry_point != MACH_VM_MIN_ADDRESS) {
+ 		/* Already processed LC_MAIN or LC_UNIXTHREAD */
++		panic("D4K line %d: LOAD_FAILURE", 2749);
+ 		return LOAD_FAILURE;
+ 	}
+ 
+@@ -2753,6 +2813,7 @@
+ 
+ 	ret = thread_state_initialize( thread );
+ 	if (ret != KERN_SUCCESS) {
++		panic("D4K line %d: LOAD_FAILURE", 2756);
+ 		return LOAD_FAILURE;
+ 	}
+ 
+@@ -2776,9 +2837,11 @@
  	int customstack = 0;
  	mach_vm_offset_t addr;
  	if (tcp->cmdsize < sizeof(*tcp)) {
@@ -223,7 +468,27 @@
  		return LOAD_BADMACHO;
  	}
  	if (result->thread_count != 0) {
-@@ -2875,6 +2905,7 @@
++		panic("D4K line %d: LOAD_FAILURE", 2782);
+ 		return LOAD_FAILURE;
+ 	}
+ 
+@@ -2818,6 +2881,7 @@
+ 
+ 		if (result->using_lcmain || result->entry_point != MACH_VM_MIN_ADDRESS) {
+ 			/* Already processed LC_MAIN or LC_UNIXTHREAD */
++			panic("D4K line %d: LOAD_FAILURE", 2821);
+ 			return LOAD_FAILURE;
+ 		}
+ 
+@@ -2861,6 +2925,7 @@
+ 		local_ts_size = total_size;
+ 		local_ts = (uint32_t *)kalloc_data(local_ts_size, Z_WAITOK);
+ 		if (local_ts == NULL) {
++			panic("D4K line %d: LOAD_FAILURE", 2864);
+ 			return LOAD_FAILURE;
+ 		}
+ 		memcpy(local_ts, ts, local_ts_size);
+@@ -2875,6 +2940,7 @@
  	 */
  	while (total_size > 0) {
  		if (total_size < 2 * sizeof(uint32_t)) {
@@ -231,7 +496,7 @@
  			return LOAD_BADMACHO;
  		}
  
-@@ -2920,11 +2951,13 @@
+@@ -2920,11 +2986,13 @@
  	uint32_t        stack_size;
  
  	if (total_size == 0) {
@@ -245,7 +510,7 @@
  			return LOAD_BADMACHO;
  		}
  
-@@ -2932,10 +2965,12 @@
+@@ -2932,10 +3000,12 @@
  		size = *ts++;
  		if (UINT32_MAX - 2 < size ||
  		    UINT32_MAX / sizeof(uint32_t) < size + 2) {
@@ -258,7 +523,15 @@
  			return LOAD_BADMACHO;
  		}
  		total_size -= stack_size;
-@@ -2977,6 +3012,7 @@
+@@ -2948,6 +3018,7 @@
+ 		{
+ 			ret = thread_userstack(thread, flavor, (thread_state_t)ts, size, user_stack, customstack, result->is_64bit_data);
+ 			if (ret != KERN_SUCCESS) {
++				panic("D4K line %d: LOAD_FAILURE", 2951);
+ 				return LOAD_FAILURE;
+ 			}
+ 		}
+@@ -2977,6 +3048,7 @@
  	*entry_point = MACH_VM_MIN_ADDRESS;
  	while (total_size > 0) {
  		if (total_size < 2 * sizeof(uint32_t)) {
@@ -266,7 +539,7 @@
  			return LOAD_BADMACHO;
  		}
  
-@@ -2984,10 +3020,12 @@
+@@ -2984,10 +3056,12 @@
  		size = *ts++;
  		if (UINT32_MAX - 2 < size ||
  		    UINT32_MAX / sizeof(uint32_t) < size + 2) {
@@ -279,7 +552,15 @@
  			return LOAD_BADMACHO;
  		}
  		total_size -= entry_size;
-@@ -3069,6 +3107,7 @@
+@@ -2998,6 +3072,7 @@
+ 		 */
+ 		ret = thread_entrypoint(thread, flavor, (thread_state_t)ts, size, entry_point);
+ 		if (ret != KERN_SUCCESS) {
++			panic("D4K line %d: LOAD_FAILURE", 3001);
+ 			return LOAD_FAILURE;
+ 		}
+ 		ts += size;     /* ts is a (uint32_t *) */
+@@ -3069,6 +3144,7 @@
  	} *dyld_data;
  
  	if (lcp->cmdsize < sizeof(*lcp) || lcp->name.offset >= lcp->cmdsize) {
@@ -287,7 +568,7 @@
  		return LOAD_BADMACHO;
  	}
  
-@@ -3078,6 +3117,7 @@
+@@ -3078,6 +3154,7 @@
  	size_t maxsz = lcp->cmdsize - lcp->name.offset;
  	size_t namelen = strnlen(name, maxsz);
  	if (namelen >= maxsz) {
@@ -295,7 +576,7 @@
  		return LOAD_BADMACHO;
  	}
  
-@@ -3118,6 +3158,7 @@
+@@ -3118,6 +3195,7 @@
  
  #if !(DEVELOPMENT || DEBUG)
  	if (0 != strcmp(name, DEFAULT_DYLD_PATH)) {
@@ -303,7 +584,7 @@
  		return LOAD_BADMACHO;
  	}
  #endif
-@@ -3607,6 +3648,7 @@
+@@ -3607,6 +3685,7 @@
  	kern_return_t kr;
  
  	if (eip->cmdsize < sizeof(*eip)) {
@@ -311,7 +592,7 @@
  		return LOAD_BADMACHO;
  	}
  
-@@ -3623,6 +3665,7 @@
+@@ -3623,6 +3702,7 @@
  		cryptname = "com.apple.null";
  		break;
  	default:
@@ -319,7 +600,34 @@
  		return LOAD_BADMACHO;
  	}
  
-@@ -3722,6 +3765,7 @@
+@@ -3630,6 +3710,7 @@
+ 		return LOAD_SUCCESS;
+ 	}
+ 	if (NULL == text_crypter_create) {
++		panic("D4K line %d: LOAD_FAILURE", 3633);
+ 		return LOAD_FAILURE;
+ 	}
+ 
+@@ -3639,6 +3720,7 @@
+ 	error = vn_getpath(vp, vpath, &len);
+ 	if (error) {
+ 		zfree(ZV_NAMEI, vpath);
++		panic("D4K line %d: LOAD_FAILURE", 3642);
+ 		return LOAD_FAILURE;
+ 	}
+ 
+@@ -3671,8 +3753,10 @@
+ 		    cryptname, kr);
+ 		if (kr == kIOReturnNotPrivileged) {
+ 			/* text encryption returned decryption failure */
++			panic("D4K line %d: LOAD_DECRYPTFAIL", 3674);
+ 			return LOAD_DECRYPTFAIL;
+ 		} else {
++			panic("D4K line %d: LOAD_RESOURCE", 3676);
+ 			return LOAD_RESOURCE;
+ 		}
+ 	}
+@@ -3722,6 +3806,7 @@
  	}
  
  	/* if we get here, did not find anything */
@@ -327,3 +635,11 @@
  	return LOAD_BADMACHO;
  
  remap_now:
+@@ -3737,6 +3822,7 @@
+ 	    CRYPTID_APP_ENCRYPTION);
+ 	if (kr) {
+ 		printf("set_code_unprotect(): mapping failed with %x\n", kr);
++		panic("D4K line %d: LOAD_PROTECT", 3740);
+ 		return LOAD_PROTECT;
+ 	}
+ 
