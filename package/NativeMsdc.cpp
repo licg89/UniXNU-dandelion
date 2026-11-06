@@ -1209,6 +1209,10 @@ void NativeMsdcBlock::free ()
 extern "C" int native_msdc_console_sink (uint32_t lba, const void *data)
 {
   if (!data || !gHost.layoutValid) return -1;
+  // This driver logs through IOLog inside its own transfers, and IOLog reaches the console, which
+  // calls back here.  Entering transfer() again would take the host lock it already holds, so a
+  // busy driver declines and the console keeps the block for its next flush.
+  if (__atomic_load_n (&native_msdc_busy, __ATOMIC_ACQUIRE) != 0) return -1;
   HostSession session;
   return transfer (lba, 1, const_cast<uint8_t *> (static_cast<const uint8_t *> (data)), true) ==
              kIOReturnSuccess ? 0 : -1;
