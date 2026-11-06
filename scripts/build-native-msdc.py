@@ -30,6 +30,9 @@ parser.add_argument('--block-devices', type=int, choices=(0, 1), default=0,
                     help='build the window block devices (needs the storage bindings)')
 parser.add_argument('--verified-root', action='store_true',
                     help='serve the windows only through owner-signed VerifiedRoot policies')
+parser.add_argument('--ufs-store-abi', action='store_true',
+                    help="also export native_ufs_store_* aliases so NativeRamBlock can back its "
+                         "seed with this board's eMMC store (do not combine with NativeUfs)")
 args = parser.parse_args()
 
 OUT = ROOT / 'build/native-msdc'
@@ -78,6 +81,8 @@ command += [
 if args.verified_root:
     command += ['-DNATIVE_VERIFIED_BLOCK=1',
                 '-I', str(ROOT / 'kits/VerifiedRoot/include')]
+if args.ufs_store_abi:
+    command += ['-DNATIVE_MSDC_UFS_STORE_ABI=1']
 result = subprocess.run(command, cwd=record['directory'], stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT, text=True)
 (OUT / 'compile.log').write_text(result.stdout)
