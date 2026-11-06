@@ -1,6 +1,8 @@
 #!/bin/bash
 set -u
-TOKEN="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"
+# Never commit a token: read it from the environment.
+: "${GITHUB_TOKEN:?set GITHUB_TOKEN to a PAT with repo scope}"
+TOKEN="$GITHUB_TOKEN"
 for repo in UniXNU-dandelion uefi-dandelion UniXNU-mt6765-common UniXNU; do
   printf '%-22s ' "$repo"
   curl -s -m 30 -H "Authorization: token $TOKEN" "https://api.github.com/repos/licg89/$repo" \

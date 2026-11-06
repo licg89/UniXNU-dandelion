@@ -2,7 +2,9 @@
 # Set our repositories private through the REST API.  gh auth login wants read:org, but the API
 # only needs repo scope for this change.
 set -u
-TOKEN="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"
+# Never commit a token: read it from the environment (repo + workflow scope).
+: "${GITHUB_TOKEN:?set GITHUB_TOKEN to a PAT with repo and workflow scope}"
+TOKEN="$GITHUB_TOKEN"
 for repo in UniXNU-dandelion uefi-dandelion UniXNU UniXNU-mt6765-common; do
   printf '%-24s ' "$repo"
   body=$(curl -s -m 30 -X PATCH \
