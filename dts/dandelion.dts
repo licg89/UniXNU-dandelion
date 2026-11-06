@@ -24,18 +24,19 @@
 	 * (scripts/unixnu/devicetree.py); the property itself is not exported.
 	 *
 	 * log-lba is an ABSOLUTE device sector, not a partition-relative one --
-	 * the kernel does not parse the GPT.  flashinfo starts at 0x7473FDF
-	 * (122,109,919) on this board, and the block starts 30,000 sectors in, so
-	 * it is byte-for-byte the handoff the firmware announces as
-	 * "emmc handoff lba 122139919 sectors 512".  log-sectors stops exactly
-	 * where the firmware's own DDNLOG01 block begins at +30,512.
+	 * the kernel does not parse the GPT.  The console now starts at the flashinfo
+	 * partition itself (0x7473FDF = 122,109,919) instead of 30,000 sectors in,
+	 * because a 512-sector window filled up before load_init_program and the log
+	 * ended exactly where the exec diagnosis was needed.  log-sectors keeps clear
+	 * of the firmware's own DDNLOG01 block at +30,512 ("emmc handoff lba
+	 * 122139919", "firmware log written to LBA 122140431").
 	 */
 	emmc-log@11230000 {
 		compatible = "dandelion,emmc-log";
 		reg = <0x00 0x11230000 0x00 0x10000>;
 		unixnu,adt-name = "emmc-log";
-		log-lba = <0x747b50f>;
-		log-sectors = <0x200>;
+		log-lba = <0x7473fdf>;
+		log-sectors = <0x7000>;
 	};
 
 	regulator_vibrator {

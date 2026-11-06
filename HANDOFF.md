@@ -2512,3 +2512,58 @@ powershell -ExecutionPolicy Bypass -File D:\aios\_work\morning-check.ps1
 `adb root` → 从**设备绝对地址 122,139,919** 读 512 个扇区 → 判定 `LOG IS FRESH / EMPTY` →
 打印最后 40 行和关键标记（trust cache 模块数、`unsuitable CT policy`、`dyld cache`、
 `Library not loaded`、`launchd`、`private/var`）。
+
+---
+
+## 0.46 日志可用、根卷认证通过；新卡点是共享区映射与读超时（2026-11-06 08:0x–09:0x）
+
+### 今早修复的两件事
+
+1. **固件 `Compromised Data`**：`merge_trustcache.py` 造的第三个模块头写成了 19 字节
+   （`DANDELIONCACHE01` 16 + 多余的 3 个零字节），整个 bundle 错位 3 字节，DarwinBoot
+   直接拒绝启动 —— 这是昨晚所有"日志空白"的真正原因（内核从未运行）。
+   修复后加了 `scripts/verify_trustcache.py`：刷机前校验 count/offsets/每个模块的
+   version/uuid/条目数/精确长度。
+2. **日志窗口太小**：控制台只预留 512 扇区（256 KB），日志正好在 `load_init_program`
+   之前填满。把窗口移到 flashinfo 分区开头（`0x7473FDF` = 122,109,919）并扩到
+   28,672 扇区（14 MB），避开固件自己的 DDNLOG01 块（+30,512）。
+
+### 现在能读到的完整一轮
+
+```
+attempting to load 3 external trust cache modules   ← 三模块 bundle 全部加载
+loaded external trust cache module: 0 / 1 / 2
+NativeMsdc: OS verified / SystemOS verified / published SystemOS / volume ready
+BSD root: disk3s1
+apfs: mount-complete volume DawnUpdate21H461.J120J121J207J208OS
+is_root_hash_authentication_required: Root Volume, root hash authentication is required
+VM Swap Subsystem is ON
+disk3: I/O timeout.
+nx_buf_bread:628: disk3 buf_biowait() failed, error = 60, b_error = 60
+_vnode_dev_read:907: disk3 *** got err 60 reading blknum 90747
+Failed to open swap file 60
+vm_swap_create_file failed @ 261 secs
+load_init_program: attempting to load /usr/appleinternal/sbin/launchd.development
+load_init_program: attempting to load /sbin/launchd
+DANDELION-EXEC: clearing policy answer 0 (pid 1)
+shared_region: [1(launchd)] check_np(...) vm_shared_region_start_address() failed
+```
+
+### 结论
+
+- **AMFI 的 CT policy 拒绝已消失**（数据级补丁 `0xfffffff004ab6334: cset → mov w8,#0` 生效）；
+- **根卷认证通过**（owner-root + `sheng-skip-cs`）；
+- `launchd` 已经 exec 到共享区建立阶段。
+
+### 新卡点（都可修）
+
+1. **读超时**：`error = 60`（ETIMEDOUT）读 blknum 90747；策略区 73 MB 读取实测耗时 227 秒
+   （≈320 KB/s）。驱动的 3 秒超时在 APFS 高并发下偏紧 —— 先加大超时并考虑提高分块；
+2. **共享区映射**：`vm_shared_region_start_address() failed` ×2 → dyld 无法建立共享缓存映射，
+   launchd 随后 `EXEC_EXIT_REASON_BAD_MACHO` 退出。AMFI 已接受缓存，问题在 `shared_region`
+   建立阶段（映射地址/大小，或缓存未被注册为该区域）。
+
+### 产物
+
+`boot-biglog.img`（sha256 `89882976…`）：合法三模块 bundle + CT 数据级补丁 +
+14 MB 控制台日志窗口。日志从 flashinfo 分区起始 LBA（122,109,919）读取。
