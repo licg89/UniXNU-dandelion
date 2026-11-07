@@ -572,7 +572,10 @@ void hostLogMode (const uint8_t *extCsd, uint32_t inheritedCfg)
 // bus rate.  Sweep both and keep the first pair whose reads still match references taken at the
 // inherited settings; anything that does not verify restores the inherited registers, so a wrong
 // guess costs nothing.  A bad pair normally fails fast with a CRC error rather than timing out.
-static const uint32_t kSweepSectors[] = { 0x40, 0x4000, 0x20000 };
+// One sector is enough for the comparison, and it has to be cheap: this runs before the root device
+// is published, and the IOKit wait loop that looks for it gives up quickly, so a slow probe makes
+// the boot fail at "Failed to mount root device" with no log line at all.
+static const uint32_t kSweepSectors[] = { 0x40 };
 constexpr unsigned kSweepCount = sizeof (kSweepSectors) / sizeof (kSweepSectors[0]);
 
 // A failed single-block read can leave the card mid-transfer; SEND_STATUS until it reports the
@@ -606,21 +609,34 @@ bool hostSweepMatches (const uint8_t *reference)
 }
 
 // Changing MSDC_CFG.CKDIV with the card clock running glitches the bus, and that is what made every
-// earlier attempt end in "Failed to mount root device".  Power the clock down, set the divider while
-// it is stopped, restart it and wait for the stable bit.
-void hostSetClockDivider (unsigned divider)
+// earlier attempt end in "Failed to mount root device".  The vendor mtk-sd.c sequence power-cycles
+// the clock and, crucially, recomputes the data timeout afterwards: SDC_CFG.DTOC counts units of
+// 2^20 card clocks, so a faster clock needs a smaller register value or the card times out
+// immediately.  That rescale was the missing step.
+void hostSetClockDivider (unsigned divider, unsigned previous)
 {
-  const uint32_t base = (rd (kMsdcCfg) & ~(0xfffu << 8)) & ~kCfgCkPdn;
+  uint32_t base = rd (kMsdcCfg) & ~(0xfffu << 8);
   wr (kMsdcCfg, base | kCfgCkPdn);
-  IODelay (500);
-  wr (kMsdcCfg, (base | kCfgCkPdn) | ((divider & 0xfffu) << 8));
-  IODelay (500);
-  wr (kMsdcCfg, base | ((divider & 0xfffu) << 8));
-  for (unsigned i = 0; i < 50; i++) {
+  IODelay (200);
+  base = (base & ~(0xfffu << 8)) | ((divider & 0xfffu) << 8);
+  wr (kMsdcCfg, base | kCfgCkPdn);
+  IODelay (200);
+  wr (kMsdcCfg, base);
+  for (unsigned i = 0; i < 100; i++) {
     if (rd (kMsdcCfg) & kCfgCkStb) break;
     IODelay (100);
   }
-  IODelay (2000);
+  // sclk scales as 1/(CKDIV+1), so the timeout register scales the other way.
+  const uint32_t sdc = rd (kSdcCfg);
+  unsigned dtoc = (sdc & kSdcCfgDtoc) >> 24;
+  uint64_t scaled = (uint64_t)dtoc * (previous + 1) / (divider + 1);
+  if (dtoc == 0) scaled = 0;
+  else if (scaled == 0) scaled = 1;
+  if (scaled > 255) scaled = 255;
+  wr (kSdcCfg, (sdc & ~kSdcCfgDtoc) | ((uint32_t)scaled << 24));
+  IODelay (1000);
+  IOLog ("NativeMsdc: ckdiv %u (from %u), dtoc %u -> %u\n",
+         divider, previous, dtoc, (unsigned)scaled);
 }
 
 void hostRaiseClock (void)
@@ -637,15 +653,15 @@ void hostRaiseClock (void)
   const unsigned inherited = (cfg0 >> 8) & 0xfffu;
   // Slowest candidate first, and every step is verified before the next: the first divider that
   // does not verify leaves the previous, known-good setting in place instead of an unusable bus.
-  static const unsigned dividers[] = { 64, 32, 16, 8, 4 };
-  static const unsigned samples[] = { 0, 4, 8, 12, 16, 24, 32, 48 };
+  static const unsigned dividers[] = { 64, 32 };
+  static const unsigned samples[] = { 0, 8, 16, 24 };
   unsigned best = inherited, bestSample = 0;
   for (unsigned d = 0; d < sizeof (dividers) / sizeof (dividers[0]); d++) {
     if (dividers[d] >= inherited) continue;
     bool accepted = false;
     for (unsigned s = 0; s < sizeof (samples) / sizeof (samples[0]); s++) {
       wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((samples[s] & 0x3fu) << 16));
-      hostSetClockDivider (dividers[d]);
+      hostSetClockDivider (dividers[d], best);
       if (hostSweepMatches (reference)) {
         best = dividers[d];
         bestSample = samples[s];
@@ -661,7 +677,7 @@ void hostRaiseClock (void)
     }
   }
   wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((bestSample & 0x3fu) << 16));
-  hostSetClockDivider (best);
+  hostSetClockDivider (best, best);
   if (best == inherited) {
     wr (kMsdcCfg, cfg0);
     wr (kMsdcIoCon, iocon0);
@@ -822,11 +838,11 @@ bool hostBringUp (IOService *provider, bool useDma, const char **why)
     return false;
   }
   hostLogMode (extCsd, inheritedCfg);
-  // Raising MSDC_CFG.CKDIV without retuning the pad sampling point makes reads fail (measured:
-  // "Failed to mount root device"), so the divider stays as the bootloader left it unless
-  // native-msdc-clock=1 asks for the experiment.  See HANDOFF 0.64: a faster bus needs TDsel/RDsel
-  // tuning, not just a smaller divider.
-  if (bootArgument ("native-msdc-clock", 1, 0)) hostRaiseClock ();
+  // Try to raise the card clock.  The board wakes up at CKDIV 260 (~96 kHz for this source), which
+  // caps reads at about 320 KB/s, so every path that touches the dyld shared cache takes hours.
+  // hostRaiseClock only keeps a divider whose reads still match a reference, so this is safe to run
+  // unconditionally; native-msdc-clock=0 still turns it off for a controlled comparison.
+  if (bootArgument ("native-msdc-clock", 1, 0)) hostRaiseClock ();   // opt-in: a wrong pair breaks the card irrecoverably
   if (useDma) hostEnableDma ();
   if (gHost.poisoned) {
     *why = "DMA engine did not stop";

@@ -3996,3 +3996,59 @@ OS 窗口 6,077,580,800 字节 ≈ 11.87M 扇区 → SystemOS 窗口自 ≈83.56
 `procs` 始终为 2、`pid1stat=2`（SRUN）、`failures=0` —— 系统活着、在读、不崩，但被带宽卡住。
 所有配置（12 个 seed 文件、merlinx 开关、54 个缓存 cdhash、心跳、读追踪、时钟切换代码）
 都已提交；`native-msdc-clock` / `native-msdc-dma` 默认关闭。
+
+---
+
+## 0.70 时钟提速的最终结论：试错式探测在本卡上是破坏性的（2026-11-08 02:2x–03:3x）
+
+### 找到的两处真实缺陷
+
+对照厂商内核 `mtk-sd.c`（`MiCode/Xiaomi_Kernel_OpenSource` 的 **dandelion-q-oss** 分支，
+正是本机的 MT6762G）修正了驱动里两个错误，并补上一个缺失步骤：
+
+| 项 | 厂商定义 | 我们原来 | 现在 |
+| --- | --- | --- | --- |
+| `MSDC_CFG_CKPDN` | bit 1 | bit 1 ✓ | ✓ |
+| `MSDC_CFG_CKSTB` | **bit 7** | bit 4 ✗ | ✓ 已修正 |
+| 改分频后重算数据超时 | `msdc_set_timeout()` → `SDC_CFG.DTOC`（0xff<<24，按 2^20 卡时钟计） | **完全没有** ✗ | ✓ 已实现按分频比例缩放 |
+
+`SDC_CFG.DTOC` 缺失是重要发现：它按卡时钟周期计数，提速后不重算会让卡"立刻超时" ✗
+
+### 但探测仍然破坏启动，且没有任何日志
+
+三次构建（无条件执行、把参数移到命令行首位、把探测缩到 1 扇区 × 2 候选）结果一致：
+
+- 日志**完全没有** `ckdiv … dtoc …` 行 ✗
+- 日志长度从约 240 行降到 **108 行**，且停在 `mode source …` 之后
+- 屏幕 `Failed to mount root device`，且出现得**很快**
+
+结论：`hostRaiseClock()` **确实在执行**，但**第一个候选（分频 64）就把卡弄坏了** ✗
+→ 根设备再也出现不了 → IOKit 等待循环放弃 → panic → 函数没跑完，日志来不及写 ✓
+
+即：**这台卡/控制器上，任何一次错误时钟或采样下的读都不可恢复**（驱动无复位能力，见 §0.65），
+所以"试错式探测"这条路本身不可行 ✗ 必须在**第一次就写对**分频 + 采样值。
+
+### 需要的东西（下一次）
+
+厂商 `mtk-sd.c` 里 `msdc_set_mclk()` 在换频率后会写回 `def_tune_para`：
+
+```c
+if (host->sclk <= 52000000) {
+    writel(host->def_tune_para.iocon,      host->base + MSDC_IOCON);   // 0x04
+    writel(host->def_tune_para.pad_tune,   host->base + tune_reg);     // 0xec（不是 0xf0）
+}
+```
+
+`def_tune_para` 在 probe 时从寄存器**保存**，但对 MT6762 的**正确取值**需要厂商板级代码
+（Android 内核 `arch/arm64/boot/dts/mediatek/` 或 `drivers/misc/mediatek/` 里的板级调优）。
+拿到后可以一次性设对，不需要探测。
+
+另注意：**我们的驱动读的 pad 寄存器是 `0xf0/0xf4`（`MSDC_PAD_TUNE0`），厂商用的是
+`0xec`（`MSDC_PAD_TUNE`）** ✗ 位置都错了，读到的 `pad0=pad1=0` 不说明真实采样配置。
+
+### 今晚的净结果
+
+- 已修正 CKSTB 位与数据超时重算（真实缺陷）✓ 代码保留
+- 时钟探测改为 `native-msdc-clock=1` 显式开关，**默认关闭** ✓
+- 未验证：无法在设备上实测提速效果（因为探测破坏启动）
+- 现在的镜像回到"launchd 持续运行、96 kHz、320 KB/s"的可工作状态
