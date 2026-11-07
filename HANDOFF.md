@@ -3456,3 +3456,67 @@ dyld 打开它 → 发现没有镜像 → 放弃 → 报
    `OWNER_CACHE_CARRIER` 的 `/private/preboot` 路径即可推进；
 2. **拿到的仍是空壳** → 确认 IPSW 不含真实缓存，需要从已 restore 的设备的 Preboot 取，
    或改用 16.x 的 OS profile 做 bring-up。
+
+---
+
+## 0.62 缓存是完整的（推翻 §0.61 的"空壳"判断）；APFS 现可直接读取（2026-11-07 13:4x）
+
+### 关键纠正
+
+§0.61 判断"缓存是空壳"是**错误的** ✗。`ipsw dyld info` 直接解析主缓存头：
+
+```
+Magic = "dyld_v1   arm64"   Platform = iOS   OS Version = 17.7
+Num Images    = 3354          ← 3354 个镜像
+Num SubCaches = 52            ← 52 个分片
+Shared Region: 3GB, address: 0x180000000 -> 0x24C5F0000
+Cache UUID: 590D839A-82D2-30F1-A17D-0CC053420F73
+```
+
+主文件的 `imagesCount = 0` 是**分片缓存的正常形态**（镜像由子缓存描述），不是空壳。
+缓存集合总量 **3,987,406,848 字节（3.7 GiB）**，`libSystem.B.dylib` 在缓存内 ✓。
+
+### 用 apfs-fuse 得到的真实卷布局
+
+本机已从源码构建 **`apfs-fuse`**（`/root/work/apfs-fuse/build/apfs-fuse`，435 KB；
+需 `libbz2-dev` 与在 `ApfsLib/PList.h` 顶部加 `#include <cstdint>`）。据此直接读取 IPSW 的两个卷：
+
+| 卷 | 顶层 | 关键内容 |
+| --- | --- | --- |
+| OS（`044-76040-038.dmg`） | `root/`、`private-dir/` | 完整根（Applications/System/usr/bin/…）；**`/usr/lib/dyld` = 937,056 字节，sha256 `f8df3c58…`**，与框架 `build-target-dyld-fixture.py` 记录的 21H461 期望值一致 ✓；**没有** `com.apple.dyld` 目录 ✗ |
+| SystemOS cryptex（`044-76034-038.dmg`） | `root/`、`private-dir/` | **只有** `root/System` 与 `root/usr/lib`（少量文件）；`root/System/Library/Caches/com.apple.dyld/` 下 **54 个缓存文件**（主 491,520 B、`.01` 114,720,768 B … `.52`、`.symbols` 654 MiB、`.dylddata`、`.dyldlinkedit`）|
+
+`ipsw dyld extract <cache> /usr/lib/dyld` 得到缓存内 dyld（879,456 B，`d43def0e…`），
+与磁盘上的 `/usr/lib/dyld`（`f8df3c58…`）**不同**，这是正常现象（缓存内是重建版）。
+
+### 我们的镜像确实提供完整缓存
+
+把 `userdata-signed.img` 里的 SystemOS 窗口（offset `0x16a600000`，3,303,014,400 字节）
+切出后用 apfs-fuse 挂载：**54 个缓存文件全部存在、大小与原 dmg 完全一致** ✓。
+即内核侧提供的缓存是完整的，路径与权限此前也已逐项验证通过。
+
+### 至此仍未知的一点
+
+在这套条件下 dyld（用户态）仍报 `no dyld cache`。已排除：缓存缺失/不完整、
+路径不可见、权限、只读、union、carrier 授权、共享区大小（内核
+`SHARED_REGION_SIZE_ARM64 = 0x180000000` = 6 GiB > 缓存所需 3 GB）。
+
+### 下一步候选（按信息量排序）
+
+1. **在设备上枚举缓存目录**：诊断里用 `getdirentries`/`vnode_readdir` 列出
+   `/private/preboot/System/Library/Caches/com.apple.dyld` 的**全部条目**，
+   确认内核看到的不是只有 4 个文件（我们此前只查了 4 个名字）；
+2. **检查 `native-4k-signature-hash-cache` 与缓存签名**：AMFI 对 dyld 缓存的
+   代码签名注册可能仍失败但不再打印；
+3. 用 `apfs-fuse` 把 54 个缓存文件**导出到 PC**，交给 `ipsw dyld` 做完整一致性校验，
+   并与设备的失败时机对照。
+
+### 工具留档
+
+- `blacktop/ipsw` v3.1.743：`/root/work/ipsw-cli/ipsw`（`dyld info|extract`、`extract --dyld`、
+  `ota payload|extract`、`kernel`、`mount`）；
+- `apfs-fuse`：`/root/work/apfs-fuse/build/apfs-fuse`（用法 `-o ro <image> <mountpoint>`，
+  `-v <volume-id>`）；
+- 完整 IPSW 已下载到 `/root/work/21H461.ipsw`（6,835,124,840 字节）；
+- OTA 的 `cryptex-system-arm64e` 成员已下载 `/root/work/ota-cryptex.bin`（930,796,582 字节，
+  `RIDIFF10`+`pbzx` 封装，`ipsw` 不认，暂未解）。
