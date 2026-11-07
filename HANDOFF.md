@@ -3344,3 +3344,52 @@ dyld/launchd 相关的全部行 → 最后把日志块清零，供下一轮使�
 
 手机挂着（panic 后停在菜单/循环），**需要按电源才能读日志** —— 这是唯一无法自动化的步骤。
 仓库已提交，远程 `main` 同步。
+
+---
+
+## 0.60 进程级坑：修改补丁后必须清 .cache/xnu-work（2026-11-07 10:5x）
+
+### 现象
+
+连续两轮刷入的诊断镜像，屏幕上都没有出现新加的 panic，而是停在旧的行为。
+用字符串检索证明原因：
+
+```
+清树前：  D4K perms: 0   D4K launchd: 1     ← 内核里是上一版的诊断
+清树后：  D4K perms: 1   D4K launchd: 0     ← 新诊断才真正编进去
+```
+
+框架构建日志里明明打印了 `== kernel: patch dandelion-owner-diag.patch`（补丁"已应用"），
+但源码树 `.cache/xnu-work` 被复用：**补丁只在树首次生成时应用一次**，
+之后修改补丁文件的内容不会被重新应用 ✗。
+
+### 处置
+
+```bash
+rm -rf out/<device>/<profile>/<config>/tree/.cache/xnu-work
+# 再 build kernel
+```
+
+`scripts/build_clean_patch.sh` 把这步和构建串在一起，并在构建前后打印诊断字符串计数，
+用**内核里实际有没有该字符串**确认补丁是否生效 —— 这是比"日志说 patch 了"更可靠的验证。
+
+### 这条也解释了更早的疑点
+
+§0.45 里"控制台修复多次无效"很可能也有一部分是这个原因：改了
+`device-emmc-log-console.patch` 后若树未重建，改动根本没有编进内核。
+以后凡是**修改已有补丁文件**，都必须先清树，并检查内核内字符串确认生效。
+
+### 同时确认的事实
+
+`D4K launchd` 诊断没有触发，说明 `load_init_program_at_path` 返回了 0
+（exec 成功）；屏幕上的 `initproc failed to start ... no dyld cache` 是
+**launchd 在用户态启动失败**后由内核打印的，不是 exec 失败。
+即：内核侧（exec、Data 卷、cryptex、carrier 七项条件）已全部通过，
+问题在 dyld 用户态的缓存使用。
+
+### 下一步（已构建待刷）
+
+`boot-data.img`（sha256 `a657b05f…`）含新的 `D4K perms:` 诊断：
+打印 `/private/preboot`、缓存目录、缓存文件三层 lookup errno、缓存文件大小，
+以及 `KAUTH_VNODE_SEARCH` / `KAUTH_VNODE_READ_DATA` 的授权结果 ——
+即 dyld 作为用户进程是否**被允许**读那个缓存。

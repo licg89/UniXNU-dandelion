@@ -1,36 +1,31 @@
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -8188,7 +8188,34 @@
+@@ -8188,7 +8188,29 @@
  #if defined(XNU_OWNER_DATA_MOUNT) && XNU_OWNER_DATA_MOUNT
  	int data_error = native_owner_data_prepare(p, (user_addr_t)scratch_addr);
  	if (data_error) panic("offline scratch Data mount failed: %d", data_error);
  #endif
 +	{
-+		/* Replicate the conditions native_owner_shared_cache_carrier() checks, because its
-+		 * rejections are compiled out and dyld then reports "no dyld cache" with no clue. */
-+		vnode_t cdir = NULLVP, cfile = NULLVP, proot = NULLVP;
++		/* dyld is a user-space process: what matters is whether it may search the path and
++		 * read the file, not merely that a kernel lookup succeeds. */
++		vnode_t d = NULLVP, f = NULLVP, pb = NULLVP;
 +		vfs_context_t ctx = vfs_context_current();
-+		int e_dir = vnode_lookup("/private/preboot/System/Library/Caches/com.apple.dyld",
-+		                         0, &cdir, ctx);
-+		int e_file = vnode_lookup(
++		off_t fsize = -1;
++		int e_pb = vnode_lookup("/private/preboot", 0, &pb, ctx);
++		int e_d = vnode_lookup("/private/preboot/System/Library/Caches/com.apple.dyld",
++		                       0, &d, ctx);
++		int e_f = vnode_lookup(
 +		    "/private/preboot/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
-+		    0, &cfile, ctx);
-+		int e_root = vnode_lookup("/", 0, &proot, ctx);
-+		int dir_is_dir = (cdir && vnode_vtype(cdir) == VDIR);
-+		int file_is_reg = (cfile && vnode_vtype(cfile) == VREG);
-+		int dir_mnt = (cdir && vnode_mount(cdir)) ? 1 : 0;
-+		int file_mnt_same = (cdir && cfile && vnode_mount(cdir) == vnode_mount(cfile));
-+		int root_same = (proot && proot == rootvnode);
-+		int root_mnt_ne = (proot && cfile && vnode_mount(proot) != vnode_mount(cfile));
-+		panic("D4K carrier: edir=%d efile=%d eroot=%d dir=%d reg=%d dirmnt=%d same=%d "
-+		    "root_same=%d diff=%d | dev=%s sel=%d mnt=%d",
-+		    e_dir, e_file, e_root, dir_is_dir, file_is_reg, dir_mnt, file_mnt_same,
-+		    root_same, root_mnt_ne,
-+		    native_owner_cache_device_path, (int)native_owner_cache_selected_device,
-+		    (int)native_owner_cache_mounted_device);
-+		if (cdir) vnode_put(cdir);
-+		if (cfile) vnode_put(cfile);
-+		if (proot) vnode_put(proot);
++		    0, &f, ctx);
++		int e_sz = f ? (int)vnode_size(f, &fsize, ctx) : -99;
++		int auth_pb = pb ? (int)vnode_authorize(pb, NULL, KAUTH_VNODE_SEARCH, ctx) : -99;
++		int auth_d = d ? (int)vnode_authorize(d, NULL, KAUTH_VNODE_SEARCH, ctx) : -99;
++		int auth_f = f ? (int)vnode_authorize(f, NULL, KAUTH_VNODE_READ_DATA, ctx) : -99;
++		panic("D4K perms: epb=%d ed=%d ef=%d esz=%d size=%lld | auth %d %d %d",
++		    e_pb, e_d, e_f, e_sz, (long long)fsize, auth_pb, auth_d, auth_f);
++		if (pb) vnode_put(pb);
++		if (d) vnode_put(d);
++		if (f) vnode_put(f);
 +	}
  #if CONFIG_MEMORYSTATUS
  	(void) memorystatus_init_at_boot_snapshot();
