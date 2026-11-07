@@ -57,3 +57,4 @@ dandelion-skip-cs.patch
 #
 # dandelion-owner-diag.patch   (retired: envp verified)
 dandelion-root-unverified.patch
+dandelion-launchd-beat.patch

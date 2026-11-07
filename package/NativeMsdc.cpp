@@ -89,6 +89,8 @@ volatile uint32_t native_msdc_blocks_published = 0;
 volatile uint64_t native_msdc_reads = 0, native_msdc_writes = 0, native_msdc_flushes = 0, native_msdc_failures = 0;
 // Transfers that stalled once and then succeeded on a whole-transfer retry.
 volatile uint64_t native_msdc_retries = 0;
+// MSDC_CFG.CKDIV in effect after bring-up; the bootloader value is reported alongside it.
+volatile uint32_t native_msdc_clock_divider = 0;
 // Optional verified-root snapshot reuse: hits, misses, authenticated bytes reused.
 volatile uint64_t native_msdc_verified_cache_stats[3] = {};
 // read calls/requested bytes/ns, verify calls/bytes/ns; no hot-path logging.
@@ -479,7 +481,7 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
   // turned a stall into a window hash mismatch ("offline owner SystemOS mount failed: 80").
   // Reads are retried; a write is left alone because its data path is not the bottleneck.
   IOReturn result = kIOReturnTimeout;
-  const unsigned attempts = write ? 1u : 3u;
+  const unsigned attempts = write ? 1u : 6u;
   for (unsigned attempt = 0; attempt < attempts; attempt++) {
     if (write) result = hostWrite (uint32_t (sector), buffer, blocks);
     else if (gHost.dmaEnabled) result = hostReadDma (uint32_t (sector), buffer, blocks);
@@ -487,7 +489,11 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
     if (result == kIOReturnSuccess) break;
     // A rejected argument or a poisoned engine will not improve with another attempt.
     if (result == kIOReturnBadArgument || gHost.poisoned) break;
-    if (attempt + 1 < attempts) __atomic_fetch_add (&native_msdc_retries, 1, __ATOMIC_RELAXED);
+    if (attempt + 1 < attempts) {
+      __atomic_fetch_add (&native_msdc_retries, 1, __ATOMIC_RELAXED);
+      // Give the card a moment to leave the failed data state before the next command.
+      IODelay (1000);
+    }
   }
   if (result != kIOReturnSuccess) __atomic_fetch_add (&native_msdc_failures, 1, __ATOMIC_RELAXED);
   else __atomic_fetch_add (write ? &native_msdc_writes : &native_msdc_reads, 1, __ATOMIC_RELAXED);
@@ -543,6 +549,40 @@ void hostLogMode (const uint8_t *extCsd, uint32_t inheritedCfg)
 }
 
 // ---- Bring-up --------------------------------------------------------------------------------------------------------
+
+// The bootloader leaves MSDC_CFG.CKDIV at the value it used for slow enumeration.  Measured on the
+// phone it is 260, which holds reads near 320 KB/s even though the card reports HS_TIMING=1 and
+// 8-bit DDR.  Mapping a dyld shared cache needs hundreds of megabytes, so try progressively faster
+// dividers and keep the first one whose reads still match a reference sector; a mismatch restores
+// the inherited value, so a wrong guess costs nothing.
+void hostRaiseClock (void)
+{
+  if (!gHost.bounce) return;
+  uint8_t *reference = gHost.bounce;
+  uint8_t *candidate = gHost.bounce + kDmaSelfTestBlocks * kSector;
+  if (hostReadPio (kCmdReadSingle, kDmaSelfTestSector, reference, kDmaSelfTestBlocks) != kIOReturnSuccess) {
+    IOLog ("NativeMsdc: clock unchanged; the reference read failed\n");
+    return;
+  }
+  const uint32_t cfg = rd (kMsdcCfg);
+  const unsigned inherited = (cfg >> 8) & 0xfffu;
+  static const unsigned dividers[] = { 4, 8, 16, 32, 64 };
+  for (unsigned i = 0; i < sizeof (dividers) / sizeof (dividers[0]); i++) {
+    const unsigned divider = dividers[i];
+    if (divider >= inherited) break;
+    wr (kMsdcCfg, (cfg & ~(0xfffu << 8)) | ((divider & 0xfffu) << 8));
+    IODelay (2000);
+    IOReturn result = hostReadPio (kCmdReadSingle, kDmaSelfTestSector, candidate, kDmaSelfTestBlocks);
+    if (result == kIOReturnSuccess && memcmp (reference, candidate, kDmaSelfTestBlocks * kSector) == 0) {
+      native_msdc_clock_divider = divider;
+      IOLog ("NativeMsdc: clock divider %u accepted (was %u)\n", divider, inherited);
+      return;
+    }
+  }
+  wr (kMsdcCfg, cfg);
+  native_msdc_clock_divider = inherited;
+  IOLog ("NativeMsdc: clock divider kept at %u; faster settings did not verify\n", inherited);
+}
 
 bool listHas (OSObject *property, const char *wanted)
 {
@@ -693,6 +733,11 @@ bool hostBringUp (IOService *provider, bool useDma, const char **why)
     return false;
   }
   hostLogMode (extCsd, inheritedCfg);
+  // Raising MSDC_CFG.CKDIV without retuning the pad sampling point makes reads fail (measured:
+  // "Failed to mount root device"), so the divider stays as the bootloader left it unless
+  // native-msdc-clock=1 asks for the experiment.  See HANDOFF 0.64: a faster bus needs TDsel/RDsel
+  // tuning, not just a smaller divider.
+  if (bootArgument ("native-msdc-clock", 1, 0)) hostRaiseClock ();
   if (useDma) hostEnableDma ();
   if (gHost.poisoned) {
     *why = "DMA engine did not stop";
@@ -876,10 +921,10 @@ const char *loadPolicy (void)
     return "policy read-only protection";
   }
   gPolicy.key = key;
-  IOLog ("NativeMsdc: signed root policy read in %llu ms, %u entries, %llu reads, %llu retries, %llu failures\n",
+  IOLog ("NativeMsdc: signed root policy read in %llu ms, %u entries, %llu reads, %llu retries, %llu failures, ckdiv %u\n",
       elapsed / 1000000ULL, gPolicy.header.count,
       (unsigned long long)native_msdc_reads, (unsigned long long)native_msdc_retries,
-      (unsigned long long)native_msdc_failures);
+      (unsigned long long)native_msdc_failures, native_msdc_clock_divider);
   return nullptr;
 }
 

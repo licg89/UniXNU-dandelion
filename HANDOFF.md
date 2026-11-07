@@ -3603,3 +3603,98 @@ env='DYLD_SHARED_CACHE_DIR=/private/preboot/System/Library/Caches/com.apple.dyld
 2. **显示驱动**：内核控制台目前只写 eMMC，屏幕上只能看到菜单残影，无法观察用户态进展；
    接入显示 provider 后才能看到启动画面与 UI；
 3. 之后依次：输入、GPU、网络、音频、电源。
+
+---
+
+## 0.64 launchd 跑起来了；现在的墙是存储带宽（2026-11-07 19:0x–21:5x）
+
+### 结论一句话
+
+引导链、APFS、三个卷、dyld 缓存、launchd 全部打通；`launchd` 在用户空间**持续运行**
+（`pid1stat=2` = SRUN），但 eMMC 实测只有 **128–320 KB/s**，dyld 要读几百 MB 缓存，
+系统因此停在"启动中"而不是崩溃。**带宽是唯一剩下的墙。**
+
+### 关键修复：整段重试（`package/NativeMsdc.cpp`）
+
+`transfer()` 原来故意不重试，理由是"重试会留下部分刷新的缓冲区导致 hash 不匹配"。
+那个理由只对**续读**成立：`hostPrepareData()` 每次清 FIFO，`hostReadPio()` 每次从
+offset 0 重填，所以**整段重试读到的是完整新鲜数据**，hash 安全。
+
+现状：读最多 **6 次**尝试，每次之间 `IODelay(1000)` 让卡退出失败数据态；写不重试。
+新增 `native_msdc_retries` 计数，并输出到策略区日志与心跳。
+
+**效果（实测）**：`failures=0`，`retries` 缓慢增长（偶发停顿全部救回），
+`check_signature[pid: 1]: error = 60` 消失，launchd 不再退出。
+
+### 失败机理（此前一直是这个）
+
+```
+disk3: I/O timeout.                          ← 驱动 3 次重试后返回 kIOReturnTimeout
+check_signature[pid: 1]: error = 60          ← launchd 校验 dyld 缓存签名时读超时
+dyld[1]: dyld cache '(null)' not loaded: (null)
+  → Library not loaded: /usr/lib/libSystem.B.dylib (no such file, no dyld cache)
+  → pid 1 exited -- exit reason namespace 6 subcode 0x1
+```
+
+这解释了**间歇性**：读成功 → launchd 活着；读超时 → 立刻退出。6 次重试后不再复现。
+
+### 心跳（`dandelion-launchd-beat.patch`）
+
+在 `load_init_program()` **之前**启动内核线程，每 20 秒打印一次：
+
+```
+D4K beat 59: procs=2 pid1stat=2 | reads=4563 writes=0 retries=125 failures=0
+```
+
+- `pid1stat=2` = **SRUN**，launchd 在跑，不是睡眠也不是退出；
+- `procs=2` 持续 20 分钟 = 还没有派生任何子进程；
+- `reads` 稳定增长 = 在持续读盘；
+- `failures=0` = 重试机制有效。
+
+（注意：心跳必须在 `load_init_program` **之前**启动 —— init 退出时内核 panic，之后启动的线程
+永远不会报告。）
+
+### 带宽测量与总线模式
+
+| 测量 | 数值 |
+| --- | --- |
+| 策略区 73 MB | 227,922 ms → **320 KB/s** |
+| 心跳期间 3169 × 64 KiB | 20 分钟 → **169 KB/s** |
+| 理论值（HS 8-bit DDR） | 数十 MB/s ✗ 差 300 倍 |
+
+`native-msdc-mode=1` 的遥测：
+
+```
+mode host ckmod=2 ckdiv=260 stable=1 bits=8 ddr=1 hs400clk=0
+mode card rev=8 bus_width_raw=06 hs_timing=01 card_type=57 driver_strength=1f timing=1
+mode source mux_valid=1 mux_reg=00000300 msdc0_mux=0 source_hz=unmeasured
+```
+
+**卡侧是高速配置**（`hs_timing=01` = HS 52 MHz，`bus_width_raw=06` = 8-bit DDR），
+但**控制器分频 `ckdiv=260`** —— bootloader 留下的慢速枚举值，驱动从不修改 ✗
+这就是 300 倍差距的来源。
+
+### 两条提速尝试都失败了（重要负面结果）
+
+| 尝试 | 结果 |
+| --- | --- |
+| `native-msdc-dma=1`（驱动自带 DMA 路径，含 PIO 比对自检）| **`Failed to mount root device`** —— DMA 读不可靠，连根卷都挂不上 |
+| `native-msdc-clock=1`（`hostRaiseClock()`：按 4/8/16/32/64 依次降分频，每步回读同一扇区比对，不一致就恢复）| **`Failed to mount root device`** —— 单扇区比对通过也不够，持续负载下仍出错 |
+
+结论：**只改分频不够**。改速率必须同时重新调 **pad 采样点（TDsel/RDsel）**，
+否则位错误。驱动目前只记录 `pad0/pad1`，从不调优。`hostRaiseClock()` 已实现并保留，
+由 `native-msdc-clock=1` 控制，默认关闭。
+
+### 下一步（按价值排序）
+
+1. **实现 pad 采样延迟调优 + 提高时钟**：MTK 的 `msdc_set_tdsel/rdsel` 思路 ——
+   在 `hostRaiseClock()` 里对每个分频尝试若干采样点组合，用多扇区比对选最稳的一组；
+   这是把系统从"能跑"变成"可用"的关键一步；
+2. **修 DMA**：DMA 路径代码已有，失败点未定位（`native_msdc_dma` 会给出 1/2/3）；
+   定位后再试，DMA 比 PIO 快一个量级；
+3. 带宽解决后：确认 launchd 派生进程（`procs` 增长），再进入显示/输入适配。
+
+### 可工作镜像
+
+`boot-data.img` sha256 `5f8e475ed940d96dbaed5a4e964118bffb2494fecb964476550ffff040d2c822`
+（时钟实验已用参数关闭，回到 launchd 能持续运行的状态）。

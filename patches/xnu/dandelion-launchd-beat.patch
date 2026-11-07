@@ -1,0 +1,59 @@
+--- a/bsd/kern/bsd_init.c	2026-11-07 19:45:16.499039270 +0800
++++ b/bsd/kern/bsd_init.c	2026-11-07 19:45:16.525969785 +0800
+@@ -563,6 +563,46 @@
+ }
+ #endif
+ 
++static void
++dandelion_beat(void *arg, wait_result_t wr)
++{
++	(void)arg;
++	(void)wr;
++	for (unsigned round = 0; round < 60; round++) {
++		struct timespec pause = { .tv_sec = 20, .tv_nsec = 0 };
++		msleep((caddr_t)&dandelion_beat, NULL, PWAIT, "d4k-beat", &pause);
++		int procs = 0, state = -1;
++		proc_t walk;
++		proc_list_lock();
++		LIST_FOREACH(walk, &allproc, p_list) { procs++; }
++		proc_list_unlock();
++		proc_t p1 = proc_find(1);
++		if (p1 != PROC_NULL) {
++			state = p1->p_stat;
++			proc_rele(p1);
++		}
++		extern volatile uint64_t native_msdc_reads, native_msdc_writes, native_msdc_failures;
++		extern volatile uint64_t native_msdc_retries;
++		printf("D4K beat %u: procs=%d pid1stat=%d | reads=%llu writes=%llu retries=%llu failures=%llu\n",
++		    round, procs, state,
++		    (unsigned long long)native_msdc_reads, (unsigned long long)native_msdc_writes,
++		    (unsigned long long)native_msdc_retries, (unsigned long long)native_msdc_failures);
++	}
++	thread_terminate(current_thread());
++}
++
++static void
++dandelion_beat_start(void)
++{
++	thread_t th = THREAD_NULL;
++	if (kernel_thread_start(dandelion_beat, NULL, &th) != KERN_SUCCESS) {
++		printf("D4K beat: thread start failed\n");
++		return;
++	}
++	thread_deallocate(th);
++}
++
++
+ void
+ bsd_init(void)
+ {
+@@ -1289,6 +1329,9 @@
+ 
+ 	bsd_init_kprintf("bsd_do_post - done");
+ 
++	/* Start the report before init runs: if init exits the kernel panics, and a thread
++	 * started afterwards would never report the storage counters behind the failure. */
++	dandelion_beat_start();
+ 	load_init_program(p);
+ 	lock_trace = 1;
+ }
