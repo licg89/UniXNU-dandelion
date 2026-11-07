@@ -488,6 +488,16 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
   // Reads are retried; a write is left alone because its data path is not the bottleneck.
   IOReturn result = kIOReturnTimeout;
   const unsigned attempts = write ? 1u : 6u;
+  // What the user space actually reads decides why a boot takes so long: a sequential sweep of the
+  // cryptex window would mean the whole shared cache is being hashed, while scattered small reads
+  // mean plist and metadata traffic.  One line every 400 reads is cheap on the console.
+  if (!write) {
+    static volatile uint64_t traceCounter = 0;
+    if ((__atomic_fetch_add (&traceCounter, 1, __ATOMIC_RELAXED) % 400) == 0) {
+      IOLog ("NativeMsdc: read trace sector=%llu blocks=%u\n",
+             (unsigned long long)sector, blocks);
+    }
+  }
   for (unsigned attempt = 0; attempt < attempts; attempt++) {
     if (write) result = hostWrite (uint32_t (sector), buffer, blocks);
     else if (gHost.dmaEnabled) result = hostReadDma (uint32_t (sector), buffer, blocks);
@@ -595,6 +605,24 @@ bool hostSweepMatches (const uint8_t *reference)
   return true;
 }
 
+// Changing MSDC_CFG.CKDIV with the card clock running glitches the bus, and that is what made every
+// earlier attempt end in "Failed to mount root device".  Power the clock down, set the divider while
+// it is stopped, restart it and wait for the stable bit.
+void hostSetClockDivider (unsigned divider)
+{
+  const uint32_t base = (rd (kMsdcCfg) & ~(0xfffu << 8)) & ~kCfgCkPdn;
+  wr (kMsdcCfg, base | kCfgCkPdn);
+  IODelay (500);
+  wr (kMsdcCfg, (base | kCfgCkPdn) | ((divider & 0xfffu) << 8));
+  IODelay (500);
+  wr (kMsdcCfg, base | ((divider & 0xfffu) << 8));
+  for (unsigned i = 0; i < 50; i++) {
+    if (rd (kMsdcCfg) & kCfgCkStb) break;
+    IODelay (100);
+  }
+  IODelay (2000);
+}
+
 void hostRaiseClock (void)
 {
   if (!gHost.bounce) return;
@@ -607,39 +635,42 @@ void hostRaiseClock (void)
   }
   const uint32_t cfg0 = rd (kMsdcCfg), iocon0 = rd (kMsdcIoCon);
   const unsigned inherited = (cfg0 >> 8) & 0xfffu;
-  static const unsigned dividers[] = { 4, 8, 16, 32 };
-  static const unsigned samples[] = { 0, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56 };
-  // The root device wait loop runs after this and has its own timeout, so the sweep must stay
-  // short: a stalled candidate costs up to the full command deadline.
-  const uint64_t budget = deadlineAfter (8000000000ULL);
+  // Slowest candidate first, and every step is verified before the next: the first divider that
+  // does not verify leaves the previous, known-good setting in place instead of an unusable bus.
+  static const unsigned dividers[] = { 64, 32, 16, 8, 4 };
+  static const unsigned samples[] = { 0, 4, 8, 12, 16, 24, 32, 48 };
+  unsigned best = inherited, bestSample = 0;
   for (unsigned d = 0; d < sizeof (dividers) / sizeof (dividers[0]); d++) {
     if (dividers[d] >= inherited) continue;
+    bool accepted = false;
     for (unsigned s = 0; s < sizeof (samples) / sizeof (samples[0]); s++) {
-      if (mach_absolute_time () > budget) {
-        wr (kMsdcCfg, cfg0);
-        wr (kMsdcIoCon, iocon0);
-        hostRecoverAfterError ();
-        native_msdc_clock_divider = inherited;
-        IOLog ("NativeMsdc: clock sweep budget spent; kept %u/0\n", inherited);
-        return;
-      }
-      wr (kMsdcCfg, (cfg0 & ~(0xfffu << 8)) | ((dividers[d] & 0xfffu) << 8));
       wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((samples[s] & 0x3fu) << 16));
-      IODelay (1000);
+      hostSetClockDivider (dividers[d]);
       if (hostSweepMatches (reference)) {
-        native_msdc_clock_divider = dividers[d];
-        native_msdc_sample_delay = samples[s];
-        IOLog ("NativeMsdc: clock divider %u sample %u accepted (was %u/0)\n",
-               dividers[d], samples[s], inherited);
-        return;
+        best = dividers[d];
+        bestSample = samples[s];
+        accepted = true;
+        IOLog ("NativeMsdc: clock divider %u sample %u verified\n", dividers[d], samples[s]);
+        break;
       }
     }
+    if (!accepted) {
+      IOLog ("NativeMsdc: divider %u did not verify; keeping %u/%u\n",
+             dividers[d], best, bestSample);
+      break;
+    }
   }
-  wr (kMsdcCfg, cfg0);
-  wr (kMsdcIoCon, iocon0);
-  hostRecoverAfterError ();
-  native_msdc_clock_divider = inherited;
-  IOLog ("NativeMsdc: clock tuning found no stable pair; kept %u/0\n", inherited);
+  wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((bestSample & 0x3fu) << 16));
+  hostSetClockDivider (best);
+  if (best == inherited) {
+    wr (kMsdcCfg, cfg0);
+    wr (kMsdcIoCon, iocon0);
+    hostRecoverAfterError ();
+  }
+  native_msdc_clock_divider = best;
+  native_msdc_sample_delay = bestSample;
+  IOLog ("NativeMsdc: clock settled at divider %u sample %u (inherited %u)\n",
+         best, bestSample, inherited);
 }
 
 bool listHas (OSObject *property, const char *wanted)

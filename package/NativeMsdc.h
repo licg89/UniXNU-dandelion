@@ -35,6 +35,10 @@ enum : unsigned {
 };
 
 constexpr uint32_t kCfgPio = 1u << 3;
+// MSDC_CFG clock controls: the card clock has to be powered down while CKDIV changes, otherwise the
+// bus glitches and every later read fails.
+constexpr uint32_t kCfgCkPdn = 1u << 1;
+constexpr uint32_t kCfgCkStb = 1u << 4;
 constexpr uint32_t kIntCmdReady = 1u << 8;
 constexpr uint32_t kIntCmdErrors = (1u << 9) | (1u << 10);       // command timeout, response CRC
 constexpr uint32_t kIntXferDone = 1u << 12;

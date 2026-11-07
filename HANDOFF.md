@@ -3870,3 +3870,73 @@ seed 需要 macOS 的 `hdiutil`，所以走 `.github/workflows/data-seed.yml`（
 2. 观察是否出现 `xpcproxy`/`SpringBoard`（心跳 `procs` 应开始增长）；
 3. 若仍停在 launchd：用 `boot-ui-focus=launchd` 等 focus 参数采样卡点；
 4. 显示仍是后续独立任务（`CONFIG_XNU_NATIVE_LEGACY_DISPLAY` + `build-gop-legacy-display.py`）。
+
+---
+
+## 0.68 慢的根因测定：内核顺序读整个 3.7 GB 缓存做签名校验（2026-11-08 01:1x–01:4x）
+
+### 卡时钟的正确算法（推翻 §0.66 期间的自我更正）
+
+`mtk-sd.c`（Linux，MT6765 同族）的 DDR 分频公式：
+
+```c
+mode = 0x2;                                   /* DDR，使用分频 */
+div  = (src + ((hz << 2) - 1)) / (hz << 2);
+sclk = (src >> 2) / div;
+div  = div >> 1;                              /* 寄存器里存 div/2 */
+```
+
+`cfg=0x02210499` 解出 `CKMOD_EXTRA=2`（DDR）、`CKDIV_EXTRA=260`（bits 19:8，12 位分频）。
+寄存器 260 → 实际 div 520 → `sclk = (src/4)/520`；`src` 若为 200 MHz 则 **≈ 96 kHz** ✗
+与实测 320 KB/s（96 kHz × 8 bit × DDR ≈ 190 KB/s）吻合 ✓
+
+**注意**：该 SoC 用 `clk_div_bits = 12`，即 EXTRA 字段才是生效的 ✓ 我们读对了。
+（中途我曾据基础字段误判为 `div=4`，此处以 Linux 公式为准。）
+
+### 为什么改时钟失败（MTK 序列还缺两步）
+
+`msdc_set_mclk()` 的实际步骤：清 `CKPDN` → **门控源时钟 `clk_disable_unprepare(src_clk_cg)`** →
+写 `CKMOD_EXTRA|CKDIV_EXTRA` → 使能源时钟 → 等 `CKSTB` → … → **按新频率重写 pad 调优**
+（`def_tune_para` 的 `iocon` / `pad_tune`，≤52 MHz 与更高速率用不同值）。
+
+我们只做了"停钟 → 写分频 → 等稳定 → 重启"，**没有门控源时钟，也没有 SoC 专用 pad 调优值** ✗
+这两个值只存在于厂商时钟/驱动代码里，本仓库没有 → 直接提速这条路目前走不通。
+
+### 决定性测定：读的是整个缓存，不是零散元数据
+
+在 `transfer()` 里每 400 次读打印一次扇区（400 × 64 KiB ≈ 25.6 MB）：
+
+```
+read trace sector=1
+read trace sector=90066399
+read trace sector=90117599
+read trace sector=71818903
+read trace sector=83628111
+read trace sector=83676367      ← +48,256 扇区
+read trace sector=83724623      ← +48,256 扇区（= 24.7 MB，与 400 次读吻合）
+read trace sector=83773007      ← +48,383
+```
+
+**8 个采样中 6 个递增，末尾稳定以 ~24.7 MB 步进** ⇒ 顺序扫读一个大文件 ✓
+即 launchd/dyld 映射共享缓存时，内核**逐页校验 3.7 GB 缓存的代码签名**（哈希整文件）✗
+3.7 GB ÷ 320 KB/s ≈ **3.2 小时** —— 这就是"看起来永远跑不完"的真正原因。
+
+对比：真实 iOS 的共享缓存由 **SystemTrustCache 授权**，不做逐页哈希。
+
+### 两条修复路线
+
+| 路线 | 内容 | 可行性 |
+| --- | --- | --- |
+| **A. 跳过缓存哈希**（推荐）| 让 `shared_region_map_and_slide_np` 的校验信任 trust cache 而不逐页哈希；缓存 cdhash `fcdb9268…` 已在我们的 trust cache 模块里 | 完全在本仓库可改范围内 ✓ |
+| B. 提高卡时钟 | 需要 MT6762 的源时钟门控位与 pad 调优值（`def_tune_para`）| 缺厂商数据 ✗ |
+
+路线 A 修好后，读取量从 3.7 GB 降到几 MB，**即使卡只有 96 kHz 也能秒级完成** ✓
+
+### 本轮其它已确认
+
+- 12 个 seed 文件已进入镜像：日志 `disk2s1 vol-uuid: 661FF9FF-E51F-4050-99B7-0B101374F90F` +
+  `mount-complete volume OwnerData` ✓
+- `CONFIG_XNU_OWNER_DATA_VOLUME_UUID` 已随 CI 重建的 seed 更新 ✓
+- merlinx 配置全部采纳（验证根 / union+carrier / `launchd_unsecure_cache` / `wdt=-1` /
+  `ignition_level=1` / `-no_slto_panic` / `sheng-aks=1`）✓
+- 心跳在 `load_init_program` 之前启动、记录 360 拍（2 小时），可无人值守观察 ✓
