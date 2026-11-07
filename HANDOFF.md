@@ -3754,3 +3754,54 @@ mode raw inherited=02210499 cfg=02210499 iocon=00000010 sdc=ff027ffc pad0=000000
 同时改为**长时观察**：以 PIO 320 KB/s 让系统跑 60 分钟以上，确认 dyld 是"慢"而不是"卡死"
 （判据：心跳 `procs` 从 2 开始增长、`reads` 继续上升）。可工作镜像
 `8342578ff29196bddd2503f462510d7cf9d733fd4fcdc92ae665522e5397df72`。
+
+---
+
+## 0.66 DMA 定位到超时，但三个假设都排除（2026-11-07 22:3x–23:2x）
+
+### 上游参考：同款驱动在 MT8167 上 DMA 可用
+
+`docs/zh/devices/a04br3.md`（Benesse TAB-A04-BR3，MT8167，同一份 `NativeMsdc`）：
+
+> *"平板已在四个 CPU 上运行 iPadOS 主屏幕，**eMMC DMA** 和 CPU 帧缓冲渲染可用"*
+
+所以 DMA 代码路径本身是成立的，MT6762 上的失败是**平台差异**，值得修。
+（`drivers/community-native-msdc.md` 只写"驱动尚未启动"，我们的移植已经超过它；
+上游 `mouseos/NativeMsdc` 与本仓库同版本，没有时钟/复位代码。）
+
+### 关键测量：DMA 自检返回超时
+
+开启 `native-msdc-dma=1` 后驱动打印：
+
+```
+NativeMsdc: DMA comparison with PIO failed, PIO kept (0xe00002d6) at 0x59a05000
+```
+
+`0xe00002d6` = **`kIOReturnTimeout`** —— DMA 引擎启动了但**从不完成** ✗
+
+### 三个假设逐一排除
+
+| 假设 | 改动 | 结果 |
+| --- | --- | --- |
+| 顺序错误：先发读命令再武装 DMA，数据相位没有目的地 | 改为**先武装 DMA（写 DmaSa/DmaCfg/DmaCtrl+Start）再发命令** | 仍然 `0xe00002d6` ✗ |
+| 描述符校验和被引擎拒绝 | `kDmaCfg` 清除 `kDmaCfgChecksum`（描述符本身仍计算校验和）| 仍然 `0xe00002d6` ✗ |
+| 中断位不足 | 核对：`kIntXferDone` = bit 12、`kIntDataErrors` = bit 14/15、`kIntDmaErrors` = 7<<17；状态寄存器不受屏蔽位影响 | 未改动，判定不是原因 |
+
+三种情况下启动都停在 `Failed to mount root device`（DMA 自检失败后应回退 PIO，但实际连根卷都挂不上
+—— 说明 DMA 尝试本身也会让卡进入坏状态，与 0.65 的时钟扫描同理）。
+
+### 下一步最有价值的假设
+
+**MTK MSDC 的 DMA 引擎可能有独立的时钟/门控**（与 PIO 路径分开的 CG 位）。若该门控未开，
+DMA 引擎收到 START 也不会动作，表现正好是"永不完成 → 超时"。验证方式：
+在 `hostEnableDma()` 之前确认 TOPCKGEN/CG 中 MSDC 的 DMA 相关位已使能；
+MT6765/MT6762 的时钟门控位需要从 Linux/EDK2 参考确认。
+
+其次：MT6762 的 GPD/BD 描述符格式可能与 MT8167 不同（位域或字段顺序），
+需要对照 `dmaDescriptors()` 与目标 SoC 的手册/参考实现。
+
+### 当前可工作状态
+
+DMA 与时钟实验都用启动参数关闭（`native-msdc-dma` / `native-msdc-clock` 默认 0），
+镜像 `bcd3a7913e2411ac42c08981c4fabd3bcbf9bd92e3ec31b0a85eb4cd97b0e9a1`
+回到"launchd 持续运行、存储 320 KB/s"的状态。

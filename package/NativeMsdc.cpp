@@ -330,16 +330,21 @@ IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
   result = hostPrepareData (blocks);
   if (result != kIOReturnSuccess) return result;
   wr (kMsdcCfg, rd (kMsdcCfg) & ~kCfgPio);
+  // Arm the engine before the card starts sending.  With the descriptors programmed only after the
+  // read command, the data phase has no destination and the transfer never completes: the PIO
+  // comparison reported kIOReturnTimeout (0xe00002d6) for exactly this reason.
+  wr (kDmaSaHigh, 0);
+  wr (kDmaSa, uint32_t (gHost.dmaPhys));
+  wr (kDmaLength, 0);
+  // Checksum validation is off for this experiment: if the engine rejects the descriptors it never
+  // starts, which is exactly the kIOReturnTimeout the PIO comparison reports.
+  wr (kDmaCfg, rd (kDmaCfg) & ~kDmaCfgChecksum);
+  wr (kDmaCtrl, (rd (kDmaCtrl) & ~(kDmaCtrlStart | kDmaCtrlStop | kDmaCtrlLastBuffer | kDmaCtrlBurstMask)) |
+                kDmaCtrlDescriptor | kDmaCtrlBurst64);
+  wr (kDmaCtrl, rd (kDmaCtrl) | kDmaCtrlStart);
   result = hostCommand (multi ? kCmdReadMulti : kCmdReadSingle, argument, multi ? Data::ReadMulti : Data::ReadSingle,
                         &response);
   if (result == kIOReturnSuccess) {
-    wr (kDmaSaHigh, 0);
-    wr (kDmaSa, uint32_t (gHost.dmaPhys));
-    wr (kDmaLength, 0);
-    wr (kDmaCfg, rd (kDmaCfg) | kDmaCfgChecksum);
-    wr (kDmaCtrl, (rd (kDmaCtrl) & ~(kDmaCtrlStart | kDmaCtrlStop | kDmaCtrlLastBuffer | kDmaCtrlBurstMask)) |
-                  kDmaCtrlDescriptor | kDmaCtrlBurst64);
-    wr (kDmaCtrl, rd (kDmaCtrl) | kDmaCtrlStart);
     uint64_t end = deadlineAfter (kCommandTimeoutNs);
     for (;;) {
       uint32_t interrupts = rd (kMsdcIntr) & (kIntXferDone | kIntDataErrors | kIntDmaErrors);
