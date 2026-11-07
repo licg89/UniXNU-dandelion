@@ -89,8 +89,9 @@ volatile uint32_t native_msdc_blocks_published = 0;
 volatile uint64_t native_msdc_reads = 0, native_msdc_writes = 0, native_msdc_flushes = 0, native_msdc_failures = 0;
 // Transfers that stalled once and then succeeded on a whole-transfer retry.
 volatile uint64_t native_msdc_retries = 0;
-// MSDC_CFG.CKDIV in effect after bring-up; the bootloader value is reported alongside it.
+// MSDC_CFG.CKDIV and MSDC_IOCON read-data sampling delay in effect after bring-up.
 volatile uint32_t native_msdc_clock_divider = 0;
+volatile uint32_t native_msdc_sample_delay = 0;
 // Optional verified-root snapshot reuse: hits, misses, authenticated bytes reused.
 volatile uint64_t native_msdc_verified_cache_stats[3] = {};
 // read calls/requested bytes/ns, verify calls/bytes/ns; no hot-path logging.
@@ -550,38 +551,90 @@ void hostLogMode (const uint8_t *extCsd, uint32_t inheritedCfg)
 
 // ---- Bring-up --------------------------------------------------------------------------------------------------------
 
-// The bootloader leaves MSDC_CFG.CKDIV at the value it used for slow enumeration.  Measured on the
-// phone it is 260, which holds reads near 320 KB/s even though the card reports HS_TIMING=1 and
-// 8-bit DDR.  Mapping a dyld shared cache needs hundreds of megabytes, so try progressively faster
-// dividers and keep the first one whose reads still match a reference sector; a mismatch restores
-// the inherited value, so a wrong guess costs nothing.
+// The bootloader leaves MSDC_CFG.CKDIV at the value it used for slow enumeration (measured 260) and
+// MSDC_IOCON's read-data sampling delay at 0.  That pair only works at the slow rate: raising the
+// divider alone made "Failed to mount root device", because the sampling point has to move with the
+// bus rate.  Sweep both and keep the first pair whose reads still match references taken at the
+// inherited settings; anything that does not verify restores the inherited registers, so a wrong
+// guess costs nothing.  A bad pair normally fails fast with a CRC error rather than timing out.
+static const uint32_t kSweepSectors[] = { 0x40, 0x4000, 0x20000 };
+constexpr unsigned kSweepCount = sizeof (kSweepSectors) / sizeof (kSweepSectors[0]);
+
+// A failed single-block read can leave the card mid-transfer; SEND_STATUS until it reports the
+// transfer state again, otherwise every later command in the sweep fails for the wrong reason.
+void hostRecoverAfterError (void)
+{
+  for (unsigned i = 0; i < 50; i++) {
+    uint32_t response = 0;
+    if (hostCommand (kCmdStatus, kStatusArgument, Data::None, &response) == kIOReturnSuccess &&
+        cardInTransfer (response)) {
+      return;
+    }
+    IODelay (200);
+  }
+}
+
+bool hostSweepMatches (const uint8_t *reference)
+{
+  uint8_t *candidate = gHost.bounce + kSweepCount * kSector;
+  for (unsigned i = 0; i < kSweepCount; i++) {
+    if (hostReadPio (kCmdReadSingle, kSweepSectors[i], candidate, 1) != kIOReturnSuccess) {
+      hostRecoverAfterError ();
+      return false;
+    }
+    if (memcmp (reference + i * kSector, candidate, kSector) != 0) {
+      hostRecoverAfterError ();
+      return false;
+    }
+  }
+  return true;
+}
+
 void hostRaiseClock (void)
 {
   if (!gHost.bounce) return;
   uint8_t *reference = gHost.bounce;
-  uint8_t *candidate = gHost.bounce + kDmaSelfTestBlocks * kSector;
-  if (hostReadPio (kCmdReadSingle, kDmaSelfTestSector, reference, kDmaSelfTestBlocks) != kIOReturnSuccess) {
-    IOLog ("NativeMsdc: clock unchanged; the reference read failed\n");
-    return;
-  }
-  const uint32_t cfg = rd (kMsdcCfg);
-  const unsigned inherited = (cfg >> 8) & 0xfffu;
-  static const unsigned dividers[] = { 4, 8, 16, 32, 64 };
-  for (unsigned i = 0; i < sizeof (dividers) / sizeof (dividers[0]); i++) {
-    const unsigned divider = dividers[i];
-    if (divider >= inherited) break;
-    wr (kMsdcCfg, (cfg & ~(0xfffu << 8)) | ((divider & 0xfffu) << 8));
-    IODelay (2000);
-    IOReturn result = hostReadPio (kCmdReadSingle, kDmaSelfTestSector, candidate, kDmaSelfTestBlocks);
-    if (result == kIOReturnSuccess && memcmp (reference, candidate, kDmaSelfTestBlocks * kSector) == 0) {
-      native_msdc_clock_divider = divider;
-      IOLog ("NativeMsdc: clock divider %u accepted (was %u)\n", divider, inherited);
+  for (unsigned i = 0; i < kSweepCount; i++) {
+    if (hostReadPio (kCmdReadSingle, kSweepSectors[i], reference + i * kSector, 1) != kIOReturnSuccess) {
+      IOLog ("NativeMsdc: clock tuning skipped; a reference read failed\n");
       return;
     }
   }
-  wr (kMsdcCfg, cfg);
+  const uint32_t cfg0 = rd (kMsdcCfg), iocon0 = rd (kMsdcIoCon);
+  const unsigned inherited = (cfg0 >> 8) & 0xfffu;
+  static const unsigned dividers[] = { 4, 8, 16, 32 };
+  static const unsigned samples[] = { 0, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56 };
+  // The root device wait loop runs after this and has its own timeout, so the sweep must stay
+  // short: a stalled candidate costs up to the full command deadline.
+  const uint64_t budget = deadlineAfter (8000000000ULL);
+  for (unsigned d = 0; d < sizeof (dividers) / sizeof (dividers[0]); d++) {
+    if (dividers[d] >= inherited) continue;
+    for (unsigned s = 0; s < sizeof (samples) / sizeof (samples[0]); s++) {
+      if (mach_absolute_time () > budget) {
+        wr (kMsdcCfg, cfg0);
+        wr (kMsdcIoCon, iocon0);
+        hostRecoverAfterError ();
+        native_msdc_clock_divider = inherited;
+        IOLog ("NativeMsdc: clock sweep budget spent; kept %u/0\n", inherited);
+        return;
+      }
+      wr (kMsdcCfg, (cfg0 & ~(0xfffu << 8)) | ((dividers[d] & 0xfffu) << 8));
+      wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((samples[s] & 0x3fu) << 16));
+      IODelay (1000);
+      if (hostSweepMatches (reference)) {
+        native_msdc_clock_divider = dividers[d];
+        native_msdc_sample_delay = samples[s];
+        IOLog ("NativeMsdc: clock divider %u sample %u accepted (was %u/0)\n",
+               dividers[d], samples[s], inherited);
+        return;
+      }
+    }
+  }
+  wr (kMsdcCfg, cfg0);
+  wr (kMsdcIoCon, iocon0);
+  hostRecoverAfterError ();
   native_msdc_clock_divider = inherited;
-  IOLog ("NativeMsdc: clock divider kept at %u; faster settings did not verify\n", inherited);
+  IOLog ("NativeMsdc: clock tuning found no stable pair; kept %u/0\n", inherited);
 }
 
 bool listHas (OSObject *property, const char *wanted)
@@ -921,10 +974,10 @@ const char *loadPolicy (void)
     return "policy read-only protection";
   }
   gPolicy.key = key;
-  IOLog ("NativeMsdc: signed root policy read in %llu ms, %u entries, %llu reads, %llu retries, %llu failures, ckdiv %u\n",
+  IOLog ("NativeMsdc: signed root policy read in %llu ms, %u entries, %llu reads, %llu retries, %llu failures, ckdiv %u/%u\n",
       elapsed / 1000000ULL, gPolicy.header.count,
       (unsigned long long)native_msdc_reads, (unsigned long long)native_msdc_retries,
-      (unsigned long long)native_msdc_failures, native_msdc_clock_divider);
+      (unsigned long long)native_msdc_failures, native_msdc_clock_divider, native_msdc_sample_delay);
   return nullptr;
 }
 

@@ -3698,3 +3698,59 @@ mode source mux_valid=1 mux_reg=00000300 msdc0_mux=0 source_hz=unmeasured
 
 `boot-data.img` sha256 `5f8e475ed940d96dbaed5a4e964118bffb2494fecb964476550ffff040d2c822`
 （时钟实验已用参数关闭，回到 launchd 能持续运行的状态）。
+
+---
+
+## 0.65 时钟/采样调优是破坏性的；改为长时观察（2026-11-07 22:0x–22:2x）
+
+### 新增的遥测事实
+
+`native-msdc-mode=1` 打印的寄存器原文：
+
+```
+mode raw inherited=02210499 cfg=02210499 iocon=00000010 sdc=ff027ffc pad0=00000000 pad1=00000000
+```
+
+解码：
+
+| 寄存器 | 字段 | 值 |
+| --- | --- | --- |
+| `MSDC_CFG` (0x00) | `ckdiv` (19:8) | **260** ← 慢速枚举遗留 |
+| | `ckmod` (21:20) | 2（数据模式）|
+| | `ddr` (bit 7) | 1 |
+| | `PIO` (bit 3) | 1 |
+| `MSDC_IOCON` (0x04) | `R_D_SMPL` (21:16) | **0** ← 读数据采样延迟 |
+| `SDC_CFG` (0x30) | `BUSWIDTH` (17:16) | 2（8-bit）|
+
+即：卡侧高速（`hs_timing=01`、8-bit DDR），但控制器分频 260、采样延迟 0 —— 这个组合只在
+慢速下成立。
+
+### 两次调优尝试都破坏根卷（重要负面结果）
+
+| 尝试 | 结果 |
+| --- | --- |
+| `hostRaiseClock()` v1：逐个降分频，单扇区回读比对 | `Failed to mount root device` |
+| `hostRaiseClock()` v2：分频 × 采样点二维扫描（4 分频 × 16 采样），三扇区比对，失败后 `CMD13` 恢复到 transfer 态，并加 8 秒总预算 | 仍然 `Failed to mount root device` |
+
+镜像 hash 已核对（`223BFE05…` 与构建输出一致），**不是刷错** ✓。
+
+### 结论
+
+**任何一次在错误时钟/采样下失败的读，都会把卡留在无法自行恢复的状态** —— 这个驱动
+「从不 reset/retune」（HANDOFF 0.10 起就如此），没有控制器复位手段，所以扫描式试错
+本身是破坏性的。要真正提速必须：
+
+1. 实现 **MSDC 控制器复位 + 卡重新初始化**（CMD0/CMD1/ACMD41/CMD2/CMD3/CMD9/CMD7 + 时钟切换），
+   然后才能在安全的边界内换速率；
+2. 或拿到该 SoC（MT6762/MT6765）**确定的** MSDC 时钟源与 TDsel/RDsel 取值（Linux/EDK2 参考），
+   一次性设对，不做扫描；
+3. 或修好 DMA（DMA 路径存在但一开就挂根卷，失败点未定位）。
+
+### 当前采取的策略
+
+时钟实验用 `native-msdc-clock=1` 控制，**默认关闭**；`hostRaiseClock()` 代码保留（含恢复与预算），
+留给上面 1/2/3 任一条件具备时再启用。
+
+同时改为**长时观察**：以 PIO 320 KB/s 让系统跑 60 分钟以上，确认 dyld 是"慢"而不是"卡死"
+（判据：心跳 `procs` 从 2 开始增长、`reads` 继续上升）。可工作镜像
+`8342578ff29196bddd2503f462510d7cf9d733fd4fcdc92ae665522e5397df72`。
