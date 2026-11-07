@@ -51,6 +51,105 @@ EMPTY_DIRS = ('keybags', 'mobile/tmp', 'tmp', 'run')
 # Copied into the seed but huge and replaceable on first boot.
 SKIP_DIRS = ('staged_system_apps',)
 
+# Preference and launchd files the reference port (UniXNU-merlinx, MT6768) ships in its Data seed.
+# Without them the boot stops before the home screen: watchdogd kills a slow user space, Setup
+# Assistant keeps purplebuddy in front of SpringBoard, and backboardd asks for framebuffer
+# features this board does not implement. Entries are (path, uid, gid, mode, plist content).
+SEED_FILES = (
+    ('db/com.apple.xpc.launchd/disabled.plist', 0, 0, 0o644, {
+        'com.apple.watchdogd': True,
+        'com.apple.bluetoothd': True,
+        'com.apple.cryptexd': True,
+        'com.apple.PerfPowerServices': True,
+        'com.apple.liveactivitiesd': True,
+        'com.apple.ScreenTimeAgent': True,
+        'com.apple.dmd': True,
+        'com.apple.UsageTrackingAgent': True,
+    }),
+    ('db/com.apple.xpc.launchd/disabled.501.plist', 0, 0, 0o644, {
+        'com.apple.ScreenTimeAgent': True,
+        'com.apple.dmd': True,
+        'com.apple.UsageTrackingAgent': True,
+        'com.apple.cryptexd': True,
+    }),
+    ('mobile/Library/Preferences/com.apple.springboard.plist', 501, 501, 0o600, {
+        'FBLaunchWatchdogScale': 20.0,
+        'BKNoWatchdogs': True,
+        'FBLaunchWatchdogExceptions': {'com.apple.purplebuddy': 100.0},
+        'MCForceShowCloudConfigurationUI': False,
+        'SBDisableAutoDim': True,
+        'SBDontDimOrLockOnAC': True,
+        'SBDisableIdleSleep': True,
+    }),
+    ('mobile/Library/Preferences/com.apple.frontboard.plist', 501, 501, 0o600, {
+        'FBLaunchWatchdogScale': 20.0,
+    }),
+    ('mobile/Library/Preferences/com.apple.purplebuddy.plist', 501, 501, 0o600, {
+        'SetupDone': True,
+        'SetupFinishedAllSteps': True,
+        'SetupVersion': 11,
+        'SetupState': 'SetupUsingAssistant',
+        'ForceNoBuddy': True,
+        'daemonizeNeedsToRun': False,
+    }),
+    ('mobile/Library/Preferences/com.apple.purplebuddy.notbackedup.plist', 501, 501, 0o600, {
+        'ShouldRunDiagnosticsMiniBuddy': False,
+        'ShouldRunHSA2MiniBuddy': False,
+        'ShouldRunKeychainSyncMiniBuddy': False,
+        'ShouldRunMesaMiniBuddy': False,
+        'ShouldRunPaymentMiniBuddy': False,
+        'ShouldRunStandardMiniBuddy': False,
+        'SilentICDPUpgrade': False,
+    }),
+    ('mobile/Library/Preferences/com.apple.managedconfiguration.notbackedup.plist',
+     501, 501, 0o600, {
+         'LockdownActivationIndicatesCloudConfigurationAvailable': False,
+     }),
+    ('mobile/Library/Preferences/com.apple.migration.plist', 501, 501, 0o600, {
+        'LastSystemVersion': '21H461',
+        'DMLastMigrationResults': {'success': True, 'buildVersion': '21H461'},
+        'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': '21H461'},
+    }),
+    ('mobile/Library/Preferences/backboardd.plist', 501, 501, 0o644, {
+        'CAEnableDeepFramebuffer': False,
+        'CAEnableFramebufferCompression': False,
+        'CAEnableIOSurfaceCompression': False,
+    }),
+    ('mobile/Library/Preferences/.GlobalPreferences.plist', 501, 501, 0o644, {
+        'CAEnableDeepFramebuffer': False,
+        'CAEnableFramebufferCompression': False,
+        'CAEnableIOSurfaceCompression': False,
+    }),
+    ('root/Library/Preferences/backboardd.plist', 0, 0, 0o644, {
+        'CAEnableDeepFramebuffer': False,
+        'CAEnableFramebufferCompression': False,
+        'CAEnableIOSurfaceCompression': False,
+    }),
+    ('root/Library/Preferences/.GlobalPreferences.plist', 0, 0, 0o644, {
+        'CAEnableDeepFramebuffer': False,
+        'CAEnableFramebufferCompression': False,
+        'CAEnableIOSurfaceCompression': False,
+    }),
+)
+
+
+def write_seed_files(root: Path) -> int:
+    """Write SEED_FILES under root; returns how many were written."""
+    written = 0
+    for relative, uid, gid, mode, content in SEED_FILES:
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open('wb') as stream:
+            plistlib.dump(content, stream)
+        os.chmod(destination, mode)
+        try:
+            os.chown(destination, uid, gid)
+        except PermissionError:
+            # Ownership needs root; the mode and contents are what the boot depends on.
+            pass
+        written += 1
+    return written
+
 
 def fail(message: str) -> None:
     # The workflow runner turns this into a run annotation, which is the one
@@ -222,6 +321,8 @@ def main() -> int:
         for name in EMPTY_DIRS:
             (mount / name).mkdir(parents=True, exist_ok=True)
         os.chmod(mount / 'tmp', 0o1777)
+        step('writing the preference and launchd files the boot needs')
+        seed_files = write_seed_files(mount)
     finally:
         subprocess.run(['hdiutil', 'detach', device], check=True)
 
@@ -237,6 +338,7 @@ def main() -> int:
         'container_bytes': container_bytes,
         'files': count,
         'file_bytes': total,
+        'seed_files': seed_files,
         'skipped_dirs': list(SKIP_DIRS),
         'output': str(args.output),
         'output_sha256': hashlib.sha256(args.output.read_bytes()).hexdigest(),

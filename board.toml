@@ -167,7 +167,7 @@ title = "UniXNU"
 #
 trust_cache_sha256 = "4563bdbf6ed8f72237d45dbba3ccde432634338f95c10d79d5d4631678a97c7c"
 kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1", "sheng-no-lc=1", "sheng-skip-cs=1",
-               "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480", "root-unverified=1", "native-msdc-mode=1"]
+               "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480", "native-msdc-mode=1", "launchd_unsecure_cache=1", "wdt=-1", "ignition_level=1", "-no_slto_panic", "sheng-aks=1"]
 #
 # amfi_get_out_of_my_way=1 keeps AMFI's policy checks relaxed for this developer
 # image.  cs_enforcement_disable=1 was tried and removed: AMFI refuses it outright
