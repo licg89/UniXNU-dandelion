@@ -3393,3 +3393,66 @@ rm -rf out/<device>/<profile>/<config>/tree/.cache/xnu-work
 打印 `/private/preboot`、缓存目录、缓存文件三层 lookup errno、缓存文件大小，
 以及 `KAUTH_VNODE_SEARCH` / `KAUTH_VNODE_READ_DATA` 的授权结果 ——
 即 dyld 作为用户进程是否**被允许**读那个缓存。
+
+---
+
+## 0.61 dyld 缓存是"空壳"：证据链与后续（2026-11-07 13:0x）
+
+### 结论
+
+随 IPSW 发布的 cryptex 里，`/System/Library/Caches/com.apple.dyld/` 下的缓存是**占位文件**：
+主文件 480 KiB、`.01` 109 MiB、`.02` 约 0、`.symbols` 654 MiB，而**主文件和 `.01` 的
+`imagesCount` 都是 0**（内核直接读文件头得到的，不经任何中间层）：
+
+```
+D4K hdr: e=0 rd=0 | "dyld_v1   arm64" mappingOffset=0x200 mappingCount=1
+                    imagesOffset=0 imagesCount=0
+D4K split: main maps=1 imgs=0 | .01 maps=1 imgs=0
+D4K alt:  err 2 2 2 0 | MiB -1 -1 -1 654
+```
+
+dyld 打开它 → 发现没有镜像 → 放弃 → 报
+`Library not loaded: /usr/lib/libSystem.B.dylib (no such file, no dyld cache)`。
+这与"路径不可见/权限不足/union 未建立/Data 卷失败"无关，那些都已用测量排除（§0.55–§0.58）。
+
+### 已排除的替代解释
+
+| 假设 | 排除依据 |
+| --- | --- |
+| 窗口被截断 | SHNGROOT 清单里 SystemOS 窗口 3,303,014,400 字节 = dmg 大小，完全一致 |
+| 缓存在 OS 卷 | 直接扫 OS dmg：`dyld_shared_cache_arm64` 0 次；SystemOS 里 226 次 |
+| 缓存在 cryptex 的嵌套前缀下 | `System/Cryptexes/OS/...` 与 `/private/preboot/System/Library/dyld` 全部 ENOENT |
+| 权限/只读限制 | `auth 0 0 0`（SEARCH、READ_DATA 全部允许）|
+| carrier 授权不过 | 七项条件打印全过（edir/efile/dir/reg/dirmnt/same/root_same/diff 均正常）|
+| 内核没编进 carrier 代码 | 内核内 `native_owner_cache_carrier_accepts` 等符号存在 |
+
+### IPSW / OTA 结构调查（离线）
+
+- IPSW 分量：`OS=044-76040-038.dmg`(4 GiB)、`Cryptex1,SystemOS=044-76034-038.dmg`(3.1 GiB)、
+  `Cryptex1,AppOS=044-75188-038.dmg`(10 MiB)、`RestoreRamDisk=044-75545-038.dmg`(176 MiB)
+  —— 只有前两个可能承载缓存，二者都已包含在我们的 userdata 里 ✓；
+- `Ap,SystemVolumeCanonicalMetadata`（`044-76040-038.dmg.mtree`，23 MiB）是**加密的 IM4P**，
+  无法直接当文件清单用 ✗；
+- OTA（`.../be8c2838….zip`，5.28 GB）的分量表显示
+  `AssetData/payloadv2/image_patches/cryptex-system-arm64e` = 930,796,582 字节、**未压缩存储** ✓
+  已按 range 下载成功，但它以 `RIDIFF10` 容器套 `pbzx`/xz 分块封装，
+  原始字节里**没有任何明文缓存字符串**（全压缩）；
+  框架与 `ipsw` CLI 都不认这个容器（`ipsw ota payload` 要求 YAA1/AA01）✗。
+
+### 使用的工具
+
+`blacktop/ipsw` v3.1.743（Linux x86_64，单文件）已下载到 `/root/work/ipsw-cli/ipsw` ✓
+能力：`extract --dyld`（IPSW/OTA）、`ota payload|extract`、`dyld`、`kernel`、`mount`。
+其 `--remote` 模式因 Apple CDN 未声明 `Accept-Ranges` 而拒绝（实际 curl 的 range 可用）✗，
+所以改为**本地下载 IPSW 再提取**。
+
+### 进行中
+
+后台任务正在下载完整 IPSW（6.8 GB）并执行
+`ipsw extract --dyld`，输出到 `/root/work/dyld-out`。
+两种结果：
+
+1. **拿到几百 MB~GB 的真实缓存** → 说明我们读到的 480 KiB 不是全部，把它接入
+   `OWNER_CACHE_CARRIER` 的 `/private/preboot` 路径即可推进；
+2. **拿到的仍是空壳** → 确认 IPSW 不含真实缓存，需要从已 restore 的设备的 Preboot 取，
+   或改用 16.x 的 OS profile 做 bring-up。

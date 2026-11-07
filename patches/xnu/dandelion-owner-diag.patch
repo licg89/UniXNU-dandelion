@@ -6,26 +6,26 @@
  	if (data_error) panic("offline scratch Data mount failed: %d", data_error);
  #endif
 +	{
-+		/* dyld is a user-space process: what matters is whether it may search the path and
-+		 * read the file, not merely that a kernel lookup succeeds. */
-+		vnode_t d = NULLVP, f = NULLVP, pb = NULLVP;
++		/* The cache files under the plain path are stubs (0 images).  The cryptex may instead
++		 * hold the real set under its own System/Cryptexes/OS prefix. */
 +		vfs_context_t ctx = vfs_context_current();
-+		off_t fsize = -1;
-+		int e_pb = vnode_lookup("/private/preboot", 0, &pb, ctx);
-+		int e_d = vnode_lookup("/private/preboot/System/Library/Caches/com.apple.dyld",
-+		                       0, &d, ctx);
-+		int e_f = vnode_lookup(
-+		    "/private/preboot/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
-+		    0, &f, ctx);
-+		int e_sz = f ? (int)vnode_size(f, &fsize, ctx) : -99;
-+		int auth_pb = pb ? (int)vnode_authorize(pb, NULL, KAUTH_VNODE_SEARCH, ctx) : -99;
-+		int auth_d = d ? (int)vnode_authorize(d, NULL, KAUTH_VNODE_SEARCH, ctx) : -99;
-+		int auth_f = f ? (int)vnode_authorize(f, NULL, KAUTH_VNODE_READ_DATA, ctx) : -99;
-+		panic("D4K perms: epb=%d ed=%d ef=%d esz=%d size=%lld | auth %d %d %d",
-+		    e_pb, e_d, e_f, e_sz, (long long)fsize, auth_pb, auth_d, auth_f);
-+		if (pb) vnode_put(pb);
-+		if (d) vnode_put(d);
-+		if (f) vnode_put(f);
++		static const char *paths[] = {
++			"/private/preboot/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
++			"/private/preboot/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64.01",
++			"/private/preboot/System/Library/dyld",
++			"/private/preboot/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64.symbols",
++		};
++		long long mib[4];
++		int err[4];
++		for (int i = 0; i < 4; i++) {
++			vnode_t v = NULLVP;
++			off_t sz = -1;
++			err[i] = vnode_lookup(paths[i], 0, &v, ctx);
++			mib[i] = (!err[i] && v && (int)vnode_size(v, &sz, ctx) == 0) ? (long long)(sz >> 20) : -1;
++			if (v) vnode_put(v);
++		}
++		panic("D4K alt: err %d %d %d %d | MiB %lld %lld %lld %lld",
++		    err[0], err[1], err[2], err[3], mib[0], mib[1], mib[2], mib[3]);
 +	}
  #if CONFIG_MEMORYSTATUS
  	(void) memorystatus_init_at_boot_snapshot();
