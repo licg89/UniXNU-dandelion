@@ -3805,3 +3805,68 @@ MT6765/MT6762 的时钟门控位需要从 Linux/EDK2 参考确认。
 DMA 与时钟实验都用启动参数关闭（`native-msdc-dma` / `native-msdc-clock` 默认 0），
 镜像 `bcd3a7913e2411ac42c08981c4fabd3bcbf9bd92e3ec31b0a85eb4cd97b0e9a1`
 回到"launchd 持续运行、存储 320 KB/s"的状态。
+
+---
+
+## 0.67 参考 UniXNU-merlinx：真正缺的是 Data seed 内容（2026-11-07 23:3x–23:5x）
+
+### 同代 SoC 的完整参考
+
+用户提供 `https://github.com/Dracen-W/UniXNU-merlinx`（Redmi Note 9，**MT6768**，同一代 MSDC 控制器）。
+其设备记录 `docs/.vitepress/device-records/merlinx-gytis283123.toml` 的存储条目写着：
+
+> *"NativeEmmc replaces the timed-out UEFI storage path. The kernel mounts SystemOS, **executes
+> initproc and reaches launchd, xpcproxy and SpringBoard**. The macOS-generated Data seed mounts
+> read-write and **disables watchdogd through the launchd disabled plist**."*
+
+即：**同代 SoC、同样纯 PIO 驱动，他们到了 SpringBoard** ✗ 所以 §0.64/0.66 的"带宽是唯一墙"
+判断不完整 —— 带宽是慢，但不是停住的唯一原因。
+
+### 与 merlinx 的配置差异（已全部采纳）
+
+| 项目 | merlinx | 我们（改前）| 现在 |
+| --- | --- | --- | --- |
+| `OWNER_ROOT_AUDIT` / `OWNER_ROOT_TRUST` | =y | =n（未验证实验）| **=y** |
+| `OWNER_UNION_SYSTEMOS` | =y | =n | **=y**（与 carrier 同时开）|
+| `OWNER_CACHE_CARRIER` | =y | =y | =y |
+| `launchd_unsecure_cache` | =1 | 无 | **=1** |
+| `wdt` | =-1（关看门狗）| 无 | **=-1** |
+| `ignition_level` | =1 | 无 | **=1** |
+| `-no_slto_panic` / `sheng-aks=1` | 有 | 无 | 有 |
+
+注意 `DYLD_SHARED_CACHE_DIR=` 的内核字符串计数因此变为 0 —— union 模式下框架不设该环境变量，
+缓存通过 union 在默认路径可见，这是预期行为。
+
+### 真正缺失的：Data seed 里的 12 个文件
+
+merlinx 的 `data-seed.json` 有 84 个目录 + **12 个文件**；我们的 seed 从 OS 卷的 `private/var`
+复制（39 个文件、611 KB），**一个都没有** ✗
+
+| 文件 | 关键内容 | 没有它会怎样 |
+| --- | --- | --- |
+| `db/com.apple.xpc.launchd/disabled.plist` | `com.apple.watchdogd: true` 等 8 项 | 看门狗杀掉慢速用户态 |
+| `db/com.apple.xpc.launchd/disabled.501.plist` | 用户级 4 项 | 同上 |
+| `mobile/.../com.apple.springboard.plist` | `BKNoWatchdogs`、`FBLaunchWatchdogScale 20.0` | SpringBoard 被看门狗终止 |
+| `mobile/.../com.apple.frontboard.plist` | `FBLaunchWatchdogScale 20.0` | 同上 |
+| `mobile/.../com.apple.purplebuddy.plist` | `SetupDone`/`ForceNoBuddy: true` | 停在设置向导，进不了主屏 |
+| `mobile/.../purplebuddy.notbackedup.plist` | 关闭各 mini buddy | 同上 |
+| `mobile/.../managedconfiguration.notbackedup.plist` | `LockdownActivation...: false` | 配置检查阻塞 |
+| `mobile/.../com.apple.migration.plist` | 迁移已完成标记 | 重复迁移检查 |
+| `mobile/.../backboardd.plist`、`root/.../backboardd.plist` | 关闭 deep FB / FB 压缩 / IOSurface 压缩 | 无 GPU 时 backboardd 起不来 |
+| `mobile/.../.GlobalPreferences.plist`、`root/.../.GlobalPreferences.plist` | 同上 | 同上 |
+
+### 已实施
+
+`scripts/build-data-seed.py` 新增 `SEED_FILES`（12 项，含 uid/gid/mode 与 plist 内容）与
+`write_seed_files()`，在复制 `private/var` 之后写入，并记入报告 `seed_files`。
+本地已用 `importlib` 载入该模块、在临时目录执行 `write_seed_files()` 验证：**12/12 生成、权限正确**。
+
+seed 需要 macOS 的 `hdiutil`，所以走 `.github/workflows/data-seed.yml`（macOS runner）。
+提交 `b74625d` 已推送，CI 运行 `42388131020` 正在构建新 seed。
+
+### 下一步
+
+1. 下载新 seed artifact，替换 `out3/data-seed/dandelion-data.dbr`，重建镜像并刷入；
+2. 观察是否出现 `xpcproxy`/`SpringBoard`（心跳 `procs` 应开始增长）；
+3. 若仍停在 launchd：用 `boot-ui-focus=launchd` 等 focus 参数采样卡点；
+4. 显示仍是后续独立任务（`CONFIG_XNU_NATIVE_LEGACY_DISPLAY` + `build-gop-legacy-display.py`）。
