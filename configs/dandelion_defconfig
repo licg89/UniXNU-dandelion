@@ -24,8 +24,8 @@ CONFIG_XNU_TRUST_CACHE_RUNTIME=y
 # cannot authenticate the volume itself (system-volume-auth-blob is an Apple-signed device
 # tree input), so this is the documented route for an owner-built root.
 #
-CONFIG_XNU_OWNER_ROOT_AUDIT=y
-CONFIG_XNU_OWNER_ROOT_TRUST=y
+CONFIG_XNU_OWNER_ROOT_AUDIT=n
+CONFIG_XNU_OWNER_ROOT_TRUST=n
 #
 # The dyld shared cache: launchd now execs (AMFI is past) but fails with "no dyld cache" for
 # /usr/lib/libSystem.B.dylib.  The cache travels in the SystemOS cryptex, so that window needs

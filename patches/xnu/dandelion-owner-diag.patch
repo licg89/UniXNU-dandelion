@@ -1,32 +1,23 @@
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -8188,7 +8188,29 @@
- #if defined(XNU_OWNER_DATA_MOUNT) && XNU_OWNER_DATA_MOUNT
- 	int data_error = native_owner_data_prepare(p, (user_addr_t)scratch_addr);
- 	if (data_error) panic("offline scratch Data mount failed: %d", data_error);
- #endif
-+	{
-+		/* The cache files under the plain path are stubs (0 images).  The cryptex may instead
-+		 * hold the real set under its own System/Cryptexes/OS prefix. */
-+		vfs_context_t ctx = vfs_context_current();
-+		static const char *paths[] = {
-+			"/private/preboot/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
-+			"/private/preboot/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64.01",
-+			"/private/preboot/System/Library/dyld",
-+			"/private/preboot/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64.symbols",
-+		};
-+		long long mib[4];
-+		int err[4];
-+		for (int i = 0; i < 4; i++) {
-+			vnode_t v = NULLVP;
-+			off_t sz = -1;
-+			err[i] = vnode_lookup(paths[i], 0, &v, ctx);
-+			mib[i] = (!err[i] && v && (int)vnode_size(v, &sz, ctx) == 0) ? (long long)(sz >> 20) : -1;
-+			if (v) vnode_put(v);
+@@ -8237,5 +8237,20 @@
+ 	error = ENOENT;
+ 	for (i = 0; i < sizeof(init_programs) / sizeof(init_programs[0]); i++) {
++		if (i == 0) {
++			/* init_envp is user memory: a NULL-terminated array of user pointers. */
++			user64_addr_t vec[2] = {0, 0};
++			char buf[96];
++			int e1 = copyin(init_envp, vec, sizeof(vec));
++			int e2 = -1;
++			buf[0] = 0;
++			if (!e1 && vec[0]) {
++				e2 = copyin(vec[0], buf, sizeof(buf) - 1);
++				buf[95] = 0;
++			}
++			panic("D4K envp: ptr=0x%llx e1=%d vec0=0x%llx e2=%d env='%s'",
++			    (unsigned long long)init_envp, e1,
++			    (unsigned long long)vec[0], e2, buf);
 +		}
-+		panic("D4K alt: err %d %d %d %d | MiB %lld %lld %lld %lld",
-+		    err[0], err[1], err[2], err[3], mib[0], mib[1], mib[2], mib[3]);
-+	}
- #if CONFIG_MEMORYSTATUS
- 	(void) memorystatus_init_at_boot_snapshot();
- #endif /* CONFIG_MEMORYSTATUS */
+ 		printf("load_init_program: attempting to load %s\n", init_programs[i]);
+ 		error = load_init_program_at_path(p, (user_addr_t)scratch_addr, init_programs[i], init_envp);
+ 		if (!error) {

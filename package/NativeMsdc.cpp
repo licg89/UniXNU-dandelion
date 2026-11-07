@@ -87,6 +87,8 @@ volatile uint32_t native_msdc_manifest_status = 0xffffffff;
 volatile uint32_t native_msdc_dma = 0;                      // 0 PIO, 1 DMA verified, 2 DMA rejected, 3 quarantined
 volatile uint32_t native_msdc_blocks_published = 0;
 volatile uint64_t native_msdc_reads = 0, native_msdc_writes = 0, native_msdc_flushes = 0, native_msdc_failures = 0;
+// Transfers that stalled once and then succeeded on a whole-transfer retry.
+volatile uint64_t native_msdc_retries = 0;
 // Optional verified-root snapshot reuse: hits, misses, authenticated bytes reused.
 volatile uint64_t native_msdc_verified_cache_stats[3] = {};
 // read calls/requested bytes/ns, verify calls/bytes/ns; no hot-path logging.
@@ -470,14 +472,23 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
   if (gHost.poisoned) return kIOReturnNotReady;
   if (!blocks || blocks > kMaxBlocks || sector >= gHost.diskSectors || blocks > gHost.diskSectors - sector)
     return kIOReturnBadArgument;
-  // No retry here on purpose: a retried read can leave a partially refreshed buffer, and the
-  // verified reader hashes every block, so a retry after a stall becomes a hash mismatch and a
-  // refused window -- the boot stopped at "offline owner SystemOS mount failed: 80" when this was
-  // tried.  The longer command deadline above is the safe part of that change.
-  IOReturn result;
-  if (write) result = hostWrite (uint32_t (sector), buffer, blocks);
-  else if (gHost.dmaEnabled) result = hostReadDma (uint32_t (sector), buffer, blocks);
-  else result = hostReadPio (kCmdReadSingle, uint32_t (sector), buffer, blocks);
+  // A stall is retried as a whole transfer, never resumed.  hostReadPio clears the FIFO
+  // (hostPrepareData) and refills the buffer from offset zero on every attempt, so a retry
+  // cannot leave stale bytes behind and the verified reader still hashes a complete, freshly
+  // read block.  An earlier attempt resumed a partially filled buffer instead, which is what
+  // turned a stall into a window hash mismatch ("offline owner SystemOS mount failed: 80").
+  // Reads are retried; a write is left alone because its data path is not the bottleneck.
+  IOReturn result = kIOReturnTimeout;
+  const unsigned attempts = write ? 1u : 3u;
+  for (unsigned attempt = 0; attempt < attempts; attempt++) {
+    if (write) result = hostWrite (uint32_t (sector), buffer, blocks);
+    else if (gHost.dmaEnabled) result = hostReadDma (uint32_t (sector), buffer, blocks);
+    else result = hostReadPio (kCmdReadSingle, uint32_t (sector), buffer, blocks);
+    if (result == kIOReturnSuccess) break;
+    // A rejected argument or a poisoned engine will not improve with another attempt.
+    if (result == kIOReturnBadArgument || gHost.poisoned) break;
+    if (attempt + 1 < attempts) __atomic_fetch_add (&native_msdc_retries, 1, __ATOMIC_RELAXED);
+  }
   if (result != kIOReturnSuccess) __atomic_fetch_add (&native_msdc_failures, 1, __ATOMIC_RELAXED);
   else __atomic_fetch_add (write ? &native_msdc_writes : &native_msdc_reads, 1, __ATOMIC_RELAXED);
   return result;
@@ -865,7 +876,10 @@ const char *loadPolicy (void)
     return "policy read-only protection";
   }
   gPolicy.key = key;
-  IOLog ("NativeMsdc: signed root policy read in %llu ms, %u entries\n", elapsed / 1000000ULL, gPolicy.header.count);
+  IOLog ("NativeMsdc: signed root policy read in %llu ms, %u entries, %llu reads, %llu retries, %llu failures\n",
+      elapsed / 1000000ULL, gPolicy.header.count,
+      (unsigned long long)native_msdc_reads, (unsigned long long)native_msdc_retries,
+      (unsigned long long)native_msdc_failures);
   return nullptr;
 }
 

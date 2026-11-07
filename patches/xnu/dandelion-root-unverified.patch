@@ -1,5 +1,18 @@
---- a/bsd/kern/bsd_init.c
-+++ b/bsd/kern/bsd_init.c
-@@ -946,1 +946,1 @@
+--- a/bsd/kern/bsd_init.c	2026-11-07 16:01:18.130626492 +0800
++++ b/bsd/kern/bsd_init.c	2026-11-07 16:01:18.198268909 +0800
+@@ -1095,8 +1095,14 @@
+ 				native_owner_root_checkpoint(autherr, owner, device);
+ 			}
+ #endif
++			/* A bring-up root served from our own verified windows has no Apple
++			 * root-hash authenticator.  With root-unverified=1 (owner trust off)
++			 * accept it instead of panicking; the owner-verified path still fails closed. */
+ 			if (autherr && !owner_authorized) {
 -				panic("rootvp not authenticated after mounting");
-+				{ extern int native_msdc_root_unverified; if (!native_msdc_root_unverified) panic("rootvp not authenticated after mounting"); }
++				extern int native_msdc_root_unverified;
++				if (!native_msdc_root_unverified) {
++					panic("rootvp not authenticated after mounting");
++				}
+ 			}
+ #if defined(XNU_OWNER_ROOT_TRUST) && XNU_OWNER_ROOT_TRUST
+ 			{

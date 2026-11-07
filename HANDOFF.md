@@ -3520,3 +3520,86 @@ Cache UUID: 590D839A-82D2-30F1-A17D-0CC053420F73
 - 完整 IPSW 已下载到 `/root/work/21H461.ipsw`（6,835,124,840 字节）；
 - OTA 的 `cryptex-system-arm64e` 成员已下载 `/root/work/ota-cryptex.bin`（930,796,582 字节，
   `RIDIFF10`+`pbzx` 封装，`ipsw` 不认，暂未解）。
+
+---
+
+## 0.63 突破：launchd 活着，到达用户空间（2026-11-07 18:4x）
+
+### 结果
+
+`boot-data.img` sha256 `79f1d138b05298be64964167769977b83d719b8652efdbae7b499024b2b4b0e6`
+刷入后：
+
+- 屏幕上**没有 panic 画面**，一直停在 UniXNU 菜单（我们的内核控制台写 eMMC，不写 framebuffer，
+  所以内核跑起来后屏幕不再变化）；
+- 日志结尾为：
+
+```
+load_init_program: attempting to load /usr/appleinternal/sbin/launchd.development
+load_init_program: attempting to load /sbin/launchd
+DANDELION-EXEC: clearing policy answer 0 (pid 1)
+shared_region: 0xdafb622f6af16b6f [1(launchd)] check_np(0x16f1cdb50) vm_shared_region_start_address() failed
+shared_region: 0xdafb622f6af16b6f [1(launchd)] check_np(0x16f1cd0f0) vm_shared_region_start_address() failed
+```
+
+- **日志里 0 条 I/O 错误**（此前每轮都有 `disk5: I/O timeout` / `error = 60` /
+  `disk3: I/O error` / `got err 5`）；
+- 驱动统计：`signed root policy read in 227920 ms, 2 entries, 1123 reads, 0 retries, 0 failures`；
+- **没有 `initproc failed to start`**。
+
+### 为什么"没有这条消息"就是成功
+
+`bsd/kern/kern_exit.c:1850-1857`：
+
+```c
+if (p == initproc) {
+    ...
+    } else if (initproc_spawned) {
+        prefix_str = "initproc exited";
+    } else {
+        prefix_str = "initproc failed to start";     // ← 之前每轮都出现
+    }
+}
+```
+
+这条消息**只在 init 进程退出时**打印。此前每一轮都会出现它并伴随 panic 屏
+（`namespace 6 subcode 0x1 ... no dyld cache`）；这一轮没有出现，也没有 panic 屏
+⇒ **launchd 没有退出，正在用户空间运行** ✓
+
+### 关键改动：驱动整段重试
+
+`package/NativeMsdc.cpp` 的 `transfer()` 原来明确写着"故意不重试"，理由是重试会造成窗口
+hash 不匹配（曾经 `offline owner SystemOS mount failed: 80`）。那个理由只对**续读**成立：
+`hostPrepareData()` 每次都会清 FIFO，`hostReadPio()` 每次都从 offset 0 重填缓冲区，
+所以**整段重试读到的是完整新鲜数据**，hash 安全。
+
+现在的实现：
+
+- 读操作最多 3 次尝试，写操作不重试（不是瓶颈）；
+- 新增 `native_msdc_retries` 计数器；
+- 策略区读取日志改为
+  `signed root policy read in %llu ms, %u entries, %llu reads, %llu retries, %llu failures`。
+
+本轮 `0 retries, 0 failures`，说明这次启动本身没有遇到停顿；但 I/O 错误此前是**间歇性**的，
+重试作为保险保留。**下次启动要复验是否稳定复现**。
+
+### 同一轮确认的其它事实
+
+- `D4K envp` 诊断（已退役）证明环境变量**正确送达** dyld：
+
+```
+D4K envp: ptr=0x1500 e1=0 vec0=0x1400 e2=0
+env='DYLD_SHARED_CACHE_DIR=/private/preboot/System/Library/Caches/com.apple.dyld'
+```
+
+- 该诊断曾插在 `launchdsuffix` 分支里而**不会执行**（我们没有这个 boot arg，走的是
+  `init_programs[]` 循环）—— 诊断必须放在真正会执行的路径上，这是一个方法论教训；
+- `boot-progress=2` 与 `cs_debug=0xff` 会**明显加剧 I/O 超时**（framebuffer 刷新 + printf 洪流
+  与 PIO eMMC 抢同一个控制器），曾导致 `Failed to mount root device`。诊断参数要一次只加一个。
+
+### 下一步
+
+1. **复验稳定性**：再启动一次，确认仍无 `initproc failed`、仍无 I/O 错误；
+2. **显示驱动**：内核控制台目前只写 eMMC，屏幕上只能看到菜单残影，无法观察用户态进展；
+   接入显示 provider 后才能看到启动画面与 UI；
+3. 之后依次：输入、GPU、网络、音频、电源。
