@@ -3940,3 +3940,59 @@ read trace sector=83773007      ← +48,383
 - merlinx 配置全部采纳（验证根 / union+carrier / `launchd_unsecure_cache` / `wdt=-1` /
   `ignition_level=1` / `-no_slto_panic` / `sheng-aks=1`）✓
 - 心跳在 `load_init_program` 之前启动、记录 360 拍（2 小时），可无人值守观察 ✓
+
+---
+
+## 0.69 给 54 个缓存文件加 trust cache 授权：没有改变读取量（2026-11-08 01:5x–02:2x）
+
+### 做法
+
+用 apfs-fuse 挂载 cryptex，对 `root/System/Library/Caches/com.apple.dyld/` 下**全部 54 个文件**
+解析 SuperBlob 里的 CodeDirectory 并取 SHA-256（脚本 `/mnt/d/aios/_work/cache_cdhashes.py`
+思路：`dyld_cache_header.codeSignatureOffset`(0x48) → `CSMAGIC_EMBEDDED_SIGNATURE` →
+索引里的 `CSMAGIC_CODEDIRECTORY` → 其字节的 SHA-256），截断为 20 字节写入 trust cache。
+
+重建后的 bundle（`out3/apple-trustcache.bundle`，62,680 字节）三段模块：
+
+```
+module 0: v2, 2478 entries   (044-76040-038 OS)
+module 1: v2,   76 entries   (044-76034-038 SystemOS)
+module 2: v2,   54 entries   (dyld 缓存全集，新增)
+PASS: the bundle matches the layout DarwinBoot validates
+```
+
+### 结果：读取量没有下降
+
+镜像 `075f129c…` 刷入后，心跳与上一版**完全一致**：
+
+```
+D4K beat 0 : procs=2 pid1stat=2 | reads=1555 retries=8   failures=0
+D4K beat 62: procs=2 pid1stat=2 | reads=4777 retries=133 failures=0
+```
+
+仍是每 20 秒约 50 次读（≈3.2 MB），累计 21 分钟约 300 MB —— **顺序扫读继续** ✗
+所以这股读取**不是**"逐文件 cdhash 未授权导致的哈希" ✗，信任缓存这条路没有解决 §0.68 的问题。
+
+### 位置核对
+
+读扇区落在 83.6M–90.0M，而这个区间正是 **SystemOS 窗口**（userdata 从 71,690,207 扇区起，
+OS 窗口 6,077,580,800 字节 ≈ 11.87M 扇区 → SystemOS 窗口自 ≈83.56M 扇区开始）✓
+即它**按目录顺序把每个缓存文件从头读到尾** ✓
+
+### 现在的判断
+
+带宽 96 kHz 是硬约束（§0.68）。任何需要读几百 MB 的路径都要几十分钟到几小时 ✗
+而真正能让它变快的两条路都还没打通：
+
+1. **提高卡时钟** —— 需要 MT6762 的 `def_tune_para`（iocon / pad_tune）与源时钟门控位；
+   这些在**厂商 Android 内核的 `mtk-sd.c` 里按 SoC 给出**，是下一步最该去找的东西
+   （公开的 MT6762/MT6765 内核源码里 `dev_comp` 表就有 `pad_tune_reg` / `default_tune` 值）；
+2. **减少读取量** —— 文件级 trust cache 无效，需要定位到底是 dyld 还是内核在顺序读；
+   可先用"按 pid 打印读请求"的驱动诊断区分，或去掉 `launchd_unsecure_cache=1` 复测
+   （该参数来自 merlinx，但可能让 dyld 走重建缓存而非映射的路径）。
+
+### 今晚最终状态
+
+`procs` 始终为 2、`pid1stat=2`（SRUN）、`failures=0` —— 系统活着、在读、不崩，但被带宽卡住。
+所有配置（12 个 seed 文件、merlinx 开关、54 个缓存 cdhash、心跳、读追踪、时钟切换代码）
+都已提交；`native-msdc-clock` / `native-msdc-dma` 默认关闭。
