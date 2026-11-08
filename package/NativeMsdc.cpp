@@ -283,6 +283,8 @@ IOReturn hostReadPio (unsigned opcode, uint32_t argument, uint8_t *buffer, uint3
         }
         if (interrupts & kIntXferDone) done = true;
       }
+      // MSDC_FIFOCS reports the receive level in bytes here: this must stay a byte count, because
+      // treating it as words stopped the root volume from mounting at all when it was tried.
       unsigned available = rd (kMsdcFifoCs) & 255u;
       while (available && offset < total) {
         if (available >= 4 && total - offset >= 4) {

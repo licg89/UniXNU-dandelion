@@ -573,17 +573,24 @@ static inline VerifiedReadResult verifiedReadWindow (Ops &ops, uint64_t windowBy
     uint64_t base = first * kVerifiedBlock;
     uint64_t chunk = blocks * kVerifiedBlock;
     if (chunk > windowBytes - base) chunk = windowBytes - base;      // the window's short last block
-    result.status = ops.read (base / kSector, uint32_t (chunk / kSector), bounce);
-    if (result.status) break;
-    for (uint64_t index = 0; index < blocks; ++index) {
-      uint64_t offset = index * kVerifiedBlock;
-      if (offset >= chunk) {
-        result.status = ops.badArgument ();
-        break;
-      }
-      uint64_t length = chunk - offset < kVerifiedBlock ? chunk - offset : kVerifiedBlock;
-      result.status = ops.verify (first + index, bounce + offset, size_t (length));
+    // A block that fails its hash is usually a marginal bus read rather than a corrupt window, so
+    // re-read and re-verify the chunk before refusing it.  Without this a divider that is fast but
+    // occasionally misreads makes the whole window unusable, which is exactly what divider 4 did.
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+      result.status = ops.read (base / kSector, uint32_t (chunk / kSector), bounce);
       if (result.status) break;
+      for (uint64_t index = 0; index < blocks; ++index) {
+        uint64_t offset = index * kVerifiedBlock;
+        if (offset >= chunk) {
+          result.status = ops.badArgument ();
+          break;
+        }
+        uint64_t length = chunk - offset < kVerifiedBlock ? chunk - offset : kVerifiedBlock;
+        result.status = ops.verify (first + index, bounce + offset, size_t (length));
+        if (result.status) break;
+      }
+      // Only a hash mismatch is worth retrying; a real I/O error or a bad argument is not.
+      if (result.status != kIOReturnNotPrivileged) break;
     }
     if (result.status) break;
     // All bytes in this exact chunk passed authentication, including short tails.

@@ -4238,3 +4238,50 @@ NativeMsdc: SystemOS: read of sectors 1461536+8 refused, a block failed its sign
    更保守设置**；
 3. 稳定后继续推进：现在 `procs` 已到 82，下一步看服务图里谁失败（watchdogd 被 SIGTRAP 杀掉，
    说明 `disabled.plist` 未生效，需确认 seed 里 launchd 的 disabled 列表是否被读取）。
+
+---
+
+## 0.76 分频 8 不通过验证；FIFO 字数的猜测被硬件否定（2026-11-08 17:4x–18:1x）
+
+### 分频复测结果
+
+| 分频 | 结果 |
+| --- | --- |
+| 4 | ✅ 验证通过，吞吐 ≈25 MB/s，`procs` 到 82–92、pid 到 134 |
+| 8 | ✗ `divider 8 did not verify; keeping 260` —— 验证失败并回退 |
+| 16 | ✗ 缓存挂载 `mount()` 返回 ENOENT（`D4K cache: err=2 stage=3 status=2`）|
+
+即分频与稳定性不是单调关系，**只有 4 实测可用** ✓
+
+### 重要纠正：哈希失败与时钟无关
+
+在**回退到 260** 的那次启动里同样出现 5 次哈希失败：
+
+```
+NativeMsdc: verify 275902 len 4096 data 6672616d 65776f72 got 40675bb4 want c5fdd957
+```
+
+所以"验证读偶发误码"是**既有问题**，与提速无关 ✗ —— 之前把它归因于分频 4 是错的 ✓
+
+### 一次被硬件否定的猜测（记录下来免得重犯）
+
+推测 `MSDC_FIFOCS` 的 RX 计数是**字**而不是字节，于是把 drain 循环改成"每次读 1 个字、
+`available -= 1`"。结果**根卷直接挂不上** ✗ —— 说明该计数确实是**字节数** ✓
+原实现（`available >= 4` 才读整字、否则单字节）是正确的 ✓ 已原样回退并在注释里写明，
+避免以后再次尝试同一改动。
+
+### 当前配置（工作状态）
+
+镜像 `9a532bb5`：`native-msdc-clk=4` + 校验读哈希重试（4 次）✓
+- 分频 4 通过验证 ✓
+- 吞吐 ≈25 MB/s（比 226 KB/s 快约 110 倍）✓
+- 服务图运行，`procs` 82–92、pid 到 134 ✓
+- 已知残留：验证读到偶发误码（任何分频均有），重试机制可吸收一部分 ✓
+
+### 下一步
+
+1. 定位偶发误码的真正来源：PIO drain 已排除字数问题，下一步看
+   `kMsdcIntr` 与 FIFO 的交互（例如 XferDone 与残余字节的处理），或用 DMA 路径对比；
+2. 3.6 GB 缓存现在只需几分钟，可以开始快速迭代服务图问题（`backboardd` / `SpringBoard`）；
+3. `disabled.plist` 未生效（watchdogd 仍被启动并 SIGTRAP 终止），需确认 launchd 是否读取
+   Data 卷上的 `db/com.apple.xpc.launchd/disabled.plist`。
