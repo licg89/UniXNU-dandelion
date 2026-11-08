@@ -4285,3 +4285,51 @@ NativeMsdc: verify 275902 len 4096 data 6672616d 65776f72 got 40675bb4 want c5fd
 2. 3.6 GB 缓存现在只需几分钟，可以开始快速迭代服务图问题（`backboardd` / `SpringBoard`）；
 3. `disabled.plist` 未生效（watchdogd 仍被启动并 SIGTRAP 终止），需确认 launchd 是否读取
    Data 卷上的 `db/com.apple.xpc.launchd/disabled.plist`。
+
+---
+
+## 0.77 稳定到 100 个进程；最后一处是 PIO 数据通路的完整性（2026-11-08 18:2x–19:0x）
+
+### 本轮数据（镜像 `9a532bb5`：分频 4 + 哈希重试）
+
+```
+NativeMsdc: ckdiv 4 (from 260) ... clock divider 4 sample 0 verified
+NativeMsdc: verify 177555 ... got a6fcfbf0 want eaa49cc3     ← 仅 1 次哈希失败（上一轮 5 次）
+D4K beat 25: procs=94 reads=108831 retries=47 failures=0
+DANDELION-EXEC: clearing policy answer 0 (pid 27 / 28 / 43 / 89)
+amfid[47] triggered unnest of range 0x1fd400000->0x1fd600000 of DYLD shared region
+pid 176 = watchdogd（SIGTRAP 终止）
+```
+
+- **`procs` 峰值 100** ✓（上一轮 62）
+- **哈希失败降到 1 次** ✓ —— 校验读重试机制有效 ✓
+- 服务图持续派生进程（pid 一路到 **176**）✓
+- **`amfid` 正常运行并映射 DYLD 共享区域** ✓ 用户态框架已经跑通
+
+### 新发现：控制台写入也会产生乱码
+
+日志尾部在 `D4K beat 25` 之后出现乱码（`ÄAGsëO a«~ÊÛ1iÙÎ…`）✗ 而不是正常文本 ✓
+控制台与读盘走**同一条 PIO 路径** ✓ 于是：
+
+- 读：偶发误码 → 窗口哈希失败 ✓
+- 写：偶发误码 → 日志乱码 ✓
+
+**同一个根因：PIO 数据通路存在偶发数据损坏** ✗✓✓ 这是目前唯一的硬件层遗留问题 ✓
+
+### 已排除
+
+- 不是分频问题（260 下同样出现）✓
+- 不是 FIFO 字/字节计数（`MSDC_FIFOCS` 确为字节数，改动会直接挂根卷）✓
+- 不是校验读重试缺失（已加入，失败数 5 → 1）✓
+
+### 下一步：查 PIO 数据完整性
+
+候选方向：
+
+1. **XferDone 与残余字节的交互**：`if (offset == total && !busy && !fifo)` 提前返回时，
+   若最后一个字的低字节顺序或半字处理有误，会出现固定位置的单字节错乱；
+2. **多块读的边界**：`kMaxBlocks` 与 `SET_BLOCK_COUNT` 的组合是否与卡的分块大小匹配；
+3. **对比 DMA 路径**：DMA 自检当初以 `kIOReturnTimeout` 失败（§0.66），若 DMA 修好可作为
+   交叉验证 —— 同一份数据用两条路径读，不一致即为 PIO 的问题；
+4. **降低并发**：当前控制台写入与 APFS 读共用驱动锁，改为控制台仅在安全窗口写，
+   可观察乱码是否消失（用于区分"控制器并发"与"单次传输内部"的损坏）。
