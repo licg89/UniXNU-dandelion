@@ -4505,3 +4505,47 @@ bash /mnt/d/aios/_work/build_with_bootstrap.sh
 `build_clean_patch.sh` 每次都删 `.cache/xnu-work`，因此**每次都要重新下载上游源码** ✗
 网络不稳时会连续失败。若只是改了**已应用的补丁内容**，可改用"不删树 + 手动反向应用旧补丁 →
 应用新补丁"的流程节省时间与网络 ✓
+
+---
+
+## 0.84 framebuffer 控制台：pexpert 也无法访问 framebuffer（2026-11-08 22:2x–22:4x）
+
+### 编译问题的根因（已修）
+
+第一次插入时锚点选成 `emmc_transmit_data(uint8_t c)`，代码落在 **`static void` 与函数名之间** ✗
+于是所有声明变成函数内局部，编译报
+`pe_serial.c:1073: variable has incomplete type 'void'` 与一串
+`use of undeclared identifier 'fb_x'` ✓ 改为锚定 **`static void`** 那一行后编译通过 ✓
+（`build_clean_patch.sh` 现在会打印 build log 与 kernel.log 里的错误 ✓ 之前错误被警告淹没 ✗）
+
+### 运行结果：pexpert 写 framebuffer 直接 data abort
+
+```
+Invalid kernel stack pointer (probable corruption), at pc 0xfffffff0074330c4
+x12: 0x000000007ec50000        ← framebuffer 基址
+x24: 0x000000096000005        ← ESR 数据中止
+esr: 0x9600004f                far: 0xfffffff007befe38
+```
+
+即 **pexpert 阶段同样无法直接访问 0x7ec50000** ✗ 它运行在固件留下的页表上，那里没有该映射 ✓
+（驱动阶段也失败过：§0.82 的 `far: 0x000000007ec50000` ✓ 同一原因 ✓）
+
+### 结论：framebuffer 控制台必须放在内核里
+
+| 位置 | 能否写 framebuffer | 原因 |
+| --- | --- | --- |
+| pexpert（`pe_serial.c`）| ✗ data abort | 固件页表，无映射 |
+| kext 驱动 | ✗ data abort | 内核页表，无映射（需 `IODeviceMemory::map()`，已验证可用 ✓）|
+| **内核本体**（有 pmap）| ✅ 应可行 | panic 屏就是这么做的 ✓ |
+
+所以正确做法是二选一：
+
+1. **内核侧钩 printf/IOLog**，用 `pmap` 或 `IODeviceMemory` 映射后绘制（写法已验证 ✓）；
+2. 或让控制台补丁在**驱动加载之后**改走驱动提供的回调 —— 但 pexpert 的早期日志会丢 ✓
+
+`patches/xnu/dandelion-fb-console.patch` 保留（字体 + 绘制 + 钩子都已正确 ✓），
+只是**不能跑在 pexpert 里** ✓ 当前 `device-emmc-log-console.patch` 已恢复为可用版本 ✓
+
+### 设备状态
+
+镜像 `b5f22927` = 工作配置（分频 4、无 fb 代码）✓
