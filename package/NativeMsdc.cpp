@@ -1520,13 +1520,15 @@ void publishThread (void *, wait_result_t)
     gPending[index] = nullptr;          // owned by the registry from here on
     native_msdc_blocks_published = native_msdc_blocks_published + 1;
     IOLog ("NativeMsdc: published %s\n", device->windowLabel ());
-    if (position + 1 == gPlan.count) {
-      device->release ();
-      break;
-    }
+    // Every window gets the readiness wait, including the last one.  Skipping it for the final
+    // window meant the OS window -- the one the root volume lives on -- was never confirmed, and
+    // the root mount raced against its APFS volume appearing.
     bool ready = false;
-    for (unsigned tick = 0; tick < 300 && !(ready = volumeBelow (device)); ++tick) IOSleep (100);
-    IOLog ("NativeMsdc: %s volume %s\n", device->windowLabel (), ready ? "ready" : "not seen after 30 s");
+    // Two minutes, not thirty seconds: on this board the APFS volume below a window needs a while
+    // to appear at the bootloader's bus rate, and the root mount gives up if the media is not there
+    // by then.  The log line records which window made it.
+    for (unsigned tick = 0; tick < 1200 && !(ready = volumeBelow (device)); ++tick) IOSleep (100);
+    IOLog ("NativeMsdc: %s volume %s\n", device->windowLabel (), ready ? "ready" : "not seen after 120 s");
     device->release ();
   }
   // Raise the card clock only now.  Doing it during bring-up broke the root mount: the console is

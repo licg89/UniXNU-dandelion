@@ -4180,3 +4180,61 @@ framebuffer）才拿到 `D4K clock:` 结果 ✓ —— 以后凡是"探测可能
 `native-msdc-clock` / `native-msdc-clk` 均已关闭，回到 `4a57497b` 的等效配置：
 慢速总线（分频 260）、launchd 能运行（约 5.5 小时读缓存后打印日志）。
 驱动内的时钟代码（含正确序列、4 点验证、panic 报告、`native-msdc-clk` 选档）全部保留。
+
+---
+
+## 0.74 系统跑起来了：80 个进程、14.7 MB/s、分频 4 生效（2026-11-08 14:5x–16:1x）
+
+### 两个关键修复
+
+**1. 发布循环漏掉了最后一个窗口的就绪等待**（真实 bug）
+
+`publishThread()` 原来是：
+
+```c
+if (position + 1 == gPlan.count) { device->release (); break; }   // 最后一个窗口直接跳过
+bool ready = false;
+for (unsigned tick = 0; tick < 300 && !(ready = volumeBelow (device)); ++tick) IOSleep (100);
+```
+
+**最后一个窗口正是 OS 窗口 —— 根卷的载体** ✗ 它从不等待就绪，于是根卷挂载与 APFS 卷出现
+赛跑，多数情况下输掉 → `Failed to mount root device` ✓
+移除该分支、并把握手等待从 30 秒延长到 120 秒后，日志出现
+`NativeMsdc: OS volume ready` + `disk5s1 mount-complete ...OS` ✓ **根卷问题彻底解决** ✓
+
+**2. 时钟提速移到 `publishThread` 结尾**
+
+在 bring-up 阶段改时钟会连带弄坏控制台（日志与存储同源），并且根卷挂不上 ✗
+移到所有窗口发布并确认就绪之后，策略区读取仍走原速（228 秒），之后的大流量读取走高速 ✓
+
+### 实测结果（镜像 `2879a843…`，`native-msdc-clk=4`）
+
+```
+NativeMsdc: ckdiv 4 (from 260), dtoc 255 -> 255, cfg 02200499
+NativeMsdc: clock divider 4 sample 0 verified
+NativeMsdc: clock settled at divider 4 sample 0 (inherited 260)
+```
+
+- `cfg=02200499` 解出 `CKDIV = 4` ✓（260 → 4）
+- 心跳：`procs` 从 **2 涨到 82** ✓✓✓（beat 22 出现首个子进程，beat 31 到 82）
+- `reads` 从 3404 → 144,891（32 拍 / 640 秒）→ **14.7 MB/s** ✓ 与预测的 14 MB/s 一致
+- `pid 100` 是 **watchdogd** ✓ 标准系统守护进程 → **launchd 服务图完整启动** ✓✓✓
+
+### 新问题：分频 4 对校验读不稳定
+
+```
+NativeMsdc: verify 182692 len 4096 ... got 8e7d13e0 want 6c37a5e9
+NativeMsdc: SystemOS: read of sectors 1461536+8 refused, a block failed its signed hash
+（同类失败 3 次）
+```
+
+分频 4 下窗口的**逐块哈希校验偶尔读出错误数据** ✗ 即 4 点采样验证不足以保证整盘可靠 ✓
+**判据现在很明确**：验证窗口的哈希失败数 ✓ —— 0 次才算可用 ✓
+
+### 下一步
+
+1. 用分频 **16 / 32** 复测，找到"哈希失败为 0"的最快分频（预计 8–16 倍，5.5 小时 → 20–40 分钟）；
+2. 若都失败，则说明需要**重新调 pad 采样点**（`native-msdc-smp` 已有开关）或启用 **8-bit 之外的
+   更保守设置**；
+3. 稳定后继续推进：现在 `procs` 已到 82，下一步看服务图里谁失败（watchdogd 被 SIGTRAP 杀掉，
+   说明 `disabled.plist` 未生效，需确认 seed 里 launchd 的 disabled 列表是否被读取）。

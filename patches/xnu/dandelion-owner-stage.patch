@@ -1,0 +1,12 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8181,7 +8181,8 @@
+ 	user_addr_t init_envp = USER_ADDR_NULL;
+ #if defined(XNU_OWNER_CACHE_MOUNT) && XNU_OWNER_CACHE_MOUNT
+ 	int cache_error = native_owner_cache_prepare(p, (user_addr_t)scratch_addr, &init_envp);
+-	if (cache_error) panic("offline owner SystemOS mount failed: %d", cache_error);
++	if (cache_error) panic("D4K cache: err=%d stage=%d status=%d",
++	    cache_error, (int)native_owner_cache_stage, native_owner_cache_mount_status);
+ #endif
+ #if defined(XNU_OWNER_DATA_MOUNT) && XNU_OWNER_DATA_MOUNT
+ 	int data_error = native_owner_data_prepare(p, (user_addr_t)scratch_addr);
