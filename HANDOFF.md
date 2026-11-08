@@ -4752,3 +4752,43 @@ CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
 
 （`scripts/unixnu/tree.py` 用 `$ROOT` 指向框架根；`.config` 实际在
 `out/<device>/<profile>/<device>/.config`，以该脚本里已有的路径变量为准。）
+
+---
+
+## 0.89 显示栈：唯一剩余的是框架的"跳过判定"（2026-11-08 23:3x–23:4x）
+
+### 已验证通过的部分
+
+显示接线就位后，构建的 archives 阶段**全部通过**，包括：
+
+```
+archive-06-build-arm-driver.log:
+  NativeGOPPresenter: -Werror build and arm64-apple-ios17.0 object audit passed
+```
+
+以及早前已验证的 `tree/build/native-legacy-display/libNativeLegacyDisplay.late.a`（1.0 MB）✓
+
+即：组件声明、`kits/dandelion` 路径、工具链替换、胶水代码、ABI 表**全部正确** ✓
+
+### 唯一剩余问题
+
+接线后 `make` **从不执行** ✗ —— 构建脚本报告
+`kernel unchanged (the framework skipped its step)`，
+即使 `kernel.py` 的 `linux_env()` 已经传入 `XNU_NATIVE_LEGACY_DISPLAY=1` ✓
+
+说明框架判断"内核是否需要重建"时**不把该环境变量计入变化** ✗
+（它大概只比较 `.config`、补丁、archives 列表的哈希 ✓ 而 `EXTRA_CFLAGS` 来自 env ✓ 不在其中）
+
+**下次的解法**（三选一）：
+
+1. 让框架的跳过判定把 `EXTRA_CFLAGS`/env 也计入 ✓（改 `kernel.py` 的判定逻辑）；
+2. 直接让该开关进 `.config` 的 **CFLAGS 派生**（框架已有 `bsd_init.o_CFLAGS_ADD` 这种机制 ✓
+   可仿照给需要的文件加 `-DXNU_NATIVE_LEGACY_DISPLAY=1` ✓）；
+3. 临时手段：接线后先 `touch` 一个内核源文件或删掉
+   `out/.../kernel/kernel.macho` 触发重建 ✗（后者会破坏 `derive-storage-symbols.py` 的引导 ✗
+   —— 用 `touch` 补丁/配置更安全 ✓）。
+
+### 当前状态
+
+接线已回退 ✓ 镜像 `678c0396` = 工作配置 ✓（内核 `70045421`、分频 4）✓
+显示资产全部在仓库里 ✓ 下次只需解决"跳过判定"这一件事 ✓
