@@ -5251,3 +5251,44 @@ image 03662823
 **不要删 `tree/build`** ✗ —— 它含两个引导依赖 ✓
 正确做法：**改补丁内容**（框架按内容哈希判定 ✓，例如给补丁加一行注释 ✓）✓
 本轮就是这样触发内核重编译的 ✓
+
+---
+
+## 0.98 显示版镜像已刷入，等待日志验证（2026-11-09 03:33）
+
+### 已刷入
+
+```
+镜像 03662823（03:32 构建，内核 51675136 字节 = 含显示栈）
+刷入时间 03:33:30
+运行 10 分钟后设备仍不在 USB = 未 panic ✓（否则会停在 panic 屏 ✓）
+```
+
+### 待验证（需要 fastboot 读 eMMC 日志）
+
+用户睡醒后：手机进 fastboot ✓ 然后读日志确认：
+
+1. **屏幕是否亮起** —— 最直接的判据 ✓
+2. eMMC 日志里是否出现 `NativeLegacyDisplay` / `native_legacy_stage=N` ✓
+   （胶水代码 `DandelionLegacyDisplay.cpp` 里有分阶段标记 ✓ 值从 0 到 8 ✓）
+3. 系统是否仍走到 `Early boot complete. Continuing system boot.` ✓
+4. `vm_page_bootstrap` 页数（应仍是 65536 ✓ 内存修复待 UEFI ✓）
+
+### 若显示没起来
+
+按 `native_legacy_stage` 的值定位：
+
+| stage | 含义 |
+| --- | --- |
+| 0–2 | 早期注册/匹配阶段 ✓ |
+| 3–5 | 建立 IOCLient / 打开 framebuffer ✓ |
+| 6 | `DISP FAIL` 分支 ✓ |
+| 7–8 | fallback 路径 ✓ |
+
+stub 掉的 `native_gop_text` / `native_gop_redraw_ring` 只影响**启动进度文字** ✓
+不影响 `IOMobileFramebufferLegacy` 提供者本身 ✓
+
+### 全部提交
+
+- 设备仓库：`802a410`
+- UEFI 仓库：`03aaa42`
