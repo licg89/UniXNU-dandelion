@@ -4426,3 +4426,41 @@ DARWINBOOT: video base=0x7ec50000 row=2944 width=720 height=1600 depth=32
 
 镜像 `9a532bb5` / 等效配置：`native-msdc-clock=1` + `native-msdc-clk=4`
 → 分频 4 验证通过、13–25 MB/s、`procs` 90–100、pid 176、哈希失败 1–5 次（重试兜底）。
+
+---
+
+## 0.82 framebuffer 文字控制台：映射与绘制已验证，但钩错了地方（2026-11-08 20:5x–21:3x）
+
+### 已经验证成功的部分
+
+在驱动里实现 `fbConsoleInit/Put/Write`（复用 panic 屏的 5×12 字体、2 倍放大、95 个字形），
+并确认了三件事：
+
+1. **framebuffer 必须映射**：直接写物理地址 `0x7ec50000` 会 data abort（
+   `Kernel data abort ... far: 0x000000007ec50000`），改用
+   `IODeviceMemory::withRange(...)->map(kIOMapAnywhere)` 后正常 ✓
+2. **几何参数正确**：`base=0x7ec50000 row=2944 720×1600 32bpp` ✓
+3. **可见区覆盖全屏**：在 y=100/500/900/1300 各画一行标定文字，**四行全部可见** ✓
+   —— 所以 reference port 记录的"可见扫描输出偏移"在本机不存在 ✓
+
+### 钩子位置错了
+
+「灰屏无字」的原因：`device-emmc-log-console.patch` **并不调用**
+`native_msdc_console_sink()` ✗ —— 它是**独立的内核 C 实现**（自带 `emmc_write_block()` 等），
+所以驱动里的 sink 从未被调用 ✓ 把绘制放在 sink 里自然永远不会执行 ✓
+
+（另外我把绘制放在了"驱动忙就返回"的守卫之后，即使 sink 被调用也几乎不会执行 ✗ 两个错误叠加。）
+
+### 下次的正确做法
+
+在 `device-emmc-log-console.patch` 的 **`emmc_flush()` 开头**把当前 `emmc_sector` 的文本画到
+framebuffer ✓ 该补丁里需要：
+- 自带 95 个字形表（可从 `xnu-panic-screen.c` 的 GLYPH_FONT 复制 ✓ 760 字节）
+- **自行映射 framebuffer**（内核 C 里可用 IOMemoryDescriptor，或复用 panic 屏的映射方式）
+
+驱动侧的 `fbConsole*` 实现保留（映射与绘制的写法已验证 ✓），只是当前未启用。
+
+### 当前配置
+
+`native-fb` 已关闭（开着会清屏但不显示内容 ✗），镜像 `4755fcc5`，
+等于工作配置：`native-msdc-clock=1` + `native-msdc-clk=4`，启动到 90–100 进程 ✓

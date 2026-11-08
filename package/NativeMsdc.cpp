@@ -1403,9 +1403,145 @@ void NativeMsdcBlock::free ()
 // The eMMC console's own polled-PIO sequence stops working once this driver has touched the card,
 // so the console patch hands a failed block here.  This is the same single-block write the whole
 // port already uses, so it works wherever the driver does.
+
+// ---- Framebuffer text console ---------------------------------------------------------------------------------------
+// The kernel console is an eMMC block, so the screen shows nothing while the system runs and the log
+// dies with the card.  Drawing the same characters into the firmware framebuffer needs no display
+// driver: the geometry comes from the DarwinBoot handoff and the glyphs are the 5x12 font the panic
+// screen uses.  Addresses are written directly, the way the panic screen does.
+static uint64_t gFbFont[95] = {
+    0x0000000000000000, 0x0842108000020084,
+    0x0005294000000000, 0x15F528000000295F,
+    0x1C52F88000023E94, 0x088556400004D542,
+    0x04528800000B2725, 0x0002108000000000,
+    0x0421108800821042, 0x1084108200221108,
+    0x0957548000000000, 0x3E42000000000084,
+    0x0000000000223000, 0x3E00000000000000,
+    0x0000000000471000, 0x0884420000008442,
+    0x2318A88000022A31, 0x08429880000F9084,
+    0x1108C5C0000F8444, 0x1C4443E000074610,
+    0x14A62100000423E9, 0x26D087E000074610,
+    0x1E10C5C000074631, 0x088443E000010844,
+    0x1D18C5C000074631, 0x3D18C5C000074610,
+    0x08E2000000471000, 0x08E2000000223000,
+    0x0222220000082082, 0x01F00000000003E0,
+    0x2082082000008888, 0x1108C5C000020084,
+    0x2B98C5C0000F05B5, 0x2318A8800008C63F,
+    0x1D2949E00007CA52, 0x0210C5C000074421,
+    0x252949E00007CA52, 0x1E1087E0000F8421,
+    0x1E1087E000008421, 0x0210C5C000074639,
+    0x3F18C6200008C631, 0x084211C000071084,
+    0x1084238000032508, 0x0654C6200008C525,
+    0x02108420000F8421, 0x2B5DC6200008C631,
+    0x2B59CE200008C739, 0x2318C5C000074631,
+    0x1F18C5E000008421, 0x2318C5C001075631,
+    0x1F18C5E00008C525, 0x1C10C5C000074610,
+    0x084213E000021084, 0x2318C62000074631,
+    0x1518C6200002114A, 0x2B18C620000556B5,
+    0x08A546200008C54A, 0x08A5462000021084,
+    0x088443E0000F8442, 0x0421084E00E10842,
+    0x0821042000084108, 0x1084210E00E42108,
+    0x0008A88000000000, 0x0000000001F00000,
+    0x0000010400000000, 0x20E00000000B663E,
+    0x22F084200007C631, 0x22E0000000074421,
+    0x23E84200000F4631, 0x22E000000007443F,
+    0x1E21498000010842, 0x22E000001D187A31,
+    0x26D084200008C631, 0x0860100000071084,
+    0x10C020000C94A108, 0x0A9084200008A4A3,
+    0x084210C000071084, 0x2AB000000008D6B5,
+    0x26D000000008C631, 0x22E0000000074631,
+    0x22F000000210BE31, 0x23E0000021087A31,
+    0x26D0000000008421, 0x22E0000000074506,
+    0x04F1080000064842, 0x23100000000B6631,
+    0x2310000000022951, 0x23100000000556B5,
+    0x151000000008A884, 0x231000001D185B31,
+    0x11F00000000F8444, 0x0642109801821084,
+    0x0842108000021084, 0x3042108300321084,
+    0x0004D64000000000,
+};
+static volatile uint32_t *gFbBase = nullptr;
+static IOMemoryMap *gFbMap = nullptr;
+static uint32_t gFbRow = 0, gFbWidth = 0, gFbHeight = 0;
+static uint32_t gFbX = 0, gFbY = 0;
+
+void fbConsoleWrite (const void *data, size_t length);
+void fbConsolePut (char c);
+
+void fbConsoleInit (void)
+{
+  if (bootArgument ("native-fb", 1, 0) != 1) return;
+  const unsigned base = bootArgument ("native-fb-base", 0xffffffffu, 0x7ec50000u);
+  gFbRow = bootArgument ("native-fb-row", 0xffffu, 2944);
+  gFbWidth = bootArgument ("native-fb-w", 0xffffu, 720);
+  gFbHeight = bootArgument ("native-fb-h", 0xffffu, 1600);
+  if (!base || !gFbRow || !gFbWidth || !gFbHeight) return;
+  // The framebuffer is physical memory the kernel has not mapped for us: writing the address
+  // directly faults with a data abort at exactly that address.  Map it the way the controller
+  // window is mapped, then write through the mapping.
+  const uint64_t bytes = uint64_t (gFbRow) * gFbHeight + 4096;
+  IODeviceMemory *memory = IODeviceMemory::withRange (base, bytes);
+  gFbMap = memory ? memory->map (kIOMapAnywhere) : nullptr;
+  OSSafeReleaseNULL (memory);
+  if (!gFbMap) {
+    IOLog ("NativeMsdc: framebuffer at 0x%x could not be mapped\n", base);
+    return;
+  }
+  gFbBase = reinterpret_cast<volatile uint32_t *> (gFbMap->getVirtualAddress ());
+  if (!gFbBase) return;
+  gFbX = 0;
+  gFbY = 0;
+  for (uint32_t y = 0; y < gFbHeight; y++)
+    for (uint32_t x = 0; x < gFbWidth; x++)
+      gFbBase[(uint64_t)y * gFbRow / 4 + x] = 0x00000000u;      // clear once so the menu is gone
+}
+
+void fbConsolePut (char c)
+{
+  const uint32_t scale = 2, cw = 5 * scale, ch = 12 * scale;
+  if (!gFbBase) return;
+  if (c == '\n' || gFbX + cw > gFbWidth) {
+    gFbX = 0;
+    gFbY += ch;
+    if (c == '\n') return;
+  }
+  if (c == '\r') { gFbX = 0; return; }
+  if (gFbY + ch > gFbHeight) {                              // wrap to the top once the screen is full
+    gFbY = 0;
+    gFbX = 0;
+  }
+  if (c < 32 || c > 126) return;
+  const uint64_t glyph = gFbFont[c - 32];
+  const uint32_t top = uint32_t (glyph >> 32), bottom = uint32_t (glyph);
+  for (uint32_t row = 0; row < 12; row++) {
+    const uint32_t bits = (row < 6) ? (top >> (row * 5)) : (bottom >> ((row - 6) * 5));
+    for (uint32_t col = 0; col < 5; col++) {
+      if (!((bits >> col) & 1)) continue;
+      for (uint32_t dy = 0; dy < scale; dy++)
+        for (uint32_t dx = 0; dx < scale; dx++)
+          gFbBase[(uint64_t)(gFbY + row * scale + dy) * gFbRow / 4 + gFbX + col * scale + dx] = 0xFFFFFFFFu;
+    }
+  }
+  gFbX += cw;
+}
+
+void fbConsoleWrite (const void *data, size_t length)
+{
+  if (!gFbBase || !data) return;
+  const char *text = static_cast<const char *> (data);
+  for (size_t i = 0; i < length; i++) {
+    if (!text[i]) break;
+    fbConsolePut (text[i]);
+  }
+}
+
 extern "C" int native_msdc_console_sink (uint32_t lba, const void *data)
 {
-  if (!data || !gHost.layoutValid) return -1;
+  if (!data) return -1;
+  // Mirror the text to the framebuffer before any of the storage guards: it touches only mapped
+  // video memory, and putting it after the "busy" test meant it almost never ran, because the
+  // driver is busy for most of the boot.
+  fbConsoleWrite (data, kSector);
+  if (!gHost.layoutValid) return -1;
   // This driver logs through IOLog inside its own transfers, and IOLog reaches the console, which
   // calls back here.  Entering transfer() again would take the host lock it already holds, so a
   // busy driver declines and the console keeps the block for its next flush.
@@ -1595,6 +1731,8 @@ bool NativeMsdc::start (IOService *provider)
     return false;
   }
   native_msdc_step = 1;
+  // Clear the firmware menu and mirror the console to the framebuffer, before the first log line.
+  fbConsoleInit ();
   if (!IOService::start (provider)) return false;
   const char *why = "";
   if (!hostBringUp (provider, dma == 1, &why) || !hostFindLayout (&why)) {
