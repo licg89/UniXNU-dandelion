@@ -4464,3 +4464,44 @@ framebuffer ✓ 该补丁里需要：
 
 `native-fb` 已关闭（开着会清屏但不显示内容 ✗），镜像 `4755fcc5`，
 等于工作配置：`native-msdc-clock=1` + `native-msdc-clk=4`，启动到 90–100 进程 ✓
+
+---
+
+## 0.83 framebuffer 控制台改为独立补丁；构建受网络影响（2026-11-08 21:4x–22:0x）
+
+### 已完成
+
+把「在 pexpert 的 eMMC 控制台里把字符同时画到 framebuffer」的改动做成**独立补丁**
+`patches/xnu/dandelion-fb-console.patch`（20 KB，**尚未加入 series**）：
+
+- 在 `pexpert/arm/pe_serial.c` 的 `emmc_transmit_data()` 开头调用 `fb_putc(c)` ✓
+- 自带 95 个 5×12 字形（从 EDK2 `Font.h` 提取，2 倍放大）✓
+- 直接按物理地址 `0x7ec50000` 写（pexpert 阶段很可能仍是恒等映射 ✓ 待验证）
+
+`device-emmc-log-console.patch` 已恢复为可构建版本 ✓
+
+### 阻塞点：构建时上游源码下载超时
+
+```
+prepare-xnu-source.py -> fetch(entry['download_url']) -> TimeoutError: The read operation timed out
+```
+
+**与补丁无关** ✗ 是清树后重新抓取 xnu 上游源文件时网络超时 ✓ 连续两次 ✓
+下次网络稳定时直接：
+
+```bash
+# 把 dandelion-fb-console.patch 一行加进 patches/xnu/series 后
+bash /mnt/d/aios/_work/build_with_bootstrap.sh
+```
+
+### 设备状态
+
+设备上运行的是 21:34 刷入的 `4755fcc5` = **工作配置**
+（`native-msdc-clock=1` + `native-msdc-clk=4`），启动到 90–100 进程 ✓
+构建失败不影响它 ✓
+
+### 注意（重要）
+
+`build_clean_patch.sh` 每次都删 `.cache/xnu-work`，因此**每次都要重新下载上游源码** ✗
+网络不稳时会连续失败。若只是改了**已应用的补丁内容**，可改用"不删树 + 手动反向应用旧补丁 →
+应用新补丁"的流程节省时间与网络 ✓
