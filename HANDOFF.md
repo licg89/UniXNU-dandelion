@@ -5181,3 +5181,73 @@ FileNotFoundError: tree/build/storage-abi/IOBlockStorageDevice-reference.o
 然后在它之上继续：
 1. 内存 → Windows 上编译 UEFI（改动只有 `MemoryMapLib.c` 一行 ✓ 已提交 ✓）
 2. 显示 → 组件已接线 ✓ stub 已加 ✓ 只差内核能重编译 ✓
+
+---
+
+## 0.97 构建修复完成，内核带上显示栈（2026-11-09 03:0x–03:3x）
+
+### 1. 存储参考对象修复 ✓
+
+`tree/build` 被我误删后，`derive-storage-symbols.py` 缺
+`storage-abi/IOBlockStorageDevice-reference.o` ✓ 修复步骤：
+
+```bash
+# refer 源在 feeds 缓存里，不用网络
+ln -s /root/work/UniXNU/out/feeds/IOStorageFamily-* /root/work/UniXNU/refer/IOStorageFamily
+# 脚本用 xcrun shim，返回相对路径 "macosx"，接到本环境的 SDK 副本
+ln -sfn /root/work/fake-macos-sdk /root/work/UniXNU/macosx
+# 脚本在框架根找编译记录，桥接到树里
+mkdir -p /root/work/UniXNU/build/xnu
+ln -sfn <tree>/build/xnu/ios-obj /root/work/UniXNU/build/xnu/ios-obj
+# 生成后拷回树里（构建读的是树里的路径）
+python3 /root/work/UniXNU/scripts/audit-storage-interface.py
+cp -a /root/work/UniXNU/build/storage-abi/. <tree>/build/storage-abi/
+```
+
+产物 `IOBlockStorageDevice-reference.o`（220 KB）✓ 之后构建恢复正常 ✓
+
+> 注意：`audit-storage-interface.py` 最后一步 `xcrun dwarfdump` 仍会报 127 ✗
+> 但**对象已经生成** ✓ 构建不需要那一步 ✓
+
+### 2. 显示栈全部符号满足，内核构建成功 ✓✓✓
+
+| 符号 | 处理 |
+| --- | --- |
+| `native_diag_process_summary` | stub `void(void)` ✓ |
+| `native_adreno_fences` | stub `void(void)` ✓（本机是 Mali，Adreno 不适用 ✓）|
+| `native_gop_text` / `native_gop_redraw_ring` | stub ✓（只丢启动进度文字，不丢显示本身 ✓）|
+| `native_keyevents_allocate` | stub，**签名必须与真实一致**：`IOService *(void)` ✓ |
+
+**关键**：该符号的真实定义在
+`drivers/AppleKeyStoreState/NativeKeyStoreEvents.cpp:162`：
+
+```cpp
+extern "C" IOService *native_keyevents_allocate(void) { return new AppleKeyStore; }
+```
+
+签名不一致会一直 undefined ✗ —— 这是本轮耗时最多的一处 ✓
+
+### 3. 结果
+
+```
+kernel rebuilt ✓   0 errors in both logs ✓
+kernel.macho 51675136 字节（比可启动内核大 110 KB ✓ = 显示代码本身）
+image 03662823
+```
+
+**镜像已就绪，但尚未在硬件上启动过** ⬜
+
+### 4. 下一步（用户醒来后）
+
+1. 手机进 fastboot → 刷 `03662823` → 观察：
+   - 屏幕是否**亮起**（显示提供者初始化 ✓）
+   - eMMC 日志里是否出现 `NativeLegacyDisplay` 相关行 ✓
+   - 系统是否仍走到 launchd 早期启动完成 ✓
+2. 若屏幕亮了但停在某处 → 按 §0.93/§0.94 继续内存（UEFI 在 Windows 构建 ✓）
+3. 若显示没起来 → 日志里看 `native_legacy_stage` 值（胶水代码里有分阶段标记 ✓）
+
+### 5. 强制重编译的正确方法（重要）
+
+**不要删 `tree/build`** ✗ —— 它含两个引导依赖 ✓
+正确做法：**改补丁内容**（框架按内容哈希判定 ✓，例如给补丁加一行注释 ✓）✓
+本轮就是这样触发内核重编译的 ✓
