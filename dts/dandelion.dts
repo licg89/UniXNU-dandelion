@@ -552,7 +552,13 @@
 
 	memory {
 		device_type = "memory";
-		reg = <0x00 0x40000000 0x00 0x20000000>;
+		/*
+		 * 4 GiB: base 0x40000000, size 0x1_00000000.  Board evidence: Android reports
+		 * MemTotal 3897064 kB (~3.72 GiB) on M2006C3LC, so the packaged 0x20000000 (512 MiB) node was
+		 * far too small and the kernel bootstrapped with only 1 GiB (vm_page_bootstrap: 65536 pages),
+		 * which is why jetsam began reclaiming in the middle of the boot.
+		 */
+		reg = <0x00 0x40000000 0x01 0x00000000>;
 	};
 
 	reserved-memory {

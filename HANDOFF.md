@@ -4880,3 +4880,61 @@ Undefined symbols for architecture arm64:
 
 - `nm` 读不了 Mach-O 归档 ✗ 要用 `/opt/unixnu-linux/llvm/bin/llvm-nm` ✓
 - 清树必须删 `tree/build/xnu/*` ✓ 否则框架不会重编译 ✓（本轮最大发现 ✓）
+
+---
+
+## 0.92 内存：设备有 4 GB，内核只拿 1 GB，限制在 UEFI/LK 层（2026-11-09 00:4x–01:2x）
+
+### 板级证据（AGENTS.md 要求）
+
+```
+adb shell cat /proc/meminfo     MemTotal: 3897064 kB  ≈ 3.72 GiB
+getprop ro.product.model        M2006C3LC
+getprop ro.product.device       dandelion
+```
+
+**设备是 4 GB 内存** ✓ 而内核启动时报告：
+
+```
+vm_page_bootstrap: 47797 free pages, 17739 wired pages     ← 合计 65536 页 = 1 GiB ✗
+```
+
+**只用了 1 GB** ✗ —— 这正是 jetsam 在启动中途就开始回收进程的原因 ✓
+（§0.90 的 `watchdogd[366] namespace 1 subcode 0x4` = 物理内存耗尽 ✓）
+
+### 已经排除的两处
+
+| 尝试 | 结果 |
+| --- | --- |
+| `dts/dandelion.dts` 的 `memory` 节点从 `0x20000000`(512 MiB) 改成 `0x80000000`(2 GiB)、再改成 `0x1_00000000`(4 GiB) | **无效** ✗ `vm_page_bootstrap` 仍是 47797 页 ✓ 说明内核的物理内存**不来自设备树** |
+| `ARM_LARGE_MEMORY` | 只影响**内核虚拟地址布局**（`osfmk/mach/arm/vm_param.h:190`）✗ 与物理内存上限无关 ✓ |
+
+### 真正的开关在哪里
+
+`board.toml` 里有：
+
+```toml
+[payload.adt]
+owned_memory_size = "0x10000000"   # 注释写 512 MiB，实际是 256 MiB
+# 注释还留着："DarwinBoot refused the 2 GiB default"
+```
+
+**注释本身是线索** ✓：曾把该值设成 2 GiB 时 **DarwinBoot 拒绝** ✗
+说明真正的上限在 **UEFI 提供给 DarwinBoot 的 memory map** 里 ✓
+而那个 map 来自手机的 **LK 引导程序** ✗ 不是设备仓库能改的 ✗
+
+### 下次的三条路（按可行性）
+
+1. **查 LK/UEFI 报告的 memory map**：boot 早期 DarwinBoot 会打印它看到的可用内存 ✓
+   读 payload 的早期串口/framebuffer 输出（需要 §0.93 的 framebuffer 控制台 ✓）
+2. **试着把 `owned_memory_size` 逐步提高**：0x20000000(512 MiB)、0x40000000(1 GiB) ✓
+   每次只需改 board.toml 并重建 payload ✓ 若被拒绝会明确报错 ✓
+3. **查 LK 的 `mem` 配置**：MTK 的 LK 从 `dram` 参数拿内存大小 ✓ 若 LK 只报告了一部分 ✓
+   则需要换一个 LK/UEFI 组合 ✓（`uefi-dandelion` 仓库 ✓）
+
+### 现状
+
+- 4 GB 的设备 ✅ 但内核只有 1 GB ✗
+- 系统仍能启动到 366 个进程、走完 launchd 早期启动 ✓
+- jetsam 会更早介入 ✗ 这是内存不足的直接后果 ✓
+- 设备树已改为 4 GB ✓（虽然当前无效 ✓ 但若将来内核改用设备树就正确了 ✓）
