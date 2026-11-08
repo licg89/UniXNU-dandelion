@@ -5292,3 +5292,35 @@ stub 掉的 `native_gop_text` / `native_gop_redraw_ring` 只影响**启动进度
 
 - 设备仓库：`802a410`
 - UEFI 仓库：`03aaa42`
+
+---
+
+## 0.99 显示版内核的静态验证通过，Windows UEFI 清单已备好（2026-11-09 03:4x）
+
+### 静态验证：显示栈确实在内核里 ✓
+
+```
+kernel.macho 51675136 字节
+  IOMobileFramebufferLegacy   × 219   ← iOS 显示框架
+  NativeLegacyDisplay         × 127   ← 显示提供者
+  DandelionLegacyDisplay      ×   3   ← 本板胶水
+  native_legacy_stage         ×   2   ← 分阶段标记
+  D4K beat                    ×   2   ← 心跳补丁
+```
+
+**219 处 `IOMobileFramebufferLegacy` 引用** ✓ 是编译进去的硬证据 ✓
+显示库 `libNativeLegacyDisplay.late.a`（1007792 字节）✓ 也已确认存在 ✓
+
+即：**镜像 03662823 里的内核真的带上了显示提供者** ✓
+刷入后 10 分钟未 panic ✓ 说明显示代码没有致命错误 ✓
+**唯一未验证的是屏幕是否真的亮起** —— 需要 fastboot 读日志或用户亲眼确认 ✓
+
+### Windows UEFI 清单
+
+`docs/UEFI-WINDOWS-CHECKLIST.md` ✓ 含：
+- 需要的那一行改动（`DRAM High Conv` ✓ 已提交 `9e10dd5`）
+- Windows 上的六步构建流程
+- 产物路径 `Build\dandelionPkg\RELEASE_*\SILICIUM_UEFI.fd`
+- 拿回 WSL 后我要做的五步
+- WSL 侧已完成的四件事（不用重做 ✓）
+- 当前卡点：三个子模块未初始化 ✓ Windows 用 `--recursive` 可一次带全 ✓
