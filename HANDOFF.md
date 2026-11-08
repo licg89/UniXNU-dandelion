@@ -4116,3 +4116,67 @@ launchd 在打印两行日志后立刻 SIGBUS，常见原因：
 
 - 心跳延到 1080 拍（6 小时），便于无人值守整夜观察 ✓
 - 时钟探测保持 `native-msdc-clock` 开关、默认关闭 ✓
+
+---
+
+## 0.73 时钟改法已正确，但启用后 OS 窗口不就绪（2026-11-08 12:4x–13:3x）
+
+### 已确认正确的部分
+
+`CKPDN` 极性 + `DTOC` 重算两处修正后，**改分频本身完全成功**：
+
+```
+D4K clock: div=4 smp=0 verified=1 cfg=0220049b sdc=ff027ffc
+```
+
+逐级 64→32→16→8→4 全部验证通过，且用**磁盘四个分散位置**（0x40 / 0x445d000 / 0x5000000 /
+0x6000000）交叉验证同样通过 ✓ 即分频 4 的读在采样点上完全正确 ✓
+
+### 但启用提速后启动失败，且失败点在提速之前
+
+把 `hostRaiseClock()` 从 bring-up 移到 `publishThread` 结尾（窗口发布之后）后重试两次，
+日志都停在（153 行）：
+
+```
+NativeMsdc: signed root policy read in 227931 ms, 2 entries, 1123 reads, 0 retries, 0 failures, ckdiv 0/0
+NativeMsdc: OS verified against its signed policy
+NativeMsdc: SystemOS verified against its signed policy
+NativeMsdc: published SystemOS
+NativeMsdc: SystemOS volume ready
+NativeMsdc: published OS
+```
+
+- `ckdiv 0/0` 说明**提速尚未执行** ✓（符合新位置的设计）
+- 缺 `OS volume ready`，也缺 `not seen after 30 s` → 卡在 OS 窗口的 `volumeBelow` 30 秒等待里，
+  随后根卷挂载超时 → `Failed to mount root device` ✗
+- 即失败发生在**提速之前**，与时钟无关 ✓；但昨晚 `4a57497b`（无提速）OS 卷是能挂上的 ✗
+  → 这是本轮引入的**新时序问题**，需要单独排查
+
+### 三条被排除的假设（本轮）
+
+| 假设 | 做法 | 结果 |
+| --- | --- | --- |
+| CKPDN 极性写反 | 改为厂商语义（清=关钟、置=开钟）| **修复成功**，分频可改 ✓ |
+| 改分频后未重算数据超时 | 按分频比例缩放 `SDC_CFG.DTOC` | 已实现 ✓ |
+| 单扇区验证不具代表性 | 改 4 个分散扇区交叉验证 | 仍通过 ✓ 但整盘持续读仍不可靠 ✗ |
+
+### 诊断教训（重要）
+
+**控制台跑在同一块 eMMC 上**：一旦时钟改动影响卡，日志立刻失效 ✗ 本轮改用 `panic()`（走
+framebuffer）才拿到 `D4K clock:` 结果 ✓ —— 以后凡是"探测可能弄坏存储"的改动，结果
+必须走 panic 屏或其它不依赖该存储的通道。
+
+### 下次的三个入口
+
+1. **先查 OS 窗口 `volumeBelow` 30 秒不就绪**：这发生在提速之前，与时钟无关。可在
+   `publishThread` 里把该等待的 tick 数和结果打印出来，或延长等待；
+2. 提速落在窗口发布之后是否真的生效：日志里加一行 `clock settled` 到 publishThread 之后
+   的位置确认；
+3. 若提速生效后仍失败，则验证**通过已发布窗口**的读在新分频下是否正确（窗口读是逐块
+   hash 校验的，是最严格的自检）——这是区分"卡不稳"与"窗口路径问题"的关键一步。
+
+### 当前配置
+
+`native-msdc-clock` / `native-msdc-clk` 均已关闭，回到 `4a57497b` 的等效配置：
+慢速总线（分频 260）、launchd 能运行（约 5.5 小时读缓存后打印日志）。
+驱动内的时钟代码（含正确序列、4 点验证、panic 报告、`native-msdc-clk` 选档）全部保留。

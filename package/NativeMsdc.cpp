@@ -572,10 +572,10 @@ void hostLogMode (const uint8_t *extCsd, uint32_t inheritedCfg)
 // bus rate.  Sweep both and keep the first pair whose reads still match references taken at the
 // inherited settings; anything that does not verify restores the inherited registers, so a wrong
 // guess costs nothing.  A bad pair normally fails fast with a CRC error rather than timing out.
-// One sector is enough for the comparison, and it has to be cheap: this runs before the root device
-// is published, and the IOKit wait loop that looks for it gives up quickly, so a slow probe makes
-// the boot fail at "Failed to mount root device" with no log line at all.
-static const uint32_t kSweepSectors[] = { 0x40 };
+// Verify a divider at several places on the card, not one: under load at a wrong rate, signal
+// integrity varies across the die, and a single sector at 0x40 passed while the policy region was
+// 73 MB spread over the user area.  All of these have to match before a divider is kept.
+static const uint32_t kSweepSectors[] = { 0x40, 0x445d000, 0x5000000, 0x6000000 };
 constexpr unsigned kSweepCount = sizeof (kSweepSectors) / sizeof (kSweepSectors[0]);
 
 // A failed single-block read can leave the card mid-transfer; SEND_STATUS until it reports the
@@ -608,20 +608,24 @@ bool hostSweepMatches (const uint8_t *reference)
   return true;
 }
 
-// Changing MSDC_CFG.CKDIV with the card clock running glitches the bus, and that is what made every
-// earlier attempt end in "Failed to mount root device".  The vendor mtk-sd.c sequence power-cycles
-// the clock and, crucially, recomputes the data timeout afterwards: SDC_CFG.DTOC counts units of
-// 2^20 card clocks, so a faster clock needs a smaller register value or the card times out
-// immediately.  That rescale was the missing step.
+// Changing MSDC_CFG.CKDIV with the card clock running glitches the bus, so the vendor mtk-sd.c
+// stops the clock, sets the divider, and starts it again.  Two details matter and both were wrong
+// here before:
+//   * MSDC_CFG_CKPDN reads as "clock running" when set -- the vendor clears it to switch the clock
+//     off (see its hz == 0 path) and sets it again afterwards.  Setting it first and clearing it at
+//     the end, as this function used to, leaves the card clock stopped and every read fails.
+//   * SDC_CFG.DTOC counts units of 2^20 card clocks, so it has to be rescaled with the divider or
+//     the card times out immediately at the new rate.
 void hostSetClockDivider (unsigned divider, unsigned previous)
 {
-  uint32_t base = rd (kMsdcCfg) & ~(0xfffu << 8);
-  wr (kMsdcCfg, base | kCfgCkPdn);
+  const uint32_t cfg = rd (kMsdcCfg);
+  const uint32_t stopped = (cfg & ~(0xfffu << 8)) & ~kCfgCkPdn;
+  wr (kMsdcCfg, stopped);                                  // clock off
   IODelay (200);
-  base = (base & ~(0xfffu << 8)) | ((divider & 0xfffu) << 8);
-  wr (kMsdcCfg, base | kCfgCkPdn);
+  const uint32_t retimed = stopped | ((divider & 0xfffu) << 8);
+  wr (kMsdcCfg, retimed);                                  // divider set while stopped
   IODelay (200);
-  wr (kMsdcCfg, base);
+  wr (kMsdcCfg, retimed | kCfgCkPdn);                      // clock on
   for (unsigned i = 0; i < 100; i++) {
     if (rd (kMsdcCfg) & kCfgCkStb) break;
     IODelay (100);
@@ -635,8 +639,8 @@ void hostSetClockDivider (unsigned divider, unsigned previous)
   if (scaled > 255) scaled = 255;
   wr (kSdcCfg, (sdc & ~kSdcCfgDtoc) | ((uint32_t)scaled << 24));
   IODelay (1000);
-  IOLog ("NativeMsdc: ckdiv %u (from %u), dtoc %u -> %u\n",
-         divider, previous, dtoc, (unsigned)scaled);
+  IOLog ("NativeMsdc: ckdiv %u (from %u), dtoc %u -> %u, cfg %08x\n",
+         divider, previous, dtoc, (unsigned)scaled, rd (kMsdcCfg));
 }
 
 void hostRaiseClock (void)
@@ -651,42 +655,40 @@ void hostRaiseClock (void)
   }
   const uint32_t cfg0 = rd (kMsdcCfg), iocon0 = rd (kMsdcIoCon);
   const unsigned inherited = (cfg0 >> 8) & 0xfffu;
-  // Slowest candidate first, and every step is verified before the next: the first divider that
-  // does not verify leaves the previous, known-good setting in place instead of an unusable bus.
-  static const unsigned dividers[] = { 64, 32 };
-  static const unsigned samples[] = { 0, 8, 16, 24 };
+  // Step down the divider, verifying at every step and keeping the last one that still reads
+  // correctly.  A single ending here is not enough evidence: divider 4 passed four scattered
+  // sectors yet the 73 MB policy read, which hashes every block, still failed at that rate.  So the
+  // divider worth testing is chosen with native-msdc-clk and proved by that policy read instead.
+  const unsigned wanted = bootArgument ("native-msdc-clk", 0xfffu, 0);
+  static const unsigned dividers[] = { 64, 32, 16, 8, 4 };
   unsigned best = inherited, bestSample = 0;
   for (unsigned d = 0; d < sizeof (dividers) / sizeof (dividers[0]); d++) {
-    if (dividers[d] >= inherited) continue;
-    bool accepted = false;
-    for (unsigned s = 0; s < sizeof (samples) / sizeof (samples[0]); s++) {
-      wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((samples[s] & 0x3fu) << 16));
-      hostSetClockDivider (dividers[d], best);
-      if (hostSweepMatches (reference)) {
-        best = dividers[d];
-        bestSample = samples[s];
-        accepted = true;
-        IOLog ("NativeMsdc: clock divider %u sample %u verified\n", dividers[d], samples[s]);
-        break;
-      }
+    if (wanted != 0 && dividers[d] != wanted) continue;
+    if (dividers[d] >= best) continue;
+    const unsigned sample = bootArgument ("native-msdc-smp", 0x3fu, 0);
+    wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((sample & 0x3fu) << 16));
+    hostSetClockDivider (dividers[d], best);
+    if (hostSweepMatches (reference)) {
+      best = dividers[d];
+      bestSample = sample;
+      IOLog ("NativeMsdc: clock divider %u sample %u verified\n", dividers[d], sample);
+      if (wanted != 0) break;
+      continue;
     }
-    if (!accepted) {
-      IOLog ("NativeMsdc: divider %u did not verify; keeping %u/%u\n",
-             dividers[d], best, bestSample);
-      break;
-    }
+    IOLog ("NativeMsdc: divider %u did not verify; keeping %u\n", dividers[d], best);
+    break;
   }
   wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((bestSample & 0x3fu) << 16));
-  hostSetClockDivider (best, best);
-  if (best == inherited) {
-    wr (kMsdcCfg, cfg0);
-    wr (kMsdcIoCon, iocon0);
-    hostRecoverAfterError ();
-  }
   native_msdc_clock_divider = best;
   native_msdc_sample_delay = bestSample;
   IOLog ("NativeMsdc: clock settled at divider %u sample %u (inherited %u)\n",
          best, bestSample, inherited);
+  // The console is written through this same card, so report the outcome where storage cannot hide
+  // it: the panic screen is drawn from the framebuffer.
+  if (bootArgument ("native-msdc-clkreport", 1, 0)) {
+    panic("D4K clock: div=%u smp=%u verified=%d cfg=%08x sdc=%08x",
+          best, bestSample, best == inherited ? 0 : 1, rd (kMsdcCfg), rd (kSdcCfg));
+  }
 }
 
 bool listHas (OSObject *property, const char *wanted)
@@ -838,11 +840,8 @@ bool hostBringUp (IOService *provider, bool useDma, const char **why)
     return false;
   }
   hostLogMode (extCsd, inheritedCfg);
-  // Try to raise the card clock.  The board wakes up at CKDIV 260 (~96 kHz for this source), which
-  // caps reads at about 320 KB/s, so every path that touches the dyld shared cache takes hours.
-  // hostRaiseClock only keeps a divider whose reads still match a reference, so this is safe to run
-  // unconditionally; native-msdc-clock=0 still turns it off for a controlled comparison.
-  if (bootArgument ("native-msdc-clock", 1, 0)) hostRaiseClock ();   // opt-in: a wrong pair breaks the card irrecoverably
+  // The clock is raised later, at the end of publishThread, once every window is published: changing
+  // it here broke the root mount, because the console runs through this same card.
   if (useDma) hostEnableDma ();
   if (gHost.poisoned) {
     *why = "DMA engine did not stop";
@@ -1530,6 +1529,11 @@ void publishThread (void *, wait_result_t)
     IOLog ("NativeMsdc: %s volume %s\n", device->windowLabel (), ready ? "ready" : "not seen after 30 s");
     device->release ();
   }
+  // Raise the card clock only now.  Doing it during bring-up broke the root mount: the console is
+  // written through this same card, so a clock change there also silenced the log and the windows
+  // were never published.  By this point the policy read and every window are done, and what still
+  // needs speed is the dyld cache read that follows the root mount.
+  if (bootArgument ("native-msdc-clock", 1, 0)) hostRaiseClock ();
   native_msdc_step = 6;
   gPendingProvider->release ();
 }
