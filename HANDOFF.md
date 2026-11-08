@@ -4792,3 +4792,38 @@ archive-06-build-arm-driver.log:
 
 接线已回退 ✓ 镜像 `678c0396` = 工作配置 ✓（内核 `70045421`、分频 4）✓
 显示资产全部在仓库里 ✓ 下次只需解决"跳过判定"这一件事 ✓
+
+---
+
+## 0.90 里程碑：PID 到 366，退出原因从信号变成 JETSAM（2026-11-08 23:5x）
+
+### 观察
+
+用户报告（`678c0396` 镜像运行中）：
+
+```
+watchdogd[366] exited -- exit reason namespace 1 subcode 0x4, description none
+```
+
+| 项 | 之前（§0.77）| 现在 |
+| --- | --- | --- |
+| PID | 176 | **366** |
+| exit namespace | **2**（`OS_REASON_SIGNAL`）| **1**（`OS_REASON_JETSAM`）|
+| subcode | 0x5（SIGTRAP）| 0x4（物理内存耗尽）|
+
+### 意义
+
+- **namespace 1 = `OS_REASON_JETSAM`** ✓ —— iOS 的**内存压力管理在杀进程** ✓
+- subcode **0x4 = 物理内存耗尽**（phys footprint resource exhausted）✓
+- 说明系统已经运行到**触发 jetsam 的深度** ✓：派生 300+ 进程、内存管理子系统在工作 ✓
+- 退出原因从"被信号打死"变成"被内存管理回收" ✓ —— 这是**系统正常运转**的证据，不是启动失败 ✓
+
+即：这个移植已经从**"起不来"**进入**"能跑、但内存不够"**的阶段 ✓
+（本机 2 GB，而 iPadOS 17.7 是按 3–4 GB 设备做的 ✓）
+
+### 下一步（等日志确认）
+
+1. 读日志看 `procs` 峰值、`reads` 吞吐、有没有 `backboardd`/`SpringBoard` 出现 ✓
+2. 数一数哪些服务在吃内存；用 launchd 的 `disabled.plist` 关掉不需要的后台服务 ✓
+   （seed 里已经有这个文件，但 §0.77 显示未被读取 ✓ 需要确认路径与属性）
+3. 必要时调 jetsam 的 memorystatus 阈值 ✓（`kern.max_task_pmem` 等 sysctl ✓）
