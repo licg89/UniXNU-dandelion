@@ -4052,3 +4052,67 @@ if (host->sclk <= 52000000) {
 - 时钟探测改为 `native-msdc-clock=1` 显式开关，**默认关闭** ✓
 - 未验证：无法在设备上实测提速效果（因为探测破坏启动）
 - 现在的镜像回到"launchd 持续运行、96 kHz、320 KB/s"的可工作状态
+
+---
+
+## 0.71 通宵跑通：launchd 真正运行并打印日志，随后 SIGBUS（2026-11-08 03:5x–10:4x）
+
+### 通宵结果（镜像 `4a57497b…`，心跳 1080 拍 / 6 小时）
+
+```
+D4K beat 0  : procs=2 pid1stat=2 | reads=1555  retries=8    failures=0
+D4K beat 999: procs=2 pid1stat=2 | reads=56581 retries=2002 failures=0
+com.apple.xpc.launchd|1970-01-01 05:43:12 <Notice>: boot-mode set by sysctl: main
+com.apple.xpc.launchd|1970-01-01 05:43:13 <Notice>: hello, launchd UUID: 4B525992-8C69-315E-A51A-CC9433E45B51
+```
+
+- 1000 拍（5.5 小时）内 `procs` 始终为 2、`failures=0`；
+- `reads` 到 56,581 次 × 64 KiB = **3.6 GB**，即 §0.68 测到的"整个共享缓存顺序读"完整跑完 ✓
+- 读完后 **launchd 开始打印自己的日志** ✓✓✓ 这是用户态真正运行的直接证据；
+- 屏幕随后显示 **`initproc exited -- exit reason namespace 2 subcode 0xa`** ✗
+
+### 解码
+
+`bsd/sys/reason.h`：
+
+```
+#define OS_REASON_JETSAM 1
+#define OS_REASON_SIGNAL 2
+```
+
+即 **namespace 2 = OS_REASON_SIGNAL**，`subcode 0xa` = **信号 10 = SIGBUS** ✗
+
+而 `initproc exited` 而非 `failed to start`（`kern_exit.c:1853` 的 `initproc_spawned` 分支）
+说明 **launchd 已经成功派生出子进程** ✓ 系统确实推进到了服务启动阶段。
+
+### 现在的问题排序
+
+| # | 问题 | 影响 |
+| --- | --- | --- |
+| **A** | 映射缓存前要顺序读 3.6 GB（5.5 小时）| **每次迭代都要等 5.5 小时**，无法调试 ✗✗ |
+| **B** | launchd 启动后 SIGBUS 退出 | 需要诊断；但必须先解决 A 才能快速迭代 |
+
+A 的候选解法（按可行性）：
+
+1. **提高卡时钟**（§0.70 的结论：需要 MT6762 的 `def_tune_para`，或给驱动加复位能力）；
+2. **找到 3.6 GB 读取的真正发起者**：现在已知它发生在 launchd 打印任何东西之前、
+   `shared_region: check_np failed` 之后，即 dyld 自己映射缓存时；若能把该映射改为
+   "内核信任并直接 map、不读内容"，读取量可降到几 MB；
+3. 注意 `check_signature` 的 cdhash 授权（§0.69）对这股读取无效，说明它发生在更底层
+   （mmap 页读取或 dyld 自建 map）。
+
+### SIGBUS 的初步判断
+
+launchd 在打印两行日志后立刻 SIGBUS，常见原因：
+
+- dyld 经 `shared_region_map_and_slide_np` 自建的映射存在无法访问的页（我们内核 4 KiB，
+  缓存按 16 KiB 构建）✗
+- 缓存子片的 slide info / 页对齐与 4 KiB 不匹配
+
+但 merlinx 用同样 4 KiB 内核跑到 SpringBoard ✓，所以不是不可逾越；等 A 解决后可用
+`boot-ui-focus=launchd` 或 SIGBUS 的 pc 定位具体页。
+
+### 本轮新增/变更
+
+- 心跳延到 1080 拍（6 小时），便于无人值守整夜观察 ✓
+- 时钟探测保持 `native-msdc-clock` 开关、默认关闭 ✓

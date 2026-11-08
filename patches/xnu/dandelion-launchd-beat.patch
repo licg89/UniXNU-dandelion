@@ -9,7 +9,7 @@
 +{
 +	(void)arg;
 +	(void)wr;
-+	for (unsigned round = 0; round < 360; round++) {
++	for (unsigned round = 0; round < 1080; round++) {
 +		struct timespec pause = { .tv_sec = 20, .tv_nsec = 0 };
 +		msleep((caddr_t)&dandelion_beat, NULL, PWAIT, "d4k-beat", &pause);
 +		int procs = 0, state = -1;
