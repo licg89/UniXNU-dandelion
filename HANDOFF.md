@@ -4712,3 +4712,43 @@ EXTRA_CFLAGS="$EXTRA_CFLAGS -DXNU_NATIVE_LEGACY_DISPLAY=$LEGACY_DISPLAY"
 | `drivers/GopFramebuffer/` | 12 个文件 ✓ |
 
 当前 `board.toml` / `defconfig` 已回退到工作配置 ✓ 镜像可用 ✓
+
+---
+
+## 0.88 显示栈最后一步的具体做法（2026-11-08 23:4x）
+
+查到 `CONFIG_XNU_NATIVE_LEGACY_DISPLAY` 不进编译标志的机制：
+
+- `XNU_EMMC_SERIAL` / `XNU_NATIVE_PAN` 都是 `scripts/build-xnu-4k-baseline.sh` 里
+  **逐个手工**从环境变量映射成 `EXTRA_CFLAGS="$EXTRA_CFLAGS -DXNU_..."` ✓
+- `scripts/unixnu/kernel.py` 的 `linux_environment()` 只提供工具链相关变量 ✗ 不负责 `.config` 的映射
+- 因此 `.config` 里的 `CONFIG_XNU_*` **不会自动**变成 `-DXNU_*` ✗
+
+**最小改动**（在框架的 `scripts/build-xnu-4k-baseline.sh` 里，模仿 `XNU_EMMC_SERIAL` 的三行）：
+
+```sh
+# Display: IOMobileFramebufferLegacy over the firmware GOP framebuffer.
+LEGACY_DISPLAY=0
+[ -f "$ROOT/.config" ] && grep -q '^CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y' "$ROOT/.config" && LEGACY_DISPLAY=1
+EXTRA_CFLAGS="$EXTRA_CFLAGS -DXNU_NATIVE_LEGACY_DISPLAY=$LEGACY_DISPLAY"
+```
+
+（`$ROOT` 用该脚本里已有的定义；默认 0，对其它设备无影响 ✓）
+
+加完之后把下面三处恢复，即可构建带显示的镜像（驱动库已验证能编译 ✓）：
+
+```toml
+# board.toml
+[components] include = [..., "GopFramebuffer"]
+"archives" = [..., "build-arm-driver.py NativeGOPPresenter", "build-gop-legacy-display.py"]
+kernel_args += offline-mobile-graphics-load=1 offline-mobile-graphics-client=1
+              offline-legacy-register=1 offline-legacy-gop=1 offline-legacy-unit-scale=2
+              offline-legacy-pm=1 offline-legacy-phase=4 offline-legacy-transfer=1
+              offline-legacy-validate=1 offline-legacy-cpu-present=1
+
+# configs/dandelion_defconfig
+CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
+```
+
+（`scripts/unixnu/tree.py` 用 `$ROOT` 指向框架根；`.config` 实际在
+`out/<device>/<profile>/<device>/.config`，以该脚本里已有的路径变量为准。）
