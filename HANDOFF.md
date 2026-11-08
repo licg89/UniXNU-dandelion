@@ -4549,3 +4549,36 @@ esr: 0x9600004f                far: 0xfffffff007befe38
 ### 设备状态
 
 镜像 `b5f22927` = 工作配置（分频 4、无 fb 代码）✓
+
+---
+
+## 0.85 framebuffer 控制台：pexpert 与 osfmk 都不行，只剩注入代码一条路（2026-11-08 22:4x–23:0x）
+
+### 三次尝试与三次失败
+
+| 位置 | 结果 | 原因 |
+| --- | --- | --- |
+| 驱动（kext）| ✗ `far: 0x7ec50000` | 内核页表无该映射；`IODeviceMemory::map()` 后可用 ✓ |
+| pexpert（`pe_serial.c`）| ✗ `x12=0x7ec50000`, `esr=0x9600004f` | 运行在固件页表上，同样无映射 |
+| osfmk（`printf.c` 的 `conslog_putc`）| ✗ 编译失败 | `struct vinfo` 在 osfmk 不可见，`#include <pexpert/boot.h>` 也拿不到定义 |
+
+### 唯一已知可行的做法
+
+**panic 屏**能画 ✓ 它是被 `patch-xnu-entry-probe.py` **注入的独立代码** ✓ 通过
+`_vinfo`（VA `0xFFFFFFF00C0A2970`）读取 `v_baseaddr` ✓ —— 说明：
+**只有以注入代码的身份、在内核 pmap 建立之后**才能访问 framebuffer ✓
+
+所以 framebuffer 控制台的正确实现 = **仿照 panic 屏再注入一个 `fb_puts()`**，
+由内核侧某个稳定点调用（例如 `bsd_init` 之后）✓ 这也是本项目里唯一已验证可行的通道 ✓
+
+### 过程教训（已沉淀到工具里）
+
+1. **补丁锚点绝不能只匹配函数名** ✗ 会落在 `static void` 与函数名之间，声明变成局部 ✓
+   本日在此栽了两次（pexpert 一次、osfmk 一次）✓ 正确锚点要包含返回类型那一行 ✓
+2. **生成补丁必须基于未打补丁的源文件** ✗ 否则行号自相矛盾（850 → 971）✓
+   `build_clean_patch.sh` 现在会打印 build log 与 kernel.log 的错误 ✓ 之前错误被警告淹没 ✗
+
+### 当前状态
+
+`native-fb` 已移除 ✓ `dandelion-fb-kernel.patch` / `dandelion-fb-console.patch` 保留但不入 series ✓
+镜像 `d72a4908`（内核与 `b5f22927` 相同 = 工作版本）✓
