@@ -39,7 +39,8 @@ include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink", "DarwinBoot",
            # that query by calling the weak native_ufs_block_authenticates, which the eMMC
            # driver defines.  It never probes here: no virtio-mmio node exists on this SoC.
            #
-                                                                             "VirtioMmioBlock"]
+                                                                             "VirtioMmioBlock",
+           "VirtioMmioBlock"]
 
 [kernel]
 defconfig = "dandelion_defconfig"
