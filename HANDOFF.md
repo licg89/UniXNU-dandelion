@@ -5077,3 +5077,57 @@ RuntimeError: External Dependencies in the environment are out of date.
 ### 设备状态
 
 运行 `40627208` ✓（`owned_memory_size` 256 MiB ✓ 内核 1 GiB ✓ 366 进程 ✓ 工作正常 ✓）
+
+---
+
+## 0.95 UEFI 构建环境的实际缺口（2026-11-09 02:1x–02:2x）
+
+### 已经推进的
+
+| 步骤 | 结果 |
+| --- | --- |
+| 移走 `nasm_ext_dep.yaml`（arm64 不需要 x86 汇编器 ✓）| ✅ `mu_nasm` 依赖消失 ✓ |
+| `git clone Silicium-ACPI`（子模块 gitlink 缺失 ✓）| ✅ 包路径错误消失 ✓ |
+| 软链接 `UniXNUPkg → /root/work/UniXNU/package/UniXNUPkg` | ⚠️ 链接好了但**包路径**没包含它 ✗ |
+
+### 现在停在
+
+```
+ERROR - Failed to convert Edk2Relative Path to an Absolute Path on this system.
+ERROR - Relative Path: UniXNUPkg/Library/UniXNULib/UniXNULib.inf
+File ".../OverrideValidation.py", line 204, in override_detect_process
+    list_path = os.path.normpath(filepath).lower()
+TypeError: _path_normpath: path should be string, bytes or os.PathLike, not NoneType
+```
+
+即 DSC 里的 `UniXNUPkg/...` 相对路径找不到对应的**包根** ✗
+`DeviceBuild.py` 的 `GetPackagesPath()` 返回 `CommonPlatform.PackagesPath` ✓
+而该定义在 `Common/` 下的 `CommonPlatform` 模块里 ✓ 本 checkout 里找不到该文件 ✗
+—— 说明 **`Common/Mu` 等子模块也未初始化** ✗（`git submodule status` 显示三个 `-` 前缀 ✓）
+
+### 结论：这是"搭完整 EDK2 环境"的工作量
+
+本 WSL checkout 缺的东西依次暴露：
+
+1. `mu_nasm` NuGet 包（网络不可达 ✗）
+2. `Silicium-ACPI` 子模块（gitlink 缺失 ✓ 已 clone ✓）
+3. `Common/Mu`、`Common/Mu_OEM_Sample`、`Mu_Basecore` 三个子模块（`-` 未初始化 ✗）
+4. `CommonPlatform.PackagesPath`（依赖 3 ✓）
+
+**建议：在 Windows 上构建 UEFI** ✓ —— `uefi-dandelion/Building.md` 有完整 Windows 步骤 ✓
+需要的改动只有一处 ✓ 已经提交在 `uefi-dandelion` 的 `9e10dd5`：
+
+```
+Platforms/Xiaomi/dandelionPkg/Library/MemoryMapLib/MemoryMapLib.c
+  + {"DRAM High Conv", 0xC0000000, 0x80000000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK},
+```
+
+产物 `SILICIUM_UEFI.fd` 拷回后按 §0.94 的六步走完即可 ✓
+
+### 本机已就绪的部分（不用重做）
+
+- ✅ 内存映射修复代码（`uefi-dandelion` `9e10dd5`）
+- ✅ `Silicium-ACPI` 已 clone 到 `uefi-dandelion/Silicium-ACPI`
+- ✅ `nasm_ext_dep.yaml` 已改名（arm64 不需要）
+- ✅ `UniXNUPkg` 软链接已建
+- ✅ 设备仓库的全部改动（设备树 4 GB、`owned_memory_size`、HANDOFF 记录）
