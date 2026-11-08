@@ -5131,3 +5131,53 @@ Platforms/Xiaomi/dandelionPkg/Library/MemoryMapLib/MemoryMapLib.c
 - ✅ `nasm_ext_dep.yaml` 已改名（arm64 不需要）
 - ✅ `UniXNUPkg` 软链接已建
 - ✅ 设备仓库的全部改动（设备树 4 GB、`owned_memory_size`、HANDOFF 记录）
+
+---
+
+## 0.96 构建树被我误删后需要修复（2026-11-09 02:2x–02:5x）
+
+### 发生了什么
+
+为了强逼内核重编译，我删掉了 `tree/build`（整个构建输出）✗
+这破坏了 **存储符号派生的引导依赖**：
+
+```
+FileNotFoundError: tree/build/storage-abi/IOBlockStorageDevice-reference.o
+```
+
+`scripts/derive-storage-symbols.py` 需要这个**参考对象** ✓（从 IPSW 的 IOStorageFamily 提取 ✓）
+而它是在**正常的构建流程里**生成的 ✓ 删掉 `tree/build` 就把它一起删了 ✗
+
+### 尝试过的修复
+
+| 尝试 | 结果 |
+| --- | --- |
+| `build-storage-bindings.py` | ✗ `ModuleNotFoundError: native_prelink`（要在树里跑 ✓）|
+| `audit-storage-interface.py --tree ...` | ✗ `refer/IOStorageFamily` 不存在 |
+| `unixnu fetch` | 退出 0 ✓ 但 `refer/` 仍是空的 ✗ |
+
+### 结论：需要重新生成参考源
+
+`unixnu fetch` 没有恢复 `refer/IOStorageFamily` ✗ 说明它由别的机制拉取 ✓
+下次先查：
+1. `refer/` 的生成者（框架里 `scripts/fetch-*.py` 或 `feeds.toml` 的 refer 源 ✓）
+2. 或直接在**完整重建**流程里让它自己生成 ✓
+   （即 `unixnu fetch` → `unixnu build kernel` 的完整顺序 ✓ 而不是我这种局部删除 ✗）
+
+**教训（重要）**：`tree/build` **不能整体删除** ✗
+- `tree/build/storage-abi/` 是**引导依赖**（参考对象 ✓）
+- `tree/build/xnu/ios-obj/` 是**跳过判定的依据**（末窗口记录 ✓）
+- 想强逼重编译，只能改**补丁/配置的内容**（框架按内容哈希判定 ✓）而不是删目录 ✗
+
+### 当前可用的东西
+
+- ✅ 镜像 `bd653aa0`（payload 里的 `kernel.macho` 仍是 `46649dbd` = 01:51 构建的**工作内核** ✓）
+- ✅ 设备运行 `40627208`（1 GB 内存、366 进程、早期启动全过 ✓）
+- ✅ 全部代码与文档已提交 ✓
+
+### 下次的第一件事
+
+**修复构建环境** ✓（重新生成 `storage-abi/IOBlockStorageDevice-reference.o` ✓），
+然后在它之上继续：
+1. 内存 → Windows 上编译 UEFI（改动只有 `MemoryMapLib.c` 一行 ✓ 已提交 ✓）
+2. 显示 → 组件已接线 ✓ stub 已加 ✓ 只差内核能重编译 ✓

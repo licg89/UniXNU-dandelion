@@ -709,3 +709,22 @@ void native_legacy_display_late_probe(void) {
     native_legacy_display_checkpoint();
 }
 }
+
+/*
+ * Hooks the kernel's display path calls that no component of this port provides yet.
+ *
+ * native_adreno_fences belongs to the Adreno GPU family; this board is Mali-G52, so there is nothing
+ * to fence and the display path gets a no-op.  native_diag_process_summary only feeds a report.
+ * Adreno740 was declared to satisfy these, but it is the wrong GPU and it made clang 24 crash, so
+ * stubs are the honest answer until the Mali side exists.
+ */
+extern "C" void
+native_adreno_fences (void)
+{
+}
+
+/* This file declares it as void(void); the display path only calls it to report. */
+extern "C" void
+native_diag_process_summary (void)
+{
+}
