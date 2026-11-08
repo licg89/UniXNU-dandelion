@@ -15,6 +15,8 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+CLANG = '/opt/unixnu-linux/llvm/bin/clang'
+AR = '/opt/unixnu-linux/CommandLineTools/usr/bin/ar'
 OUT = ROOT / 'build/native-legacy-display'
 OUT.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, str(ROOT / 'kits/XnuPrelink'))
@@ -174,8 +176,8 @@ require(not missing, 'Unbound original Legacy symbols: ' + ', '.join(sorted(miss
 
 asm = OUT / 'original-bindings.S'
 asm.write_text(''.join(f'.globl {name}\n.set {name}, {value:#x}\n' for name, value in sorted(bindings.items())))
-sdk = run(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
-run(['xcrun', 'clang', '-target', 'arm64-apple-ios17.0', '-isysroot', sdk, '-Werror',
+sdk = ''   # Linux: the kernel compiles against in-tree headers, with no -isysroot
+run([CLANG, '-target', 'arm64-apple-ios17.0', '-Werror',
      '-c', asm, '-o', OUT / 'original-bindings.o'])
 
 # The backend is the public sheng GOP backend with the sheng probes removed.
@@ -183,13 +185,13 @@ record = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/D
 args = record['arguments']
 command = []
 index = 0
-source = ROOT / 'package/MerlinxLegacyDisplay.cpp'
+source = ROOT / 'package/DandelionLegacyDisplay.cpp'
 while index < len(args):
     value = args[index]
     if value == record['file']:
         command.append(str(source))
     elif value == '-o':
-        command += ['-o', str(OUT / 'MerlinxLegacyDisplay.o')]
+        command += ['-o', str(OUT / 'DandelionLegacyDisplay.o')]
         index += 1
     elif value == '-Xclang' and args[index + 1].startswith('-W'):
         index += 1
@@ -215,13 +217,13 @@ run([llvm / 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func',
 
 archive = OUT / 'libNativeLegacyDisplay.late.a'
 archive.unlink(missing_ok=True)
-run(['xcrun', 'ar', 'rcs', archive, late, OUT / 'original-bindings.o',
-     OUT / 'MerlinxLegacyDisplay.o', gop_late])
+run([AR, 'rcs', archive, late, OUT / 'original-bindings.o',
+     OUT / 'DandelionLegacyDisplay.o', gop_late])
 sources = [ROOT / 'drivers/GopFramebuffer/NativeLegacyDisplay.cpp',
            ROOT / 'drivers/GopFramebuffer/NativeLegacyRequest.h',
            ROOT / 'drivers/GopFramebuffer/NativeGOPPresenter.cpp',
            ROOT / 'drivers/GopFramebuffer/NativeGOPWire.h',
-           ROOT / 'package/MerlinxLegacyDisplay.cpp',
+           ROOT / 'package/DandelionLegacyDisplay.cpp',
            ROOT / 'scripts/data/merlinx-legacy-display-abi.json',
            ROOT / 'scripts/build-gop-legacy-display.py']
 (OUT / 'build-report.json').write_text(json.dumps(dict(

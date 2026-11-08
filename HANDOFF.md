@@ -4582,3 +4582,58 @@ esr: 0x9600004f                far: 0xfffffff007befe38
 
 `native-fb` 已移除 ✓ `dandelion-fb-kernel.patch` / `dandelion-fb-console.patch` 保留但不入 series ✓
 镜像 `d72a4908`（内核与 `b5f22927` 相同 = 工作版本）✓
+
+---
+
+## 0.86 显示栈：接线完成度与卡住的位置（2026-11-08 23:0x–23:3x）
+
+### 已完成（都在仓库里，只是暂时从 archives 移除）
+
+| 项 | 状态 |
+| --- | --- |
+| `scripts/build-gop-legacy-display.py` | ✅ 3 处 `xcrun` 换成 Linux 工具链（`/opt/unixnu-linux/...`），**内核编译不需要 `-isysroot`** ✓ 已确认：`IOPlatformExpert.cpo.json` 里没有 sysroot，只有 `--target=arm64-apple-ios17.0` ✓ |
+| `scripts/data/merlinx-legacy-display-abi.json` | ✅ 从参考移植带入，与设备无关（同一 iPadOS 预链接内核）✓ |
+| `package/DandelionLegacyDisplay.cpp` | ✅ 由 `MerlinxLegacyDisplay.cpp`（711 行）复制而来；**只有 3 处板级引用**（两个颜色常量 + 一个启动参数名），已改名 ✓ |
+| `drivers/GopFramebuffer/` | ✅ 从框架复制（12 个文件，含 `NativeGOPPresenter.cpp`、`NativeLegacyDisplay.cpp`）✓ |
+
+调好的接线（可原样恢复）：
+
+```toml
+# board.toml 的 archives 里
+"build-arm-driver.py NativeGOPPresenter",
+"build-gop-legacy-display.py",
+
+# configs/dandelion_defconfig
+CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
+CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
+
+# kernel_args
+offline-mobile-graphics-load=1 offline-mobile-graphics-client=1
+offline-legacy-register=1 offline-legacy-gop=1 offline-legacy-unit-scale=2
+offline-legacy-pm=1 offline-legacy-phase=4 offline-legacy-transfer=1
+offline-legacy-validate=1 offline-legacy-cpu-present=1
+```
+
+### 卡住的位置：`build-arm-driver.py` 在树里找不到驱动
+
+```
+clang-24: error: no such file or directory:
+  .../dandelion/tree/drivers/GopFramebuffer/NativeGOPPresenter.cpp
+```
+
+`scripts/unixnu/tree.py` 第 50 行会把 `('drivers','kits','patches','refer')` 复制进树，
+第 79/82 行再按**模块**建立链接 ✓ 但本次构建时树里并没有 `drivers/GopFramebuffer` ✗
+
+**下次从这里查**：
+
+1. `feeds.toml` 目前只有一个 `soc` 源（`mt6765`），没有把 `drivers/` 作为模块声明 ✗
+   —— 需要弄清 `tree.py` 的 `module.path` 从哪来（`feeds.toml` 的 source 还是 `components.toml`）；
+2. 也可能框架的 `drivers/` 复制步骤只对**框架自带**的模块生效，设备仓库自带的
+   `drivers/` 不会被复制 → 那就把 `GopFramebuffer` 放到 `package/` 并改脚本路径；
+3. 验证方法：构建前直接看 `tree/drivers/` 是否存在，不必等 clang 报错。
+
+### 当前状态
+
+archives / config / boot args 都已**回退**到工作配置 ✓ 镜像 `1ee5594d`（内核同 `b5f22927`）✓
+`package/DandelionLegacyDisplay.cpp`、`scripts/build-gop-legacy-display.py`、
+`scripts/data/merlinx-legacy-display-abi.json`、`drivers/GopFramebuffer/` 都保留在仓库里 ✓
