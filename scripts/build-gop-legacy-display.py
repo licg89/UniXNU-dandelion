@@ -185,7 +185,7 @@ record = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/D
 args = record['arguments']
 command = []
 index = 0
-source = ROOT / 'package/DandelionLegacyDisplay.cpp'
+source = ROOT / 'kits/dandelion/DandelionLegacyDisplay.cpp'
 while index < len(args):
     value = args[index]
     if value == record['file']:
@@ -223,7 +223,7 @@ sources = [ROOT / 'drivers/GopFramebuffer/NativeLegacyDisplay.cpp',
            ROOT / 'drivers/GopFramebuffer/NativeLegacyRequest.h',
            ROOT / 'drivers/GopFramebuffer/NativeGOPPresenter.cpp',
            ROOT / 'drivers/GopFramebuffer/NativeGOPWire.h',
-           ROOT / 'package/DandelionLegacyDisplay.cpp',
+           ROOT / 'kits/dandelion/DandelionLegacyDisplay.cpp',
            ROOT / 'scripts/data/merlinx-legacy-display-abi.json',
            ROOT / 'scripts/build-gop-legacy-display.py']
 (OUT / 'build-report.json').write_text(json.dumps(dict(

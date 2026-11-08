@@ -4637,3 +4637,78 @@ clang-24: error: no such file or directory:
 archives / config / boot args 都已**回退**到工作配置 ✓ 镜像 `1ee5594d`（内核同 `b5f22927`）✓
 `package/DandelionLegacyDisplay.cpp`、`scripts/build-gop-legacy-display.py`、
 `scripts/data/merlinx-legacy-display-abi.json`、`drivers/GopFramebuffer/` 都保留在仓库里 ✓
+
+---
+
+## 0.87 显示栈：驱动库已能构建，只差 CONFIG→-D 的传递（2026-11-08 23:0x–23:4x）
+
+### 本轮解决的三个接线问题
+
+**1. 板级必须声明组件，否则树里不会有驱动**
+
+`scripts/unixnu/tree.py` 只链接 `components.toml` 里登记、且**板级 `[components] include` 声明**的模块 ✗
+往设备仓库的 `drivers/` 里直接放文件**没有任何作用** ✓
+参考移植的写法：
+
+```toml
+[components]
+include = [..., "GopFramebuffer"]
+```
+
+**2. 设备自己的 `package/` 在树里叫 `kits/<kit>/`**
+
+```
+tree/kits/dandelion -> /root/work/UniXNU-dandelion/package
+```
+
+而 `tree/package` 指向的是**框架的** `/root/work/UniXNU/package` ✗
+所以 `build-gop-legacy-display.py` 里读胶水文件的路径必须是
+`ROOT / 'kits/dandelion/DandelionLegacyDisplay.cpp'` ✓（已改 ✓）
+
+**3. 内核编译不需要 `-isysroot`**
+
+`IOPlatformExpert.cpo.json` 的 flags 里只有 `--target=arm64-apple-ios17.0`，没有 sysroot ✓
+所以脚本只需把三处 `xcrun` 换成本机工具链：
+
+```
+clang  /opt/unixnu-linux/llvm/bin/clang
+ar     /opt/unixnu-linux/CommandLineTools/usr/bin/ar
+```
+
+### 现在能构建出来的东西 ✓
+
+```
+tree/build/native-legacy-display/libNativeLegacyDisplay.late.a   1007624 bytes ✓
+tree/build/native-gop-presenter/NativeGOPPresenter.o             277968 bytes ✓
+```
+
+**驱动库本身已经编译成功** ✓ 说明胶水代码（711 行，从参考移植复制）与 ABI 表都适配本机 ✓
+
+### 唯一剩余的卡点：`CONFIG_XNU_NATIVE_LEGACY_DISPLAY` 没进编译标志
+
+`.config` 第 109 行有 `CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y` ✓
+但内核编译命令行里 `XNU_NATIVE_LEGACY_DISPLAY` 出现 **0 次** ✗
+—— 目前只有 `XNU_EMMC_SERIAL`、`XNU_NATIVE_PAN` 这几个在
+`scripts/build-xnu-4k-baseline.sh` 里被**逐个手工映射**成 `-D` ✓
+所以要么在框架该脚本里补一条映射，要么找到框架把 `.config` 转 `-D` 的统一入口 ✓
+
+**解法建议**（下次）：
+
+```bash
+# scripts/build-xnu-4k-baseline.sh 里，模仿 XNU_EMMC_SERIAL 的写法
+LEGACY_DISPLAY=${XNU_NATIVE_LEGACY_DISPLAY:-0}
+EXTRA_CFLAGS="$EXTRA_CFLAGS -DXNU_NATIVE_LEGACY_DISPLAY=$LEGACY_DISPLAY"
+```
+
+并在 `scripts/unixnu/kernel.py` 的环境变量里把 `.config` 的该项传成 `XNU_NATIVE_LEGACY_DISPLAY` ✓
+
+### 仓库里保留的显示资产（都可直接用）
+
+| 文件 | 说明 |
+| --- | --- |
+| `package/DandelionLegacyDisplay.cpp` | 711 行胶水 ✓ 仅 3 处板级引用，已改名 ✓ |
+| `scripts/build-gop-legacy-display.py` | 已适配 Linux ✓ 路径指向 `kits/dandelion/` ✓ |
+| `scripts/data/merlinx-legacy-display-abi.json` | vtable 与方法地址表 ✓ 与设备无关 ✓ |
+| `drivers/GopFramebuffer/` | 12 个文件 ✓ |
+
+当前 `board.toml` / `defconfig` 已回退到工作配置 ✓ 镜像可用 ✓
