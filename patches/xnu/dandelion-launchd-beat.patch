@@ -57,3 +57,5 @@
  	load_init_program(p);
  	lock_trace = 1;
  }
+
+# beat-heartbeat-note: nudges the input hash so the kernel step recompiles

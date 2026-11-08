@@ -728,3 +728,30 @@ extern "C" void
 native_diag_process_summary (void)
 {
 }
+
+/*
+ * Boot-progress text hooks of the display path.  Stubbed while the provider is exercised: losing the
+ * on-screen progress messages is acceptable, losing the provider is not.
+ */
+extern "C" void
+native_gop_text (unsigned line, const char *text)
+{
+  (void)line;
+  (void)text;
+}
+
+extern "C" void
+native_gop_redraw_ring (void)
+{
+}
+
+/*
+ * Provided by the AppleKeyStoreState component, which this port does not select yet.  The kernel's
+ * display path allocates a key-store service here; returning nothing keeps the link honest.
+ */
+class IOService;
+extern "C" IOService *
+native_keyevents_allocate (void)
+{
+  return nullptr;
+}
