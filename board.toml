@@ -39,13 +39,7 @@ include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink", "DarwinBoot",
            # that query by calling the weak native_ufs_block_authenticates, which the eMMC
            # driver defines.  It never probes here: no virtio-mmio node exists on this SoC.
            #
-                                                                             "VirtioMmioBlock",
-           #
-           # The display provider: IOMobileFramebufferLegacy over the firmware GOP
-           # framebuffer, with the vtable and method addresses audited from the
-           # reference prelinked kernel (scripts/data/merlinx-legacy-display-abi.json).
-           #
-           "GopFramebuffer"]
+                                                                             "VirtioMmioBlock"]
 
 [kernel]
 defconfig = "dandelion_defconfig"
@@ -55,11 +49,6 @@ config_fragments = ["arch:configs/common.config", "soc:configs/mt6765.config", "
 patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches/xnu/series", "device:patches/xnu/series"]
 
 "archives" = [
-  #
-  # Display: the legacy framebuffer provider and the GOP presenter it drives.
-  #
-  "build-arm-driver.py NativeGOPPresenter",
-  "build-gop-legacy-display.py",
   "build-corecrypto-14.py",
   "build-corecrypto-14.py --namespace",
   "build-arm-driver.py ArmDTPlatform",
@@ -178,7 +167,7 @@ title = "UniXNU"
 #
 trust_cache_sha256 = "4563bdbf6ed8f72237d45dbba3ccde432634338f95c10d79d5d4631678a97c7c"
 kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1", "sheng-no-lc=1", "sheng-skip-cs=1",
-               "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480", "native-msdc-mode=1", "launchd_unsecure_cache=1", "wdt=-1", "ignition_level=1", "-no_slto_panic", "sheng-aks=1", "native-msdc-clock=1", "native-msdc-clk=4", "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=1", "offline-legacy-register=1", "offline-legacy-gop=1", "offline-legacy-unit-scale=2", "offline-legacy-pm=1", "offline-legacy-phase=4", "offline-legacy-transfer=1", "offline-legacy-validate=1", "offline-legacy-cpu-present=1"]
+               "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480", "native-msdc-mode=1", "launchd_unsecure_cache=1", "wdt=-1", "ignition_level=1", "-no_slto_panic", "sheng-aks=1", "native-msdc-clock=1", "native-msdc-clk=4"]
 #
 # amfi_get_out_of_my_way=1 keeps AMFI's policy checks relaxed for this developer
 # image.  cs_enforcement_disable=1 was tried and removed: AMFI refuses it outright
