@@ -4374,3 +4374,55 @@ D4K beat 36: procs=79 reads=227923           ← 19.7 MB/s，procs 峰值 90
 从"永远卡在根卷"到 **"100 个进程、amfid 运行、启动 10–15 分钟"** ✓
 三个真实缺陷已修：发布循环漏掉末窗口就绪等待、时钟切换位置、CKPDN 极性 + DTOC 重算 ✓
 剩余唯一缺陷是 PIO 的偶发误码，已有重试兜底，不影响系统启动到服务图。
+
+---
+
+## 0.81 显示栈的准备工作与本机工具链位置（2026-11-08 20:0x–20:3x）
+
+### 为什么下一步是显示
+
+- 系统已能跑到 **90–100 个进程、pid 176、`amfid` 运行**，但**日志写不出来** ✗
+  （控制台与存储同源，跑到一定阶段 eMMC 写入失效）
+- 屏幕停在 UniXNU 菜单 ✗ —— 内核接管后不再画屏 ✓
+- 因此现在**看得见**比任何后续功能都重要，且 SpringBoard 本身也需要显示 ✓
+
+### 已带进来的参考材料（提交 `109a480`）
+
+- `scripts/build-gop-legacy-display.py`（来自 UniXNU-merlinx）✓
+- `scripts/data/merlinx-legacy-display-abi.json`（`IOMobileFramebufferLegacy` 方法地址表，
+  从同一 iPadOS 17.7.11 预链接内核提取，**与设备无关，可直接复用**）✓
+
+### 它还不能直接跑，缺三样
+
+| 缺项 | 说明 |
+| --- | --- |
+| `package/MerlinxLegacyDisplay.cpp` | 参考移植的**板级胶水**（framebuffer 基址、显示策略），我们需要写自己的 |
+| `build/native-gop-presenter/NativeGOPPresenter.o` | 需先构建该对象 |
+| `xcrun` | Linux 上是半吊子（`--show-sdk-path` 返回 `iphoneos`、clang 是 x86 主机版）|
+
+### 本机工具链位置（已确认）
+
+```
+clang     /opt/unixnu-linux/llvm/bin/clang          (clang 24)
+ar/libtool /opt/unixnu-linux/CommandLineTools/usr/bin/
+SDK 根    <tree>/.cache/fakeroot
+```
+
+替换脚本里三处 `xcrun`：`--show-sdk-path` → fakeroot；`clang` → 上面的 clang；`ar` → 上面的 ar ✓
+
+### 便宜的替代方案（framebuffer 文字控制台）
+
+panic 屏已经能在 framebuffer 上画字（`scripts/xnu-panic-screen.c` 里的 `gFont[]` 12×5 字形 +
+绘制循环 ✓），且启动日志给了视频参数：
+
+```
+DARWINBOOT: video base=0x7ec50000 row=2944 width=720 height=1600 depth=32
+```
+
+做法：在 `native_msdc_console_sink()` 里把每块 512 字节文本同时画到 framebuffer ✓
+需要先确认内核里如何映射该物理地址（panic 屏是直接按地址写的 ✓ 说明可行）✓
+
+### 当前可工作状态（回退点）
+
+镜像 `9a532bb5` / 等效配置：`native-msdc-clock=1` + `native-msdc-clk=4`
+→ 分频 4 验证通过、13–25 MB/s、`procs` 90–100、pid 176、哈希失败 1–5 次（重试兜底）。
