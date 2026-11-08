@@ -640,7 +640,8 @@ void hostSetClockDivider (unsigned divider, unsigned previous)
   else if (scaled == 0) scaled = 1;
   if (scaled > 255) scaled = 255;
   wr (kSdcCfg, (sdc & ~kSdcCfgDtoc) | ((uint32_t)scaled << 24));
-  IODelay (1000);
+  // The first transfer right after a switch failed in the self test; give the bus time to settle.
+  IODelay (20000);
   IOLog ("NativeMsdc: ckdiv %u (from %u), dtoc %u -> %u, cfg %08x\n",
          divider, previous, dtoc, (unsigned)scaled, rd (kMsdcCfg));
 }
@@ -690,6 +691,32 @@ void hostRaiseClock (void)
   if (bootArgument ("native-msdc-clkreport", 1, 0)) {
     panic("D4K clock: div=%u smp=%u verified=%d cfg=%08x sdc=%08x",
           best, bestSample, best == inherited ? 0 : 1, rd (kMsdcCfg), rd (kSdcCfg));
+  }
+  // Repeat-read self test.  Reads are supposed to be deterministic, so any difference between two
+  // reads of the same sector is corruption, and where it lands says whether the FIFO drain is
+  // losing bytes (fixed offset) or the transfer itself is unreliable (scattered).
+  if (bootArgument ("native-msdc-iotest", 1, 0)) {
+    uint8_t *a = gHost.bounce;
+    uint8_t *b = gHost.bounce + kSector;
+    IOReturn first = hostReadPio (kCmdReadSingle, kSweepSectors[0], a, 1);
+    unsigned mismatches = 0, firstOffset = 0xffffffffu, differing = 0;
+    for (unsigned round = 0; round < 8 && first == kIOReturnSuccess; round++) {
+      if (hostReadPio (kCmdReadSingle, kSweepSectors[0], b, 1) != kIOReturnSuccess) {
+        mismatches = 0xffffffffu;
+        break;
+      }
+      for (unsigned i = 0; i < kSector; i++) {
+        if (a[i] != b[i]) {
+          if (firstOffset == 0xffffffffu) firstOffset = i;
+          differing++;
+        }
+      }
+      if (differing) mismatches++;
+    }
+    panic("D4K iotest: first=%d rounds_with_diff=%u bytes_diff=%u at=%u a=%02x%02x b=%02x%02x",
+          (int)first, mismatches, differing, firstOffset,
+          a[firstOffset == 0xffffffffu ? 0 : firstOffset], a[firstOffset == 0xffffffffu ? 1 : firstOffset + 1],
+          b[firstOffset == 0xffffffffu ? 0 : firstOffset], b[firstOffset == 0xffffffffu ? 1 : firstOffset + 1]);
   }
 }
 
