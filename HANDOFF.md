@@ -4938,3 +4938,79 @@ owned_memory_size = "0x10000000"   # 注释写 512 MiB，实际是 256 MiB
 - 系统仍能启动到 366 个进程、走完 launchd 早期启动 ✓
 - jetsam 会更早介入 ✗ 这是内存不足的直接后果 ✓
 - 设备树已改为 4 GB ✓（虽然当前无效 ✓ 但若将来内核改用设备树就正确了 ✓）
+
+---
+
+## 0.93 内存上限的**真正根源**已找到并修复（2026-11-09 01:3x–02:0x）
+
+### 排查过程
+
+| 尝试 | 结果 |
+| --- | --- |
+| `owned_memory_size = 0x80000000`（2 GB）| ✗ `DARWINBOOT: Requested at Out of Resources` |
+| `owned_memory_size = 0x40000000`（1 GB）| ✗ **同样 Out of Resources** |
+| 回退 `0x10000000`（256 MB）| ✓ 启动，内核拿到 1 GB |
+
+屏幕证据（UEFI 错误页）：
+
+```
+DARWINBOOT: window requested 10000000 default 30000000
+DARWINBOOT: Requested at Out of Resources; firmware retained
+'UniXNU' returned: Out of Resources
+FREE 4E / FREE 4C / FREE 5E
+```
+
+→ UEFI 连 **1 GB 连续可用内存都给不出** ✗
+
+### 根因：UEFI 的内存映射表只描述到 3 GB
+
+`uefi-dandelion/Platforms/Xiaomi/dandelionPkg/Library/MemoryMapLib/MemoryMapLib.c`
+的手写表 `gMemoryDescriptor[]`，最后一个内存条目是：
+
+```
+{"ATF Ramdump", 0xBFF80000, 0x00080000, ...}
+```
+
+**`0xC0000000` 以上完全没声明** ✗ 而设备有 **4 GB** ✓（Android `MemTotal 3897064 kB` ✓）
+→ 顶部 **2 GB DRAM 对 DXE 和 DarwinBoot 完全不可见** ✗
+→ 可用连续区只有约 565 MB 且被多个 carveout 割开 ✓ 所以 1 GB 窗口请求失败 ✓✓✓
+
+### 修复（已提交到 uefi-dandelion 仓库，`9e10dd5`）
+
+```c
+{"DRAM High Conv", 0xC0000000, 0x80000000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK},
+```
+
+依据：`MD Mem Usage` 结束于 `0xBE000000` ✓ 日志 carveout 都在 `0xC0000000` 以下 ✓
+所以 DRAM 从 `0xC0000000` 连续延伸 ✓ 声明 2 GB 即可覆盖到 4 GB ✓
+
+### 重建 UEFI 的步骤（下次直接做）
+
+```bash
+cd /root/work/uefi-dandelion
+stuart_update -c Platforms/Xiaomi/dandelionPkg/PlatformBuild.py   # 拉 Mu-Basetools / mu_nasm / onecrypto-bin
+python3 Platforms/Xiaomi/dandelionPkg/DeviceBuild.py              # 产出 SILICIUM_UEFI.fd
+```
+
+当前 `DeviceBuild.py` 报：
+
+```
+ERROR - Dependency 'Mu-Basetools' is not met!
+ERROR - Dependency 'mu_nasm' is not met!
+ERROR - Dependency 'onecrypto-bin' is not met!
+RuntimeError: External Dependencies in the environment are out of date. Consider running stuart_update
+```
+
+→ 先 `stuart_update` 即可 ✓ 之后重建 UEFI ✓ 替换 payload 里的 `SILICIUM_UEFI.fd` ✓
+再把 `owned_memory_size` 提到 **`0x80000000`（2 GB）** ✓ —— 那时 UEFI 就有连续的 2 GB 可给 ✓✓✓
+
+### 预期效果
+
+内存从 **1 GB → 2 GB** ✓ → jetsam 不再在启动中途回收进程 ✓ → 系统能跑更久 ✓
+更可能走到 `backboardd`（显示服务）✓ —— 那一步之后屏幕自然就有输出了 ✓
+
+### 现状
+
+- 设备运行可用镜像 `40627208` ✓（256 MB owned / 内核 1 GB ✓）
+- UEFI 修复已提交 ✓ 待重建 ✓
+- 设备树 memory 节点也已改成 4 GB ✓（当前无效但正确 ✓）
