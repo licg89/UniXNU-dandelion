@@ -5014,3 +5014,66 @@ RuntimeError: External Dependencies in the environment are out of date. Consider
 - 设备运行可用镜像 `40627208` ✓（256 MB owned / 内核 1 GB ✓）
 - UEFI 修复已提交 ✓ 待重建 ✓
 - 设备树 memory 节点也已改成 4 GB ✓（当前无效但正确 ✓）
+
+---
+
+## 0.94 UEFI 重建被第三方包源卡住（2026-11-09 02:0x）
+
+### 现状
+
+内存映射的修复已提交到 `uefi-dandelion` 仓库（`9e10dd5` ✓），但要让它生效必须重建
+`SILICIUM_UEFI.fd` ✓ 而构建在**依赖获取**这一步被卡住 ✗：
+
+```
+ERROR - Dependency 'mu_nasm' is not met!
+RuntimeError: External Dependencies in the environment are out of date.
+```
+
+`mu_nasm` 的定义在 `Mu_Basecore/BaseTools/Bin/nasm_ext_dep.yaml` ✓：
+
+```json
+{
+  "id": "nasm-1",
+  "type": "nuget",
+  "name": "mu_nasm",
+  "source": "https://pkgs.dev.azure.com/projectmu/mu/_packaging/Basetools-Binary/nuget/v3/index.json",
+  "version": "20016.1.1"
+}
+```
+
+### 已尝试、都失败
+
+| 尝试 | 结果 |
+| --- | --- |
+| `stuart_update -c .../DeviceBuild.py` | ✗ 2 个依赖成功、`mu_nasm` 失败 |
+| `https://www.nuget.org/api/v2/package/mu_nasm/20016.1.1` | ✗ 404/网络失败 |
+| `https://api.nuget.org/v3-flatcontainer/mu_nasm/20016.1.1/...` | ✗ 失败 |
+| Azure DevOps flat2 直链 | ✗ 超时/失败 |
+| 手工造 `mu_nasm_extdep/Linux-x86/nasm → /usr/bin/nasm` | ✗ stuart 仍报依赖未满足（它校验包元数据 ✗）|
+
+**本机 `nasm` 是装了的**（`/usr/bin/nasm` ✓）—— 缺的只是那个 **NuGet 包封装** ✗
+
+### 三条可行路线（下次）
+
+1. **在 Windows 上构建 UEFI** ✓ —— `uefi-dandelion` 的 `Building.md` 有 Windows 步骤 ✓
+   用户机器通常能访问 Azure DevOps 源 ✓ 产物 `SILICIUM_UEFI.fd` 拷回 WSL 即可 ✓
+2. **GitHub Actions** ✓ —— 与 Data seed 相同的 CI 思路 ✓ runner 网络通常可访问该源 ✓
+3. **手工补包** ✓ —— 若能在别处拿到 `mu_nasm.20016.1.1.nupkg` ✓
+   解出 `nasm` 放进 `Mu_Basecore/BaseTools/Bin/mu_nasm_extdep/Linux-x86/nasm` ✓
+   并让 `stuart_update` 认可（需要包内的 `.version`/hash 元数据 ✓）
+
+> 注意：`mu_nasm` 是 **x86** 汇编器 ✓ 本移植目标为 **ARM64** ✗ 理论上不需要它 ✓
+> 但 stuart 的依赖校验是**无条件**的 ✓ 所以绕不过去 ✗
+
+### 内存修复的完整链路（记住顺序）
+
+1. ✅ 已在 `uefi-dandelion` 加入 `DRAM High Conv`（`0xC0000000` + 2 GiB）
+2. ⬜ 重建 `SILICIUM_UEFI.fd`（被 `mu_nasm` 卡住 ✓）
+3. ⬜ 把新的 `SILICIUM_UEFI.fd` 放进 payload
+4. ⬜ `board.toml` 的 `owned_memory_size` 改为 `0x80000000`（2 GiB）
+5. ⬜ 构建 boot.img、刷入 → 内核应报告约 **131000 free pages** ✓
+6. ⬜ 观察 jetsam 是否推迟、是否出现 `backboardd`
+
+### 设备状态
+
+运行 `40627208` ✓（`owned_memory_size` 256 MiB ✓ 内核 1 GiB ✓ 366 进程 ✓ 工作正常 ✓）
