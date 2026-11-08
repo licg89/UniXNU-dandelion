@@ -4827,3 +4827,56 @@ watchdogd[366] exited -- exit reason namespace 1 subcode 0x4, description none
 2. 数一数哪些服务在吃内存；用 launchd 的 `disabled.plist` 关掉不需要的后台服务 ✓
    （seed 里已经有这个文件，但 §0.77 显示未被读取 ✓ 需要确认路径与属性）
 3. 必要时调 jetsam 的 memorystatus 阈值 ✓（`kern.max_task_pmem` 等 sysctl ✓）
+
+---
+
+## 0.91 显示栈：内核终于编译了，链接缺 5 个符号（2026-11-09 00:1x–00:2x）
+
+### 找到"内核从不重编译"的真正原因 ✓
+
+```python
+# scripts/unixnu/kernel.py 的 build()
+record = ctx.tree / 'build/xnu/ios-obj/.../osfmk/DEVELOPMENT/startup.o.json'
+if not record.is_file():
+    ...   # 只有记录不存在时才编译
+```
+
+**框架只在编译记录缺失时才编译内核** ✓ 而 `tree/build/xnu/` **不在 `.cache/xnu-work` 里** ✗
+所以之前的"清树"没删掉记录 ✗ → 永远复用旧内核 ✗ → `-DXNU_NATIVE_LEGACY_DISPLAY` 从未生效 ✓
+
+**已修**：`build_clean_patch.sh` 现在同时删除
+`tree/build/xnu/ios-obj`、`ios-sym`、`ios-dst` ✓（已实测：内核确实开始编译 ✓）
+
+### 现在链接缺的 5 个符号
+
+```
+Undefined symbols for architecture arm64:
+  _native_gop_redraw_ring
+  _native_gop_text
+  _native_keyevents_allocate
+  _native_adreno_fences
+  _native_diag_process_summary
+```
+
+这些是 `XNU_NATIVE_LEGACY_DISPLAY=1` 打开后内核要调用的钩子 ✓ 来源分析：
+
+| 符号 | 应由谁提供 |
+| --- | --- |
+| `native_gop_text` / `native_gop_redraw_ring` | **GopFramebuffer 组件自己的输出** `build/gop-framebuffer/libGopFramebuffer.a`（`components.toml` 里 `outputs` 字段写着 ✓）—— 我们目前只链了自己生成的 `libNativeLegacyDisplay.late.a` ✗ |
+| `native_keyevents_allocate` | 输入/键盘组件（参考移植里对应组件未在本次带入）|
+| `native_adreno_fences` | GPU 组件（参考移植用 `MaliG52` ✓）|
+| `native_diag_process_summary` | 诊断组件 |
+
+**下一步（按优先级）**：
+
+1. 把 `GopFramebuffer` 组件的 `outputs`（`libGopFramebuffer.a` / `.late.a`）也加入 archives ✓
+   —— 这是最可能一次解决两个 gop 符号的路径 ✓
+2. 剩下三个用**stub**补 ✓（参考移植的 `drivers/MerlinxStubs/MerlinxStubs.c` 只有 60 行 ✓
+   全部是 `return 0` 之类的空实现 ✓ 可直接照抄一个 DandelionStubs.c ✓）
+3. stub 只补 `keyevents`/`adreno`/`diag` ✓ **不要** stub 两个 `gop` 符号 ✗
+   —— 那两个正是显示输出本身 ✓ stub 掉就等于没有画面 ✗
+
+### 工具提醒
+
+- `nm` 读不了 Mach-O 归档 ✗ 要用 `/opt/unixnu-linux/llvm/bin/llvm-nm` ✓
+- 清树必须删 `tree/build/xnu/*` ✓ 否则框架不会重编译 ✓（本轮最大发现 ✓）

@@ -106,6 +106,7 @@ CONFIG_XNU_BUILD_ARCHIVES=y
 
 CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
 CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
+CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
 
 # Not set until the matching driver exists for this board:
 # CONFIG_XNU_NATIVE_UFS is not set
