@@ -174,7 +174,21 @@ title = "UniXNU"
 #
 trust_cache_sha256 = "4563bdbf6ed8f72237d45dbba3ccde432634338f95c10d79d5d4631678a97c7c"
 kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1", "sheng-no-lc=1", "sheng-skip-cs=1",
-               "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480", "native-msdc-mode=1", "launchd_unsecure_cache=1", "wdt=-1", "ignition_level=1", "-no_slto_panic", "sheng-aks=1", "native-msdc-clock=1", "native-msdc-clk=4", "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=1", "offline-legacy-register=1", "offline-legacy-gop=1", "offline-legacy-unit-scale=2", "offline-legacy-pm=1", "offline-legacy-phase=4", "offline-legacy-transfer=1", "offline-legacy-validate=1", "offline-legacy-cpu-present=1"]
+               "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480", "native-msdc-mode=1", "launchd_unsecure_cache=1", "wdt=-1", "ignition_level=1", "-no_slto_panic", "sheng-aks=1", "native-msdc-clock=1", "native-msdc-clk=4", "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=1", "offline-legacy-register=1", "offline-legacy-gop=1", "offline-legacy-unit-scale=2", "offline-legacy-pm=1", "offline-legacy-phase=4", "offline-legacy-transfer=1", "offline-legacy-validate=1", "offline-legacy-cpu-present=1", "vm_compressor=2"]
+#
+# vm_compressor=2 is VM_PAGER_COMPRESSOR_NO_SWAP (osfmk/vm/vm_pageout.h:656), and it is the single
+# cheapest memory win on this board.  Without the argument the kernel takes the RELEASE default
+# VM_PAGER_FREEZER_DEFAULT (8), which vm_config_init() maps to VM_PAGER_FREEZER_COMPRESSOR_NO_SWAP
+# (0x10) — and that case sets neither compressor_is_active nor swap_is_active, i.e. no compressed
+# memory and no swap at all, so jetsam has to kill (measured: "vm_compressor_mode" is 8, then
+# "mapping deprecated VM_PAGER_FREEZER_DEFAULT to VM_PAGER_FREEZER_COMPRESSOR_NO_SWAP", and 366
+# processes died on OS_REASON_JETSAM subcode 0x4 at 1 GiB).  The boot argument takes precedence over
+# the device-tree key kern.vm_compressor (vm_fault.c:286-311), and real Apple boot chains supply that
+# key; this port's ADT does not, which is why the default leaked through.
+# Mode 2 rather than 4 (COMPRESSOR_WITH_SWAP): with swap, the compressor needs the swap files that
+# currently cannot be created before the Data volume is mounted (see HANDOFF 0.103); in-core
+# compression alone has no such dependency.
+
 #
 # amfi_get_out_of_my_way=1 keeps AMFI's policy checks relaxed for this developer
 # image.  cs_enforcement_disable=1 was tried and removed: AMFI refuses it outright
