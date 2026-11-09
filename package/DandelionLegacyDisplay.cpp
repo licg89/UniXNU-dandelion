@@ -30,6 +30,20 @@ static void dline(unsigned line, const char *format, ...) {
     native_gop_text(line, text);
 }
 
+/*
+ * Reaches the kernel console (and therefore the log block this port reads back), unlike dline(): the
+ * on-screen text hook native_gop_text is stubbed while the provider is being brought up, so dline()
+ * writes nothing at all.  Stage markers only; no new state.
+ */
+static void slog(const char *format, ...) {
+    char text[160];
+    va_list list;
+    va_start(list, format);
+    vsnprintf(text, sizeof(text), format, list);
+    va_end(list);
+    IOLog("DANDELION-DISP %s\n", text);
+}
+
 /* Last-resort visual path: prove the boot GOP still scans out even when the
  * original framebuffer provider is not accepted by userland. */
 static void gopPaint(const char *why, bool full) {
@@ -136,6 +150,9 @@ volatile uint64_t native_legacy_gop_map,native_legacy_gop_virtual,native_legacy_
 volatile uint32_t native_legacy_gop_width,native_legacy_gop_height;
 volatile uint32_t native_legacy_registration_calls,native_legacy_properties_length;
 volatile uint32_t native_legacy_dt_attached;
+// 1 when the display's provider is a real AppleARMIODevice (allocated from the prelinked class),
+// 0 when the class was not available and the nub fell back to a plain IOService.
+volatile uint32_t native_legacy_armio_device;
 volatile int native_legacy_unit_scale_status=-1;
 volatile uint32_t native_legacy_unit_scale_calls,native_legacy_chosen_scale,native_legacy_chosen_rotation;
 volatile uint32_t native_legacy_pm_stage,native_legacy_pm_calls,native_legacy_pm_callbacks,native_legacy_pm_ordinal;
@@ -629,14 +646,37 @@ void native_legacy_display_late_probe(void) {
         && !video.v_rotate && video.v_width<=16384 && video.v_height<=16384
         && video.v_rowBytes>=video.v_width*4 && video.v_rowBytes<=UINT64_MAX/video.v_height) {
         native_legacy_video_base=video.v_baseAddr;native_legacy_video_bytes=video.v_rowBytes*video.v_height;dline(23,"DISP VID %llx %ux%u",(unsigned long long)video.v_baseAddr,(unsigned)video.v_width,(unsigned)video.v_height);
+        {unsigned phase=0;PE_parse_boot_argn("offline-legacy-phase",&phase,sizeof(phase));
+         slog("late surface=%d found=%d phase=%u video=%llx %ux%u",native_legacy_surface_status,native_legacy_surface_found,phase,
+              (unsigned long long)video.v_baseAddr,(unsigned)video.v_width,(unsigned)video.v_height);}
         // A real firmware framebuffer resource, with addresses and extent
         // obtained from the actual GOP handoff. It has no invented compatible,
         // display list, panel timing, GPU/fence completion or vendor registers.
-        // A plain service: an IOPlatformDevice expects the platform expert as its provider (compareName calls it), not the resources.
-        native_legacy_stage=4;IOService *nub=new IOService;
+        //
+        // The provider must be an AppleARMIODevice, and that is not a guess: the original
+        // IOMobileFramebufferLegacy::start() bound by build-gop-legacy-display.py walks the provider's
+        // metaclass chain against AppleARMIODevice's own metaclass (the cast helper at
+        // 0xfffffff0078cfd50 compares the metaclass, then follows superclass) and its failure branch
+        // logs "%s: provider was not AppleARMIODevice." against __PRETTY_FUNCTION__. A plain IOService
+        // can never pass that test. The class itself is present in this kernel - the original display
+        // kext references its metaclass - so allocate the genuine class rather than a stand-in: a local
+        // class that merely shares the name fails the pointer comparison.
+        native_legacy_stage=4;OSObject *allocated=OSMetaClass::allocClassWithName("AppleARMIODevice");
+        IOService *nub=OSDynamicCast(IOService,allocated);
+        native_legacy_armio_device=nub?1:0;dline(27,"DISP ARMIO %u",native_legacy_armio_device);
+        slog("armio=%u class=%s",native_legacy_armio_device,
+             nub?nub->getMetaClass()->getClassName():"none");
+        if(!nub){if(allocated)allocated->release();nub=new IOService;}
         native_legacy_nub=(uintptr_t)nub;bool nubAttached=false,nubStarted=false,attached=false,started=false;
         IORegistryEntry *displayTreeParent=nullptr;bool dtAttached=false;
         IOService *parent=IOService::getResourceService();
+        // An IOPlatformDevice (which AppleARMIODevice is) expects the platform expert as its provider;
+        // the resource service is the fallback for the plain-service case.
+        IOService *nubParent=parent;
+        if(native_legacy_armio_device) {
+            IOService *platform=OSDynamicCast(IOService,static_cast<IOService *>(IOService::getPlatform()));
+            if(platform)nubParent=platform;
+        }
         if(!activeKeyStore && parent) {
             IOService *aks=native_keyevents_allocate();
             if(aks && aks->init() && aks->attach(parent) && aks->start(parent)) {
@@ -647,10 +687,14 @@ void native_legacy_display_late_probe(void) {
         }
         IODeviceMemory *memory=IODeviceMemory::withRange(video.v_baseAddr,video.v_rowBytes*video.v_height);
         OSArray *ranges=OSArray::withCapacity(1);
-        if(nub && memory && ranges && parent && nub->init()) {
+        if(nub && memory && ranges && nubParent && nub->init()) {
             ranges->setObject(memory);nub->setDeviceMemory(ranges);nub->setName("NativeGOPFramebuffer");
-            nubAttached=nub->attach(parent);if(nubAttached)nubStarted=nub->start(parent);dline(25,"DISP NUB A%d S%d",nubAttached,nubStarted);
-            if(nubStarted) {
+            nubAttached=nub->attach(nubParent);if(nubAttached)nubStarted=nub->start(nubParent);dline(25,"DISP NUB A%d S%d",nubAttached,nubStarted);
+            slog("nub parent=%s attach=%d start=%d",nubParent->getMetaClass()->getClassName(),nubAttached,nubStarted);
+            // The attach is what the display needs from its provider; the provider's own start can
+            // still refuse (an IOPlatformDevice wants device-tree properties this nub does not
+            // carry), and that must not hide the display attempt behind a silent exit.
+            if(nubAttached) {
                 unsigned phase=0;PE_parse_boot_argn("offline-legacy-phase",&phase,sizeof(phase));
                 if(phase==4) {
                     // This is the actually implemented GOP display subsystem,
@@ -662,6 +706,7 @@ void native_legacy_display_late_probe(void) {
                         nub->setName("gop-display",gIODTPlane);dtAttached=nub->attachToParent(displayTreeParent,gIODTPlane);
                     }
                     OSSafeReleaseNULL(data);native_legacy_dt_attached=dtAttached;
+                    slog("dtattach=%d",dtAttached);
                 }
                 if(phase==3) {
                     IOService *presenter=native_gop_presenter_create();bool presenterAttached=false;
@@ -674,8 +719,10 @@ void native_legacy_display_late_probe(void) {
                     SInt32 score=0;native_legacy_probe_match=(phase!=4 || dtAttached) && display->probe(nub,&score)==display;
                     if(native_legacy_probe_match)attached=display->attach(nub);
                     if(attached){native_legacy_stage=5;started=display->start(nub);native_legacy_start_result=started;dline(26,"DISP P%d A%d S%d",native_legacy_probe_match,attached,started);}
+                    slog("disp probe=%d attach=%d start=%d",native_legacy_probe_match,attached,started);
                     if(started && phase==4) {
                         activeLegacyDisplay=display;activeGOPNub=nub;native_legacy_stage=10;dline(31,"DISP UP");
+                        slog("UP");
                         unsigned gopTest=0;PE_parse_boot_argn("dandelion-gop-test",&gopTest,sizeof(gopTest));
                         if(gopTest==1)gopPaint("TEST", false);
                         {
@@ -701,7 +748,7 @@ void native_legacy_display_late_probe(void) {
         native_legacy_stage=6;dline(31,"DISP FAIL");finishUnitScalePolicy(false);
         if(started)display->stop(nub);if(attached)display->detach(nub);
         if(dtAttached)nub->detachFromParent(displayTreeParent,gIODTPlane);
-        if(nubStarted)nub->stop(parent);if(nubAttached)nub->detach(parent);
+        if(nubStarted)nub->stop(nubParent);if(nubAttached)nub->detach(nubParent);
         OSSafeReleaseNULL(ranges);OSSafeReleaseNULL(memory);OSSafeReleaseNULL(nub);
         OSSafeReleaseNULL(displayTreeParent);
     }
