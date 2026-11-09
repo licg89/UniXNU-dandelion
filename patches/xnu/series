@@ -59,3 +59,11 @@ dandelion-skip-cs.patch
 dandelion-root-unverified.patch
 dandelion-launchd-beat.patch
 dandelion-owner-stage.patch
+#
+# The media that carries the SystemOS volume UUID is re-published while the owner cache mount
+# runs, so the /dev name the query returns can be stale by the time mount_common resolves it:
+# the same image produced one boot that mounted and one that died with ENOENT on '/dev/disk3s1',
+# a disk absent from that enumeration.  Re-resolve and retry up to four times, printing every
+# attempt, instead of deciding on one name.
+#
+dandelion-owner-retry.patch
