@@ -15,7 +15,8 @@ there, or let `.github/workflows/data-seed.yml` run it on a hosted macOS runner.
 
   1. an APFS volume named OwnerData at the size asked for, holding the OS
      volume's `private/var` without `staged_system_apps`, plus the empty
-     directories the userland expects to find
+     directories the userland and the kernel expect to find (notably `vm`, where
+     the kernel creates its swap files and which it never creates itself)
   2. packed with DarwinBoot's DBRDISK1 writer, so only the non-zero pages travel
 
 The container is created at its final size rather than grown into it: APFS lays
@@ -46,8 +47,28 @@ MIB = 1024 * 1024
 # APFS spends a noticeable part of a small container on its own metadata, so a
 # seed is only worth building when the tree it holds is comfortably smaller.
 FILL_LIMIT = 0.85
-# The userland expects these under the Data root even when the OS image has none.
-EMPTY_DIRS = ('keybags', 'mobile/tmp', 'tmp', 'run')
+# Directories the Data root (the volume this seed becomes, mounted at /private/var)
+# must hold even when the OS image has none, with the mode to create them with.
+#
+# 'vm' is not cosmetic: the kernel creates its swap files with
+# `vnode_open("/private/var/vm/swapfile0", O_CREAT | O_TRUNC | ...)`
+# (bsd/vm/vm_compressor_backing_file.c: vm_swapfile_open), and O_CREAT creates the
+# file but never the directory, so an image without it boots with no swap at all.
+# The 21H461 OS volume does ship private/var/vm (root:wheel 0755) and the seed
+# inherits it; listing it here keeps the guarantee local to this builder instead
+# of relying on the image.
+EMPTY_DIRS = (
+    ('vm', 0o755),
+    ('keybags', 0o755),
+    ('mobile/tmp', 0o755),
+    ('tmp', 0o1777),
+    ('run', 0o755),
+)
+# Modes reapplied to directories whether or not the image shipped them. Only the
+# two the boot depends on are here: 'tmp' must be the sticky world-writable scratch
+# space, and 'vm' must be Apple's 0755. Everything else keeps the image's mode --
+# notably 'run', which 21H461 ships as 0775 root:daemon.
+FORCED_MODES = (('tmp', 0o1777), ('vm', 0o755))
 # Copied into the seed but huge and replaceable on first boot.
 SKIP_DIRS = ('staged_system_apps',)
 
@@ -225,6 +246,27 @@ def copy_var(source: Path, target: Path) -> tuple[int, int]:
     return count, total
 
 
+def create_empty_dirs(root: Path) -> list:
+    """Create EMPTY_DIRS under root; returns their names.
+
+    Runs after copy_var, so a directory the OS image already provides keeps its
+    contents and its mode (the image's `run` is 0775 root:daemon) and only a new
+    one gets the mode from EMPTY_DIRS. FORCED_MODES then reapplies the two modes
+    the boot depends on.
+    """
+    created = []
+    for name, mode in EMPTY_DIRS:
+        directory = root / name
+        existed = directory.is_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        if not existed:
+            os.chmod(directory, mode)
+        created.append(name)
+    for name, mode in FORCED_MODES:
+        os.chmod(root / name, mode)
+    return created
+
+
 def attached_device(attach: dict) -> str:
     return attach['system-entities'][0]['dev-entry']
 
@@ -318,9 +360,8 @@ def main() -> int:
         volume_uuid = info['VolumeUUID']
         step('copying private/var into the seed')
         count, total = copy_var(source / 'private/var', mount)
-        for name in EMPTY_DIRS:
-            (mount / name).mkdir(parents=True, exist_ok=True)
-        os.chmod(mount / 'tmp', 0o1777)
+        empty_dirs = create_empty_dirs(mount)
+        step(f'created {len(empty_dirs)} expected directories: {" ".join(empty_dirs)}')
         step('writing the preference and launchd files the boot needs')
         seed_files = write_seed_files(mount)
     finally:
@@ -339,6 +380,7 @@ def main() -> int:
         'files': count,
         'file_bytes': total,
         'seed_files': seed_files,
+        'empty_dirs': empty_dirs,
         'skipped_dirs': list(SKIP_DIRS),
         'output': str(args.output),
         'output_sha256': hashlib.sha256(args.output.read_bytes()).hexdigest(),

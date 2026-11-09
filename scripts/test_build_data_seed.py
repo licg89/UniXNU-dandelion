@@ -150,5 +150,72 @@ class ContainerTest(unittest.TestCase):
                 seed.verify_container(image, 512)
 
 
+class CreateEmptyDirsTest(unittest.TestCase):
+    """The Data root is /private/var once the kernel mounts the seed, and the
+    kernel's swap code opens /private/var/vm/swapfile0 with O_CREAT, which never
+    creates the directory: the seed has to provide it."""
+
+    def test_creates_vm_and_the_other_expected_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            created = seed.create_empty_dirs(root)
+
+            self.assertIn('vm', created)
+            self.assertTrue((root / 'vm').is_dir())
+            for name in ('keybags', 'mobile/tmp', 'tmp', 'run'):
+                self.assertTrue((root / name).is_dir(), name)
+
+    def test_applies_the_modes_apple_uses(self):
+        if os.name != 'posix':
+            self.skipTest('POSIX mode bits are not carried on this host')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            seed.create_empty_dirs(root)
+
+            self.assertEqual(stat.S_IMODE((root / 'vm').stat().st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE((root / 'tmp').stat().st_mode), 0o1777)
+
+    def test_keeps_the_contents_of_a_directory_the_image_already_ships(self):
+        if os.name != 'posix':
+            self.skipTest('POSIX mode bits are not carried on this host')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'vm').mkdir()
+            os.chmod(root / 'vm', 0o700)
+            (root / 'vm/marker').write_bytes(b'x')
+
+            seed.create_empty_dirs(root)
+
+            self.assertEqual((root / 'vm/marker').read_bytes(), b'x')
+            # 'vm' is one of FORCED_MODES: Apple's 0755 is restored.
+            self.assertEqual(stat.S_IMODE((root / 'vm').stat().st_mode), 0o755)
+
+    def test_keeps_the_mode_of_a_directory_it_does_not_force(self):
+        """21H461 ships private/var/run as 0775 root:daemon; downgrading it to
+        the 0755 in EMPTY_DIRS would take group write away from the daemons that
+        create their sockets there."""
+        if os.name != 'posix':
+            self.skipTest('POSIX mode bits are not carried on this host')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'run').mkdir()
+            os.chmod(root / 'run', 0o775)
+
+            seed.create_empty_dirs(root)
+
+            self.assertEqual(stat.S_IMODE((root / 'run').stat().st_mode), 0o775)
+
+    def test_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            first = seed.create_empty_dirs(root)
+            second = seed.create_empty_dirs(root)
+
+            self.assertEqual(first, second)
+
+
 if __name__ == '__main__':
     unittest.main()
