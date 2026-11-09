@@ -6055,6 +6055,84 @@ break;
 - 或 `divider 4 did not verify; keeping 260` + `settled at divider 260` → 慢档 ✓（但系统能继续）
 - 两种情况都应出现 `D4K mounted:` 或 `D4K not mounted:`（不再是无输出就死）✓
 
+---
+
+## 0.113 真正修好：写分频时把 CKMOD 一起覆盖了（2026-11-10 00:20–01:20）
+
+### 一、厂商寄存器定义揭示了 bug
+
+`/root/work/mtk-sd.c`（本机就有厂商驱动）里：
+
+```c
+#define MSDC_CFG_CKDIV          GENMASK(15, 8)   // 分频，8 位
+#define MSDC_CFG_CKMOD          GENMASK(17, 16)  // 时钟模式，2 = DDR + 分频器
+#define MSDC_CFG_HS400_CK_MODE  BIT(18)
+```
+
+**而移植驱动写的是 `(divider & 0xfff) << 8`（12 位掩码）** ✓
+→ 写分频时**同时覆盖了 CKMOD 和 bit18** ✗
+
+具体到 `divider=4`：写 `0x400` 落到 bits 8..19 → CKDIV=4 ✓ 但 **CKMOD 从 2 被清成 0** ✗
+→ 控制器按**错误的时钟模式**跑 → 读在眼图边缘（`verify … got … want`）或完全读不出（EIO → 控制台静默 → 挂载/exec 全 EIO）✓
+
+**第二个 bug**：读分频用 `(cfg>>8) & 0xfff`，把 CKMOD 也读进来 ✓
+所以固件真实分频 **4** 被读成 **260**（`0x104` = CKDIV 4 + CKMOD 1）✗
+→ 历史上所有"抬时钟到 4"其实都是**从 4 改到 4**（没提速），只破坏了模式 ✗
+
+### 二、修完之后：最快分频 + 满窗口
+
+```
+NativeMsdc: clock divider 0 sample 31 verified (window 0..63)
+NativeMsdc: clock settled at divider 0 sample 31 (inherited 4)
+apfs_log_op_with_proc: disk3s1 mount-complete …SystemCryptex   ✓
+apfs_log_op_with_proc: disk2s1 mount-complete …OwnerData       ✓
+D4K mounted: attempt=0 dev=16777221 path='/dev/disk3s1'        ✓
+load_init_program: attempting to load /sbin/launchd            ✓
+```
+
+| 项 | 值 |
+| --- | --- |
+| 最终分频 | **CKDIV 0**（厂商 DDR 公式里最快，`src>>2`）✓ |
+| 采样窗口 | **0..63 全部通过**（64/64）✓ 余量极大 ✓ 选中心 31 ✓ |
+| 挂载 | 两个卷都挂上、`attempt=0` 一次成功 ✓ |
+| panic | 无 ✓ 控制台全程可用 ✓ |
+
+→ 之前"时好时坏"**完全**是 CKMOD 覆盖造成的 ✓ 与温度、时机、注册表都无关 ✓
+
+### 三、新的瓶颈：PIO 每次传输的固定开销（不是时钟）
+
+源码自己写着：
+
+```c
+// A 64 KiB PIO block takes about 0.2 s at the measured 320 KB/s.
+```
+
+73 MB / 64 KB × 0.2 s = **228 s** —— 和实测 `signed root policy read in 227935 ms` 完全一致 ✓
+**所以 0.32 MB/s 是 PIO 的固定成本，抬时钟几乎没用** ✓（实测：分频到 0 之后心跳 reads 仍只有 ~2 次/秒 ✗）
+
+而 DMA 路径存在（`hostReadDma` + 描述符 + 自检），但**17 份日志里没有任何 DMA 行** ✗
+原因是它的日志在 eMMC 控制台可用之前就打掉了 ✓ → **DMA 是否启用从未被观测过** ✗
+
+已加诊断（`e622505`）：在抬时钟处打印
+
+```
+NativeMsdc: dma state %u enabled %u phys 0x%llx
+```
+
+`native_msdc_dma`：**0=PIO，1=DMA 已验证，2=DMA 被拒，3=隔离** ✓
+
+### 四、下一步分流
+
+| dma state | 结论 | 动作 |
+| --- | --- | --- |
+| `1` | DMA 已启用但读仍慢 → 策略/内核那条路径没用 DMA | 查 `hostReadPio` 的调用点，让缓存与策略读走 `hostReadDma` |
+| `2` / `0` | **DMA 自检没过**（超时/比较失败）| 查 `hostReadDma`：描述符格式、`kDmaCtrlStart` 时序、中断位 `kIntXferDone/kIntDmaErrors` |
+| `3` | 引擎停不下来被隔离 | 查 `waitClear(kDmaCfg, kDmaCfgActive)` |
+
+DMA 一旦可用，每次传输的 0.2 秒开销应该降到几毫秒 → **3.7 GB 缓存从 ~3 小时降到几分钟** ✓
+那才是"能真正启动"的关键一步 ✓
+
+
 
 
 
