@@ -698,7 +698,13 @@ void hostRaiseClock (void)
   // not.  A divider with no passing delay is genuinely too fast for this card, and the previous
   // divider is put back before leaving.
   const unsigned wanted = bootArgument ("native-msdc-clk", 0xfffu, 0);
-  static const unsigned dividers[] = { 4, 8, 16, 32, 64 };
+  // The boot firmware already runs this card at CKDIV 4 (the old 12-bit read reported 260, which
+  // is CKDIV 4 plus CKMOD 1 -- it was never a divider).  In the vendor's DDR formula CKDIV 0 is
+  // the fastest setting (src >> 2), so the values that actually raise the rate are 0..3, and the
+  // old candidate list {4, 8, 16, 32, 64} could only ever slow it down.  Try the fast end first;
+  // the sampling-point tuning below decides whether a rate is usable, and divider 4 (the inherited
+  // one) is what is kept when none of them is.
+  static const unsigned dividers[] = { 0, 1, 2, 3 };
   unsigned best = inherited, bestSample = 0;
   for (unsigned d = 0; d < sizeof (dividers) / sizeof (dividers[0]); d++) {
     if (wanted != 0 && dividers[d] != wanted) continue;
