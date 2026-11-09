@@ -743,6 +743,12 @@ void hostRaiseClock (void)
   native_msdc_sample_delay = bestSample;
   IOLog ("NativeMsdc: clock settled at divider %u sample %u (inherited %u)\n",
          best, bestSample, inherited);
+  // The DMA line hostEnableDma() prints during bring-up comes before this console can be written,
+  // so nothing in any collected log has ever shown whether the fast path is in use.  That matters
+  // more than the clock: a 64 KiB PIO block costs about 0.2 s here, which by itself caps reads at
+  // the 320 KB/s the policy read measures, while a DMA transfer should cost a fraction of it.
+  IOLog ("NativeMsdc: dma state %u enabled %u phys 0x%llx\n", native_msdc_dma,
+         unsigned (gHost.dmaEnabled), gHost.dmaPhys);
   // The console is written through this same card, so report the outcome where storage cannot hide
   // it: the panic screen is drawn from the framebuffer.
   if (bootArgument ("native-msdc-clkreport", 1, 0)) {
