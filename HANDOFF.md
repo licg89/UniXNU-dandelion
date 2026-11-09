@@ -5324,3 +5324,58 @@ kernel.macho 51675136 字节
 - 拿回 WSL 后我要做的五步
 - WSL 侧已完成的四件事（不用重做 ✓）
 - 当前卡点：三个子模块未初始化 ✓ Windows 用 `--recursive` 可一次带全 ✓
+
+---
+
+## 0.100 显示驱动真的启动了，只差 provider 类型（2026-11-09 08:4x）
+
+### 决定性日志
+
+镜像 `03662823` 的启动日志（189 行）里出现了：
+
+```
+virtual bool IOMobileFramebufferLegacy::start(IOService *)
+virtual bool IOMobileFramebufferLegacy::start(IOService *): provider was not AppleARMIODevice.
+```
+
+**含义**（重要）：
+
+1. `IOMobileFramebufferLegacy::start()` **被调用了** ✓ —— 显示提供者真的被内核匹配到并启动 ✓
+   这是本项目第一次走到这一步 ✓
+2. 它失败的唯一原因是**父节点类型**：`provider was not AppleARMIODevice` ✗
+
+即：**显示栈的接线是对的** ✓ 需要的只是把它挂到一个 `AppleARMIODevice` 上 ✓
+（我们的胶水 `DandelionLegacyDisplay.cpp` 里建立的是自己的 nub ✓ 类型不是 `AppleARMIODevice` ✓）
+
+### 顺带确认的好消息
+
+```
+NativeMsdc: SystemOS volume ready    ✓
+disk5s1 mount-complete volume ...OS  ✓   根卷挂载成功
+NativeMsdc: OS volume ready          ✓
+```
+
+根卷与 SystemOS 都正常 ✓ —— 显示栈没有破坏存储路径 ✓
+
+### 当前真正的停止点
+
+```
+VM Swap Subsystem is ON
+Failed to open swap file 30
+vm_swap_create_file failed @ 276 secs
+（在 296 秒再次失败）
+```
+
+**交换文件创建失败** ✗ 发生在本轮的最后 ✓
+它之后才出现 `D4K cache: err=2 stage=3 status=2`（`mount()` 返回 ENOENT ✓）✓
+
+两者可能同源：swap 文件建在 Data 卷上 ✓ 若 Data 卷此时不可写或路径缺失 ✓
+后面的缓存挂载也会 ENOENT ✓
+
+### 下次的两个具体动作
+
+1. **显示**：让 `IOMobileFramebufferLegacy` 的 provider 成为 `AppleARMIODevice`
+   —— 看 `drivers/GopFramebuffer/NativeLegacyDisplay.cpp` 里 nub 的创建方式 ✓
+   参考移植里应该有一个 `AppleARMIODevice` 的替代品或子类 ✓
+2. **swap / 缓存挂载**：查 `/private/var/vm` 是否存在且可写 ✓
+   Data 卷已挂载 ✓ 但 `vm_swap_create_file` 需要该目录 ✓ 我们的 Data seed 里可能没有 ✓
