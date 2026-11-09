@@ -176,13 +176,12 @@ trust_cache_sha256 = "4563bdbf6ed8f72237d45dbba3ccde432634338f95c10d79d5d4631678
 kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1", "sheng-no-lc=1", "sheng-skip-cs=1",
                "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480", "native-msdc-mode=1", "launchd_unsecure_cache=1", "wdt=-1", "ignition_level=1", "-no_slto_panic", "sheng-aks=1", "native-msdc-clock=1", "native-msdc-clk=0", "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=1", "offline-legacy-register=1", "offline-legacy-gop=1", "offline-legacy-unit-scale=2", "offline-legacy-pm=1", "offline-legacy-phase=4", "offline-legacy-transfer=1", "offline-legacy-validate=1", "offline-legacy-cpu-present=1", "vm_compressor=2"]
 #
-# native-msdc-clk=0 means "try every candidate": the sweep walks CKDIV 0..3 at all 64 sampling
-# delays and keeps the fastest one that has a usable window.  The firmware's own rate is CKDIV 4
-# (the earlier 260 was a misread that mixed CKMOD into the divider), and in the vendor's DDR
-# formula CKDIV 0 is the fastest, so 0..3 are the values that actually raise the rate.  With the
-# register write fixed -- CKDIV alone, CKMOD untouched -- a rejected candidate now restores the
-# previous divider and sampling point instead of leaving the bus in the wrong mode, which is what
-# used to wedge the controller and take the console with it.
+# native-msdc-dma is deliberately NOT set.  Enabling it costs the boot: the DMA self-test still
+# times out (0xe00002d6) even with DECSEN fixed, and the attempt leaves the controller unable to
+# read, so the root volume never mounts ("failed to mount root device" / "Still waiting for root
+# device").  The default is off anyway -- bootArgument(name, maximum, fallback) takes the default
+# third, so (..., 1, 0) means off unless asked for.  HANDOFF 0.114 lists what is left to compare
+# against the vendor's msdc_start_data() before this can be switched on again.
 
 
 #

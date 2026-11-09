@@ -6132,6 +6132,70 @@ NativeMsdc: dma state %u enabled %u phys 0x%llx
 DMA 一旦可用，每次传输的 0.2 秒开销应该降到几毫秒 → **3.7 GB 缓存从 ~3 小时降到几分钟** ✓
 那才是"能真正启动"的关键一步 ✓
 
+---
+
+## 0.114 DMA：两个位定义 bug 修好，但仍然超时（2026-11-10 01:45–02:10）
+
+### 一、先修好的两个 bug
+
+| # | bug | 证据 |
+| --- | --- | --- |
+| 1 | `bootArgument(name, maximum, fallback)` 的参数顺序被写反：`bootArgument("native-msdc-dma", 1, 0)` 的**默认值是 0（关）** ✗ 注释却写"默认 1" | `native_msdc_dma` 一直是 0、`dmaPhys` 0x0 → `hostEnableDma()` 从未被调用 ✓ |
+| 2 | `kDmaCfgChecksum = 1u << 1` 实际是 **`MSDC_DMA_CFG_DECSEN`（描述符引擎使能）** ✓ 而代码在启动 DMA 前把它**清掉** ✗ | 厂商 `mtk-sd.c:232 MSDC_DMA_CFG_DECSEN BIT(1)`，启动前置 1 ✓ |
+
+两处都改了：`kDmaCfgStatus = BIT(0)` / `kDmaCfgDescEn = BIT(1)`，传输前置 1、结束后清 0 ✓
+描述符校验和本来就是对的（`dmaChecksum` 16 字节和，与厂商 `msdc_dma_calcs` 同算法 ✓）
+
+### 二、但自检仍然超时
+
+```
+NativeMsdc: DMA comparison with PIO failed, PIO kept (0xe00002d6) at 0x59a39000
+Still waiting for root device
+```
+
+`0xe00002d6` = `kIOReturnTimeout` ✓ 而且**这次尝试会把卡弄坏** → 后面 `Still waiting for root device`（根设备都没发布）✗
+
+### 三、已逐条对过、都一致的项
+
+| 项 | 状态 |
+| --- | --- |
+| GPD/BD 结构体布局（28 / 16 字节）| ✓ 与厂商一致 |
+| GPD `info = HWO|BDP`、BD `info = EOL` | ✓ |
+| 校验和放 bits [15:8] | ✓ |
+| `MSDC_CFG.PIO = BIT(3)` 的切换 | ✓ 与厂商一致 |
+| `MSDC_DMA_CTRL`：MODE=BIT(8)、BURST_64B<<12 | ✓ |
+| `DMA_SA` / `DMA_SA_H4BIT` | ✓ 写了 |
+
+### 四、剩下的可疑点（下次按顺序查）
+
+1. **启动顺序**：厂商在 `msdc_start_data()`（命令响应之后、数据阶段开始前）才 `MSDC_DMA_CTRL_START=1` ✗
+   移植是在**发命令之前**就 arm 并 start ✗ —— 注释说是"先 arm 否则数据阶段无目的地"，
+   但也许正确做法是"先 arm 引擎、**命令发出后**再 START" ✓
+2. `MSDC_DMA_CFG` 其它位：`AHBHPROT2`(BIT9) / `ACTIVEEN`(BIT13) / `CS12B16B`(BIT16) 厂商是否置位 ✓
+3. `DMA_SA_H4BIT` 写入**顺序**（厂商在 CTRL 之后写，移植在最前）✓
+4. 数据方向位：读（卡→主机）时 BD 的 `bd_info` 是否需要额外位 ✓
+5. 超时窗口：`kCommandTimeoutNs` 是否太短（DMA 首包可能需更久）✓
+
+### 五、另一条更划算的路（推荐先试）
+
+**不要修 DMA，改成减少要读的字节**：3.7 GB 的 dyld 共享缓存目前是**整段读下来做签名校验**（§0.68），
+而它在挂载时已经被 APFS 完整校验过（`disk3s1 mount-complete …SystemCryptex`）✓
+把这段整段哈希跳过，速度问题**同样消失**（少读 3.7 GB），而且改动量比 DMA 小得多 ✓
+
+- 入口：内核里读缓存 / 校验它的位置（`vm_shared_region` + AMFI 的缓存策略），
+  以及 `CONFIG_XNU_OWNER_CACHE_STARTUP` 那段（框架补丁 `offline-owner-systemos-mount.patch` 末段）✓
+- §0.69 记过"给 54 个缓存文件加 trust cache 没有减少读取量" → 所以必须**在内核里跳过**，不是加授权 ✓
+
+### 六、当前状态
+
+| 项 | 值 |
+| --- | --- |
+| 稳定可启动镜像 | `c239a019…`（含 DECSEN 修复；但 `native-msdc-dma=1` 会让根卷挂不上 ✗）|
+| **建议镜像** | 把 `native-msdc-dma` 从 kernel_args 去掉（默认就是关）→ 回到"慢但一切正常" ✓ |
+| 今天成果 | 显示✓ 两卷挂载✓ 最快时钟（CKDIV 0，窗口 0..63）✓ launchd✓ 三个寄存器级 bug✓ |
+| 剩余 | 速度（DMA 或跳过缓存整段校验）+ 用户态 |
+
+
 
 
 
