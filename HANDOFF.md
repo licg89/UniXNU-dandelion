@@ -5891,6 +5891,65 @@ NativeMsdc: signed root policy read in 227935 ms, 2 entries, 1123 reads, 0 retri
 - 三次险情与处理：① 子模块提交被构建重置（查对象发现 ✓ 已改规矩）② 生成脚本覆盖了 patch（从 git 取回 ✓）
   ③ PowerShell 写坏 board.toml 的 UTF-8（构建立刻报错 ✓ 从 git 取回并用编辑工具重做 ✓）
 
+---
+
+## 0.110 里程碑：两个卷都挂上了、launchd 跑起来了（2026-11-09 21:31–22:07）
+
+镜像 `874a2a61`（`native-msdc-clock=0`，内核 `596458a6` 未变）跑 35 分钟的日志 **328 行**：
+
+```
+disk3s1 mounting volume …SystemCryptex        ← SystemOS 缓存卷 ✓
+handle_mount:817: disk3s1 vol-uuid: 8846FE78-… ✓
+disk3s1 mount-complete volume …SystemCryptex  ✓
+D4K mounted: attempt=0 dev=16777221 path='/dev/disk3s1'   ← 第一次就挂上 ✓
+disk2s1 mounting volume OwnerData             ← Data 卷 ✓
+handle_mount:817: disk2s1 vol-uuid: 661FF9FF-… ✓（正是 seed 的 UUID ✓）
+disk2s1 mount-complete volume OwnerData       ✓
+load_init_program: attempting to load /sbin/launchd   ✓
+DANDELION-EXEC: clearing policy answer 0 (pid 1)      ✓
+shared_region: [1(launchd)] check_np(…) vm_shared_region_start_address() failed
+```
+
+**这是本项目第一次让 SystemOS + Data 两个卷都挂上、并且 exec 到 launchd** ✓
+
+### 一、`shared_region` 那两行**不是新问题**
+
+对比三次日志：**成功的那两次（4553 行 / 1867 行）也有同样的两行** ✓
+→ dyld 打印它之后会走回退路径 ✓ 所以它不是阻断点 ✓ **别再追它** ✗
+
+### 二、真正的代价：`clock=0` 把存储砍到 1/150
+
+| 启动 | 时钟 | 35–45 分钟内的读次数 |
+| --- | --- | --- |
+| 成功那次 | `clock=1`（分频 4）| **926,597** |
+| 这次 | `clock=0`（继承分频）| **6,217** |
+
+差 **~150 倍** ✓ 而 dyld 共享缓存有 **3.7 GB** ✓ 所以在 `clock=0` 下 launchd 只是在**极慢地读缓存** ✗
+看起来"卡住"，其实是"每秒几 KB" ✗ 这条路**不能用来真正启动** ✓ 只用于诊断 ✓
+
+### 三、因此得到的确定结论
+
+1. **EIO 是时钟抬升引入的** ✓（`clock=0` 下 `retries` 缓慢增长、`failures=0`、控制台不再 306 秒静默 ✓）
+2. **`clock=0` 下窗口第二次发布是可靠的** ✓（`disk3` 出现、`D4K mounted: attempt=0` 一次成功 ✓）
+3. 即：**抬时钟会破坏窗口发布** ✗ 与 §0.73 的记录完全一致 ✓
+4. 所以正解不是"不要速度"，而是**抬完时钟之后重新发布窗口**（或把抬时钟放到发布之前）✓
+
+### 四、下次的三条具体做法（按顺序）
+
+1. **在 `hostRaiseClock()` 之后重新发布窗口**：`NativeMsdc.cpp:1703` 那一步之后，
+   把 `NativeMsdcBlock` 的 IOMedia 重新注册一遍（或重新扫描一次分区），让 `disk3s1` 与设备一致 ✓
+2. 若重发布代价太大 → **把抬时钟移到发布之前**（`publishThread` 开头），让发布本身就发生在快时钟下 ✓
+3. 折中：试**中间分频**（`native-msdc-clk=2` 或 `=6`）找一个"够快且不破坏发布"的点 ✓
+   （§0.76 已记 `clk=8` 不通过验证 ✓ 所以 4 与 8 之间值得试 6）
+
+### 五、设备当前状态
+
+- 镜像 `874a2a61` 已刷（`clock=0`）✓ 能跑到 launchd ✓ 但太慢 ✗
+- Android 已恢复 ✓ 采集脚本每次都在等 fastboot ✓
+- 想立刻回到"能真正启动"的状态：把 `board.toml` 的 `native-msdc-clock` 改回 `1`，
+  `bash /mnt/d/aios/_work/payload_only.sh` 即可（2 分钟，不重编内核）✓
+
+
 
 
 
