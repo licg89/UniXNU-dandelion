@@ -8,30 +8,33 @@
  #if defined(XNU_OWNER_BOOT_MANIFEST) && XNU_OWNER_BOOT_MANIFEST
  extern int native_owner_publish_boot_manifest(dev_t, const char *, dev_t, const char *);
  #endif
-@@ -7027,6 +7028,9 @@
+@@ -7027,6 +7028,10 @@
  #endif
  extern int native_verified_block_root_authorized(dev_t);
  volatile int native_owner_cache_stage = 0;
++volatile int native_owner_cache_attempt_errors[4] = {-1, -1, -1, -1};
 +extern char native_verified_block_candidate_path[4][64];
 +extern char native_verified_block_media_class[32];
 +extern volatile int native_verified_block_candidate_count;
  volatile int native_owner_cache_status = -1;
  volatile int native_owner_cache_mount_status = -1;
  volatile int native_owner_cache_readonly = 0;
-@@ -7114,8 +7118,25 @@
+@@ -7114,8 +7119,32 @@
  	    (error = copyout(device_path, spec, strlen(device_path) + 1)) != 0 ||
  	    (error = copyout(mount_data, request.data, sizeof(mount_data))) != 0) goto done;
  	native_owner_cache_stage = 3;
 -	error = mount(p, &request, &result);
 -	native_owner_cache_mount_status = error;
-+	/* One name cannot decide this.  The media that carries the volume UUID is re-published
-+	 * while the mount runs, so the name the query returns can be a dead disk by the time
-+	 * mount_common resolves it again -- measured as ENOENT and then EIO on the same
-+	 * '/dev/disk3s1', in enumerations that had no disk3 at all.  The driver records an ordered
-+	 * candidate list instead (the volume's own node, then its ancestor media, ending with the
-+	 * window's whole media), and each candidate gets a mount attempt. */
++	/* One name cannot decide this, and neither can one instant.  The media that carries the
++	 * volume UUID is re-published while the mount runs, and the node a candidate names can
++	 * appear only once the container settles; a boot that mounted and a boot that died with
++	 * EIO on every candidate came from the same image.  Pause, query again, and try the next
++	 * candidate, recording each errno so the panic can tell ENOENT from EIO. */
 +	for (int attempt = 0; attempt < 4; attempt++) {
 +		if (attempt) {
++			tsleep((caddr_t)&native_owner_cache_stage, PRIBIO, "d4kmount", hz / 5);
++			(void)native_verified_block_volume_device(volume, &selected, device_path,
++			    sizeof(device_path));
 +			if (!native_verified_block_candidate(attempt, &selected, device_path,
 +			    sizeof(device_path))) break;
 +			native_owner_cache_selected_device = selected;
@@ -41,21 +44,28 @@
 +		}
 +		error = mount(p, &request, &result);
 +		native_owner_cache_mount_status = error;
-+		if (!error) break;
++		native_owner_cache_attempt_errors[attempt] = error;
++		if (!error) {
++			printf("D4K mounted: attempt=%d dev=%d path='%s'\n", attempt,
++			    (int)selected, device_path);
++			break;
++		}
 +	}
  	if (error) goto done;
  	native_owner_cache_stage = 4;
  	error = vnode_lookup(mountpoint, 0, &mounted_root, vfs_context_current());
-@@ -8184,9 +8205,12 @@
+@@ -8184,9 +8213,14 @@
  	/* stage/status alone cannot separate the two ENOENT sites in mount_common (namei of the
  	 * device path, or apfs_vfsop_mount itself), and panic() output only reaches the panic screen,
  	 * never the console log block.  Name the device the mount was handed. */
 -	if (cache_error) panic("D4K cache: err=%d stage=%d status=%d dev=%d path='%s'",
-+	if (cache_error) panic("D4K cache: err=%d stage=%d status=%d dev=%d path='%s' n=%d media=%s [%s|%s|%s|%s]",
++	if (cache_error) panic("D4K cache: err=%d stage=%d status=%d dev=%d path='%s' n=%d media=%s e=[%d|%d|%d|%d] [%s|%s|%s|%s]",
  	    cache_error, (int)native_owner_cache_stage, native_owner_cache_mount_status,
 -	    (int)native_owner_cache_selected_device, native_owner_cache_device_path);
 +	    (int)native_owner_cache_selected_device, native_owner_cache_device_path,
 +	    (int)native_verified_block_candidate_count, native_verified_block_media_class,
++	    native_owner_cache_attempt_errors[0], native_owner_cache_attempt_errors[1],
++	    native_owner_cache_attempt_errors[2], native_owner_cache_attempt_errors[3],
 +	    native_verified_block_candidate_path[0], native_verified_block_candidate_path[1],
 +	    native_verified_block_candidate_path[2], native_verified_block_candidate_path[3]);
  #endif
