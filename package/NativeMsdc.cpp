@@ -650,6 +650,21 @@ void hostRaiseClock (void)
 {
   if (!gHost.bounce) return;
   uint8_t *reference = gHost.bounce;
+  // Calibration escape hatch.  The reference reads below cannot predict what the boot needs: they
+  // rejected divider 64, which then ran a whole boot correctly, and they accepted divider 4, which
+  // is marginal -- the boots that used it logged dozens of "verify ... got ... want" mismatches and
+  // some of them ended with the controller wedged.  native-msdc-clkforce=<N> sets a divider and
+  // trusts it, so the safe rate can be measured instead of guessed: run a boot at each value and
+  // see whether it finishes and how many reads it does.
+  const unsigned forced = bootArgument ("native-msdc-clkforce", 0, 0);
+  if (forced != 0) {
+    const unsigned current = (rd (kMsdcCfg) >> 8) & 0xfffu;
+    hostSetClockDivider (forced, current);
+    native_msdc_clock_divider = forced;
+    native_msdc_sample_delay = 0;
+    IOLog ("NativeMsdc: clock forced to divider %u (was %u, no verification)\n", forced, current);
+    return;
+  }
   for (unsigned i = 0; i < kSweepCount; i++) {
     if (hostReadPio (kCmdReadSingle, kSweepSectors[i], reference + i * kSector, 1) != kIOReturnSuccess) {
       IOLog ("NativeMsdc: clock tuning skipped; a reference read failed\n");
@@ -658,34 +673,53 @@ void hostRaiseClock (void)
   }
   const uint32_t cfg0 = rd (kMsdcCfg), iocon0 = rd (kMsdcIoCon);
   const unsigned inherited = (cfg0 >> 8) & 0xfffu;
-  // Step down the divider, verifying at every step and keeping the last one that still reads
-  // correctly.  A single ending here is not enough evidence: divider 4 passed four scattered
-  // sectors yet the 73 MB policy read, which hashes every block, still failed at that rate.  So the
-  // divider worth testing is chosen with native-msdc-clk and proved by that policy read instead.
+  // Why divider 4 is unreliable, in one sentence: the sampling delay in MSDC_IOCON was trained by
+  // the boot firmware for the inherited divider, and this code never retrains it.  At a shorter
+  // period the same delay lands at a different point of the read eye, so reads sit on the edge of
+  // it -- which shows up exactly as observed: dozens of "verify ... got ... want" mismatches even
+  // on the boots that "worked", and, when the phase lands outside the eye, every read failing and
+  // the controller left unusable (the console is written through this card, so the log dies with
+  // it, the SystemOS mount answers EIO and exec of launchd answers the same EIO).
+  //
+  // So tune the sampling point for each candidate divider instead of trusting the inherited one:
+  // read the reference sectors at every one of the 64 delays, keep the middle of the widest
+  // passing run, and require that centre to pass a final check.  A centre sample has margin on
+  // both sides, which is what a whole boot needs; "the first delay that happened to pass" does
+  // not.  A divider with no passing delay is genuinely too fast for this card, and the previous
+  // divider is put back before leaving.
   const unsigned wanted = bootArgument ("native-msdc-clk", 0xfffu, 0);
-  static const unsigned dividers[] = { 64, 32, 16, 8, 4 };
+  static const unsigned dividers[] = { 4, 8, 16, 32, 64 };
   unsigned best = inherited, bestSample = 0;
   for (unsigned d = 0; d < sizeof (dividers) / sizeof (dividers[0]); d++) {
     if (wanted != 0 && dividers[d] != wanted) continue;
     if (dividers[d] >= best) continue;
-    const unsigned sample = bootArgument ("native-msdc-smp", 0x3fu, 0);
-    wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((sample & 0x3fu) << 16));
     hostSetClockDivider (dividers[d], best);
-    if (hostSweepMatches (reference)) {
-      best = dividers[d];
-      bestSample = sample;
-      IOLog ("NativeMsdc: clock divider %u sample %u verified\n", dividers[d], sample);
-      if (wanted != 0) break;
-      continue;
+    int firstPass = -1, lastPass = -1;
+    for (unsigned sample = 0; sample < 64; sample++) {
+      wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((sample & 0x3fu) << 16));
+      IODelay (200);
+      if (hostSweepMatches (reference)) {
+        if (firstPass < 0) firstPass = (int)sample;
+        lastPass = (int)sample;
+      }
     }
-    IOLog ("NativeMsdc: divider %u did not verify; keeping %u\n", dividers[d], best);
-    // Put the card back at the divider that was working before this attempt.  Without this the
-    // controller stayed at the rejected rate while native_msdc_clock_divider claimed the old one,
-    // and every later read answered EIO: the console (written through this same card) went silent,
-    // the owner cache mount failed, and exec of launchd failed with errno 5.  Measured: the boot
-    // that reported verified=0 with div=260 wedged; the boots that verified at divider 4 ran all
-    // the way to launchd.
+    if (firstPass >= 0) {
+      const unsigned centre = (unsigned)((firstPass + lastPass) / 2);
+      wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((centre & 0x3fu) << 16));
+      IODelay (200);
+      if (hostSweepMatches (reference)) {
+        best = dividers[d];
+        bestSample = centre;
+        IOLog ("NativeMsdc: clock divider %u sample %u verified (window %d..%d)\n",
+               dividers[d], centre, firstPass, lastPass);
+        if (wanted != 0) break;
+        continue;
+      }
+    }
+    IOLog ("NativeMsdc: divider %u has no usable sampling window (passing %d..%d); keeping %u\n",
+           dividers[d], firstPass, lastPass, best);
     hostSetClockDivider (best, dividers[d]);
+    wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((bestSample & 0x3fu) << 16));
     break;
   }
   wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((bestSample & 0x3fu) << 16));

@@ -176,11 +176,16 @@ trust_cache_sha256 = "4563bdbf6ed8f72237d45dbba3ccde432634338f95c10d79d5d4631678
 kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1", "sheng-no-lc=1", "sheng-skip-cs=1",
                "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480", "native-msdc-mode=1", "launchd_unsecure_cache=1", "wdt=-1", "ignition_level=1", "-no_slto_panic", "sheng-aks=1", "native-msdc-clock=1", "native-msdc-clk=4", "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=1", "offline-legacy-register=1", "offline-legacy-gop=1", "offline-legacy-unit-scale=2", "offline-legacy-pm=1", "offline-legacy-phase=4", "offline-legacy-transfer=1", "offline-legacy-validate=1", "offline-legacy-cpu-present=1", "vm_compressor=2"]
 #
-# native-msdc-clkreport was used once and removed: it panicked on purpose at the end of publishing
-# to show the clock state on the framebuffer, which is how the real bug was found.  That panic read
-# "div=260 smp=0 verified=0": the sweep had rejected divider 4 and left the controller at the
-# rejected rate while claiming the inherited one, so every later read answered EIO.  The driver now
-# restores the divider when verification fails, so a rejected raise costs speed, not the machine.
+# native-msdc-clk=4 with the retuned sampling point.  Divider 4 was never the problem by itself:
+# the sampling delay in MSDC_IOCON was trained by the boot firmware for the inherited divider and
+# hostRaiseClock() never retrained it, so at the shorter period every read sat at a random place in
+# the read eye.  That is what produced "verify ... got ... want" mismatches on the boots that still
+# worked, and a controller that could not read at all on the boots that did not.  The sweep now
+# walks all 64 sampling delays at each candidate divider and keeps the middle of the widest passing
+# run, so either divider 4 has a real window (fast, and reliable) or it reports that it has none
+# and the previous divider is restored.
+
+
 #
 # vm_compressor=2 is VM_PAGER_COMPRESSOR_NO_SWAP (osfmk/vm/vm_pageout.h:656), and it is the single
 # cheapest memory win on this board.  Without the argument the kernel takes the RELEASE default
