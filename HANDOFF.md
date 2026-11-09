@@ -5379,3 +5379,56 @@ vm_swap_create_file failed @ 276 secs
    参考移植里应该有一个 `AppleARMIODevice` 的替代品或子类 ✓
 2. **swap / 缓存挂载**：查 `/private/var/vm` 是否存在且可写 ✓
    Data 卷已挂载 ✓ 但 `vm_swap_create_file` 需要该目录 ✓ 我们的 Data seed 里可能没有 ✓
+
+---
+
+## 0.101 显示卡在"provider 必须是 AppleARMIODevice"，且该报错来自 Apple 原版代码（2026-11-09 08:5x）
+
+### 定位结论
+
+`provider was not AppleARMIODevice` 这句话**不在本仓库、也不在 GopFramebuffer 组件里** ✓
+它来自**原始 Apple 的 `IOMobileFramebufferLegacy::start()`** ✓
+—— 我们通过 ABI 表（`scripts/data/merlinx-legacy-display-abi.json`）复用原版实现 ✓
+所以这是**原版代码的类型检查**在拒绝我们的 provider ✗
+
+胶水 `NativeLegacyDisplay.cpp` 里已有一处相同问题的**绕过先例**（`getDotPitch` 附近注释）：
+
+> Its implementation assumes an AppleARMIODevice provider.
+> Query our actual generic provider instead; GOP supplies no dot pitch.
+
+即：**能绕过的方法就是不走原版实现、自己实现那个方法** ✓
+但 `start()` 是**初始化入口** ✓ 不能简单跳过 ✗ —— 必须让它通过 ✓
+
+### 三条可行路线（下次按序试）
+
+1. **让 provider 真的是 `AppleARMIODevice`**
+   - 我们的 nub 由胶水创建（`displayTreeParent` ✓）
+   - 查 `drivers/GopFramebuffer/NativeLegacyDisplay.cpp` 里 nub 的类，
+     改用 `AppleARMIODevice` 或其子类（需要内核里能 `OSMetaClass` 分配 ✓）
+   - 这是**最正统**的做法 ✓ 因为原版就是按这个前提写的 ✓
+
+2. **看参考移植怎么过这一关**
+   - merlinx 的 `MerlinxLegacyDisplay.cpp` 与本板胶水同源 ✓
+   - 查它的 `startDisplay()` 是否**没有**调用 `IOMobileFramebufferLegacy::start()` ✓
+     而是自己完成同等初始化 ✓ —— 如果是，照抄即可 ✓
+
+3. **在 ABI 层替换 `start`**
+   - 原版 `start` 的地址在 `merlinx-legacy-display-abi.json` 里 ✓
+   - 若该表可扩展，把我们自己的 `start` 换进 vtable ✓ 由我们自己完成初始化 ✓
+
+### 顺带：另一个独立问题（swap）
+
+```
+VM Swap Subsystem is ON
+Failed to open swap file 30
+vm_swap_create_file failed @ 276 / 296 secs
+```
+
+Data 卷已挂载 ✓ 但 `/private/var/vm` 可能不存在或不可写 ✓
+检查方式：Data seed（`scripts/build-data-seed.py` 的 `SEED_FILES` ✓）里加该目录 ✓
+或确认 Data 卷的权限位 ✓
+
+### 设备现状
+
+停在 panic 屏 ✓ 已读日志 ✓ 根卷与 SystemOS 均正常挂载 ✓
+镜像 `03662823`（内核 `51675136` ✓ 含显示栈 ✓）
