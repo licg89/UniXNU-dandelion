@@ -5432,3 +5432,234 @@ Data 卷已挂载 ✓ 但 `/private/var/vm` 可能不存在或不可写 ✓
 
 停在 panic 屏 ✓ 已读日志 ✓ 根卷与 SystemOS 均正常挂载 ✓
 镜像 `03662823`（内核 `51675136` ✓ 含显示栈 ✓）
+
+---
+
+## 0.102 显示：provider 检查被反汇编坐实，nub 改成真正的 AppleARMIODevice（2026-11-09 10:0x）
+
+### 一、反汇编得到的确定结论（不再是猜测）
+
+入口地址不是猜的：`NativeLegacyDisplay` 的 vtable 第 86 槽（`start`）在
+`build-gop-legacy-display.py` 里按 `methods[86]` 绑定到原始实现
+**`0xfffffff0057872e8`**（在 `__PLK_TEXT_EXEC`）。
+
+反汇编该地址（`llvm-objdump` 对 prelinked kernel 直接 `-d` 输出为空 ✗，
+改用 `llvm-mc -triple=arm64 -disassemble` 喂十六进制字节 ✓）：
+
+| 步骤 | 指令 | 含义 |
+| --- | --- | --- |
+| 1 | `adrp/add` → `0xfffffff0045fc0c1` + `0xfffffff0045fc0bd` | 打印 `__PRETTY_FUNCTION__` ✓ = 日志第一行 |
+| 2 | `adrp x8 → 0xfffffff005f33a08`; `ldr x8,[x8,#0xa08]`; `ldr x1,[x8]` | x1 = `*(0xfffffff005cbe4a8)` = **AppleARMIODevice 的元类指针**（kext 静态构造时写入 ✓）|
+| 3 | `bl 0xfffffff0057a2908` | 桩：`adrp x16; ldr x16,[table]; br x16` → 真身 `0xfffffff0078cfd50` |
+| 4 | 真身：`ldr x8,[x0]; ldr x8,[x8,#56]; blr` = `getMetaClass()`，然后 `cmp 目标, x0`；不等则 `ldr x0,[x0,#16]`（superclass）继续 | **OSDynamicCast 语义**：沿元类链比较**指针**，命中返回对象，否则 NULL |
+| 5 | `tbnz w0,#0` → 成功路径；否则打印 `"%s: provider was not AppleARMIODevice."`（`0xfffffff0045fc213`）并返回 false | 就是我们看到的失败 ✓ |
+
+**两条硬结论**：
+
+1. **是元类指针比较，不是类名字符串比较** ✗ —— 自定义一个同名类（或
+   `metaCast("AppleARMIODevice")`）**过不了** ✓。必须让 provider 真的是该类。
+2. **该类在核心里存在** ✓ —— kext 的类名字符串（`__PRELINK_TEXT`）和元类引用都在镜像里，
+   说明 prelink 的就是含 AppleARMIODevice 的那套 kext ✓ 所以可以直接按名字分配 ✓
+
+### 二、修复（`package/DandelionLegacyDisplay.cpp`）
+
+```cpp
+OSObject *allocated=OSMetaClass::allocClassWithName("AppleARMIODevice");
+IOService *nub=OSDynamicCast(IOService,allocated);
+// 取不到就回退 new IOService（老行为），并把结果记进 native_legacy_armio_device
+IOService *nubParent=parent;                       // IOResources
+if(native_legacy_armio_device) {
+    IOService *platform=OSDynamicCast(IOService,static_cast<IOService *>(IOService::getPlatform()));
+    if(platform)nubParent=platform;                // IOPlatformDevice 期望平台专家作为 provider ✓
+}
+...
+nubAttached=nub->attach(nubParent);if(nubAttached)nubStarted=nub->start(nubParent);
+if(nubAttached) {   // ← 原来要求 nubStarted ✓ 现在只要 attach 成功就继续 ✓
+```
+
+配套：`dline()` 走 `native_gop_text`，而**该符号在胶水里是空桩** ✗ → `dline` 什么都不输出 ✗
+（这也是为什么之前只有 Apple 的 IOLog 行、看不到 `DISP …`）✓
+所以新增 `slog()` 直接走 `IOLog("DANDELION-DISP …")` ✓ 到内核控制台 ✓：
+`armio=%u class=%s`、`nub parent=%s attach=%d start=%d`、`dtattach=%d`、
+`disp probe=%d attach=%d start=%d`、`UP`。
+
+### 三、构建与刷入
+
+| 项 | 值 |
+| --- | --- |
+| 内核 | 重建 ✓ `kernel.macho` 51675136 B sha256 `7d0f699ba9505525…`，`DISP ARMIO` 命中 1 次 ✓ `AppleARMIODevice` 12 次 ✓ |
+| payload | `kernel_sha256` 与上面一致 ✓ `payload_bytes` 62914560 ✓ |
+| boot.img | `9600d37bad47a1a0…`（另存 `out3/boot-display-armio.img`）✓ |
+| 刷入 | 10:17 ✓ 手机跑该镜像 ✓ |
+
+**踩到的坑（下次直接照做）**：`unixnu bootimg` 需要
+`uefi-dandelion/Build/dandelionPkg/DEBUG_CLANGPDB/FV/SILICIUM_UEFI.fd` ✓
+而重建 UEFI 的构建会**清掉整个 `Build/`** ✗ → bootimg 报 `firmware volume not found` ✗
+恢复办法（已验证 ✓）：从**上一个能启动的 boot.img** 里把 FV 拆出来：
+boot.img = gzip(BootShim + FV) + dtb ✓ → `zlib.decompressobj(16+MAX_WBITS)` 解压
+`raw[0x800:…]`，FV 头签名 `_FVH` 在解压流的 `0xe8`，故 FV 起点 `0xc0`、长度 `0x300000` ✓
+→ 得到 `93145a30b667e981…` ✓ 已存放在 `/root/work/fv-known-good/SILICIUM_UEFI.fd` ✓
+（脚本 `D:\aios\_work\recover_fv2.py`，只重跑 bootimg 的脚本 `D:\aios\_work\bootimg_only.sh`）
+
+### 四、待验证（需要 fastboot 读日志）
+
+判据（按优先级）：
+
+1. `provider was not AppleARMIODevice` **不再出现** ✓
+2. 出现 `DANDELION-DISP armio=1 class=AppleARMIODevice` ✓
+3. `nub parent=IOPlatformExpert attach=1 start=?` ✓（start 失败也可接受 ✓）
+4. `disp probe=1 attach=1 start=1` 与 `DANDELION-DISP UP` ✓ → 显示提供者真正上线 ✓
+
+若 `armio=0` → 说明按名字分配失败（元类没注册）✓ 下一步改成从元类表里直接取指针 ✓
+若 `nub … attach=0` → provider 挂接失败 ✓ 试 `IOService::getResourceService()` 或 DT 节点 ✓
+若 `disp probe=0` → 原版 `probe` 也在检查 provider 类型 ✓ 那些检查同样要看 ✓
+
+---
+
+## 0.103 swap 的结论被推翻：`/private/var/vm` 一直都在，缺的是 Data 挂载顺序（2026-11-09 10:1x）
+
+### 原来的假设（§0.100/§0.101）✗ 错了
+
+> "Data seed 里没有 `/private/var/vm`" ✗
+
+把 payload 里真正带的 DBRDISK1 seed（`feb3ea38…`）解开、用 apfs-fuse 挂上
+`OwnerData`（UUID `661FF9FF…`，与 defconfig 一致 ✓）后，根目录里**就有 `vm`** ✓
+（`vm 0755`、`tmp 1777`、`run 0775`、`keybags`、`mobile 711`、`db`）——是从 Apple 的
+OS 卷继承来的 ✓ 什么都不缺 ✓
+
+### 真正的含义
+
+```
+Failed to open swap file 30
+```
+`30` = **EROFS**（不是 ENOENT）✓ 内核建交换文件的路径是
+`/private/var/vm/swapfile0`（`osfmk/vm/vm_compressor_backing_store.h:58`），
+调用 `vnode_open(..., O_CREAT|O_TRUNC, 0600)`（`bsd/vm/vm_compressor_backing_file.c:58`），
+**不会建目录** ✓ 而在 276 s / 296 s 那一刻 Data 卷**还没挂到 `/private/var`** ✗
+路径落在只读根卷上 ✓ 根卷里恰好也有 `/private/var/vm` ✓ 所以是 EROFS 而非 ENOENT ✓
+
+**所以这不是缺目录，而是挂载顺序/失败的下游症状** ✓
+
+### 与 D4K 缓存 panic 的关系
+
+`D4K cache: err=2 stage=3 status=2` 是**紧跟其后**的另一个错误 ✓
+`stage=3` 就设在 `mount(p,&request,&result)` 之前 ✓ `status=2` 是 `mount()` 自己返回的
+ENOENT ✗ 而它在 `load_init_program()` 里**先于** `native_owner_data_prepare()` 触发 panic ✗
+→ 那一次启动里 Data 挂载**根本没跑** ✓ 交换文件当然也建不出来 ✓
+
+### 因此
+
+- **不要重建 Data seed** ✗（重建会换 volume UUID → 内核又要重编，零收益 ✗）
+- 先修 **SystemOS/缓存那条 mount 的 ENOENT** ✓（见 §0.104 / `_work/cache-mount-findings.md`）
+- 交换文件会在内存压力时**按需创建**（`vm_swapfile_create_needed` 唤醒机制 ✓）
+- 顺带：每次启动出现**一次** `Failed to open swap file 30` 属正常 ✓ 判据应是
+  `sysctl vm.swap_enabled=1` 且 `/private/var/vm/swapfile0` 存在 ✓
+- 待查：日志里 `"vm_compressor_mode" is N` ✓ 若 N=8（`VM_PAGER_FREEZER_DEFAULT`）说明
+  压缩机/交换**按配置停用** ✓ 那 `vm_compressor=4` 才是 1 GB 设备真正缺的东西 ✓
+
+---
+
+## 0.104 UEFI 终于能编了：4 GiB / 2 GiB 的内存描述符真的进了 .fd（2026-11-09 10:38）
+
+### 一、一个必须先说的假修复
+
+`9e10dd5` 的**提交信息**写着"在 `0xC0000000` 之上加 2 GiB"，但
+**它的 diff 里没有那一行** ✗ —— 整个提交只是把 174 行重写成 132 行（换行符）✗
+`git show 9e10dd5 | grep -c "DRAM High"` = **0** ✓ `HEAD` 里也是 0 ✓
+
+> **教训（新的硬规矩）**：提交信息不算证据 ✓ 要 `git show <sha> | grep` 看 diff 里有没有那行 ✗
+> 这和 §0.97「按内容哈希判定」是同一类错误：**相信了描述而不是内容** ✗
+
+真正的改动现在在 `uefi-dandelion` 的 `4fb9bdc` ✓（`MemoryMapLib.c:167`）✓
+
+### 二、数值算对：`0x80000000` 而不是 `0x40000000`
+
+一度想改成 `0x40000000`（"只声明真正存在的 1 GiB"）✗ —— 那是**错的** ✓
+
+MTK 的 DRAM **不是从 0 起**：`0x40000000` 起 ✓ 设备 4 GiB →
+顶部 = `0x40000000 + 0x1_00000000 = 0x140000000` ✓
+所以 `0xC0000000` 之上 = `0x140000000 − 0xC0000000 = 0x80000000` = **正好 2 GiB** ✓
+
+三条板级证据：
+1. `MemoryMapLib.c:74` 第一条就是 `{"LK Low Reserved", 0x40000000, …} // kernel image + loader data`
+2. 原厂 `stock_boot.dtb` 的 `memory { reg = <0x00 0x40000000 0x00 0x20000000> }` —— base 0x40000000 ✓
+3. Android `MemTotal 3897064 kB`（3.72 GiB）——3 GiB 的 DRAM 不可能报出这个数 ✓
+
+### 三、构建成功（这是 §0.94/§0.95 卡了几轮的那一步）
+
+```
+stuart_update -c Platforms/Xiaomi/dandelionPkg/DeviceBuild.py      → Success
+python3 Platforms/Xiaomi/dandelionPkg/DeviceBuild.py TARGET=DEBUG \
+  FD_BASE=0x41080000 FD_SIZE=0x300000 FD_BLOCKS=768 DEVICE_MODEL=dandelion
+```
+注意：`stuart_build` **没有 `-t`** ✓ TARGET/FD_* 是 `KEY=value` 参数 ✓
+
+产物：`SILICIUM_UEFI-2g.fd` 3145728 B（=0x300000 ✓）sha256 `f3073c45216e816d…` ✓
+`grep -a "DRAM High Conv"` 在 **.fd 里**命中 ✓（不是只在中间产物里 ✓）
+
+### 四、WSL 里到底缺什么（§0.95 的结论要更新）
+
+| 缺的东西 | 真相 |
+| --- | --- |
+| `mu_nasm` NuGet | 保持禁用 ✓ 它是 **x86** 汇编器，AARCH64 用不到 ✓ |
+| `Common/Mu`、`Mu_Basecore` 子模块 | `git submodule update --init --recursive` 就行 ✓ GitHub 一直可达 ✓ |
+| `UniXNUPkg/`、`DarwinBootPkg/` 找不到 | `Edk2Path` **先搜 WORKSPACE** ✓ 要在 `uefi-dandelion/` 根建软链接 ✓（放在 `dandelionPkg/` 里的软链接没用 ✗）|
+| `MdePkg.dec: MipiSysTLib` 路径不存在 | `mipisyst` 子模块是空目录 ✓ 补 clone ✓ 还要 libfdt ✓ |
+| `openssl` 子模块 gitlink 从未提交 | `OpensslPkg/Source.txt` 给出真链路 ✓ 手工 fetch 装好 ✓ |
+
+**TARGET 必须用 `DEBUG`** ✓ —— `RELEASE` 定义 `MDEPKG_NDEBUG` 会把所有 `DEBUG()` 编掉 ✗
+而 `flashinfo@30512` 那条日志通道正是靠它们喂的 ✗ → RELEASE 的 .fd 等于把日志弄瞎 ✗
+
+### 五、下一步（内存三步，一次只动一个变量）
+
+1. ✅ 显示修复的镜像（`9600d37b`，10:17 已刷）——先单独验证显示 ✓
+2. ⬜ 新版 FV 单独上（`owned_memory_size` 保持 `0x10000000`）→ 证明新描述符无害 ✓
+3. ⬜ 再把 `owned_memory_size` 提到 `0x80000000`（2 GiB）→ 内核应报约 131000 free pages ✓
+
+最坏情况各 3 分钟就能出备选 FV：长度 `0x40000000`、或把 `0xBE000000` 之上拆成 `Reserv` ✓
+
+---
+
+## 0.105 内存的真正大头可能不是 1 GB，而是压缩机根本没开（2026-11-09 10:3x）
+
+### 日志里的那一行
+
+```
+"vm_compressor_mode" is 8
+mapping deprecated VM_PAGER_FREEZER_DEFAULT to VM_PAGER_FREEZER_COMPRESSOR_NO_SWAP
+```
+
+`vm_config_init()`（`osfmk/vm/vm_pageout.c:5019-5066`）里，`0x10`
+（`VM_PAGER_FREEZER_COMPRESSOR_NO_SWAP`）**只设了 present，没有设 active** ✗
+→ `compressor_is_active = FALSE`、`swap_is_active = FALSE` ✓
+**即：既不做内存压缩，也不换页** ✗ → 内存一紧只能 jetsam 杀进程 ✓
+这比"只有 1 GB"更能解释 §0.90 的 `namespace 1 subcode 0x4` ✓
+
+### 为什么默认是 8
+
+`vm_compressor_mode` 的初值就是 `VM_PAGER_FREEZER_DEFAULT`（`osfmk/vm/vm_compressor.c:156`）✓
+真机走的是 **iBoot 给的设备树键 `kern.vm_compressor`**（`vm_fault.c:309` `PE_get_default`）✓
+而本移植的 ADT 里没有这个键 ✗ → 默认值漏了出来 ✓
+boot-arg `vm_compressor=N` **优先级更高**（`vm_fault.c:286-296`）✓
+
+### 已改（`board.toml` 的 `kernel_args`）
+
+```
+"vm_compressor=2"     # VM_PAGER_COMPRESSOR_NO_SWAP：只开压缩，不依赖交换文件
+```
+
+选 **2** 不选 **4**（`COMPRESSOR_WITH_SWAP`）的理由：4 需要能建出交换文件 ✓
+而交换文件恰恰是 §0.103 那个"Data 没挂上"的下游 ✗ → 先把不依赖交换的压缩拿到手 ✓
+（`vm_compaction_swapper_do_init()` 在非 4 模式直接 return ✓ 不会去碰 swap ✓）
+
+### 下一张镜像已就绪
+
+| 项 | 值 |
+| --- | --- |
+| 内核 | `808fc8be2ff024dc…`（带 `slog`/IOLog 诊断 ✓）|
+| kernel_args | 含 `vm_compressor=2` ✓ |
+| FV | 已知可用 `93145a30…` ✓（§0.102 那个恢复出来的）|
+| 镜像 | `dc535c9b3f3b45fd…` = `out3/boot-disp-diag-compressor.img` ✓ |
+| 状态 | **待刷** ⬜（手机还在跑 10:17 那张，必须等它进 fastboot 才能换 ✓）|
+
+
