@@ -621,10 +621,18 @@ bool hostSweepMatches (const uint8_t *reference)
 void hostSetClockDivider (unsigned divider, unsigned previous)
 {
   const uint32_t cfg = rd (kMsdcCfg);
-  const uint32_t stopped = (cfg & ~(0xfffu << 8)) & ~kCfgCkPdn;
+  // CKDIV is bits [15:8] and CKMOD is bits [17:16]; the vendor writes them as separate fields
+  // (mtk-sd.c: MSDC_CFG_CKDIV GENMASK(15,8), MSDC_CFG_CKMOD GENMASK(17,16), mode 2 = DDR with
+  // divisor).  This code used to write "divider << 8" through a 12-bit mask, which rewrote CKMOD
+  // as well: divider 4 became 0x400, clearing the DDR clock mode the firmware had established, so
+  // the bus ran in the wrong mode.  That is the difference between the boots that only logged
+  // "verify ... got ... want" mismatches and the boots where every read answered EIO and the
+  // console died with it (it is written through this same card).  Write CKDIV only and leave the
+  // mode the firmware left.
+  const uint32_t stopped = (cfg & ~(0xffu << 8)) & ~kCfgCkPdn;
   wr (kMsdcCfg, stopped);                                  // clock off
   IODelay (200);
-  const uint32_t retimed = stopped | ((divider & 0xfffu) << 8);
+  const uint32_t retimed = stopped | ((divider & 0xffu) << 8);
   wr (kMsdcCfg, retimed);                                  // divider set while stopped
   IODelay (200);
   wr (kMsdcCfg, retimed | kCfgCkPdn);                      // clock on
@@ -672,7 +680,9 @@ void hostRaiseClock (void)
     }
   }
   const uint32_t cfg0 = rd (kMsdcCfg), iocon0 = rd (kMsdcIoCon);
-  const unsigned inherited = (cfg0 >> 8) & 0xfffu;
+  // CKDIV is 8 bits wide; reading 12 here also picked up CKMOD and HS400_CK_MODE, which are not
+  // divider bits at all.
+  const unsigned inherited = (cfg0 >> 8) & 0xffu;
   // Why divider 4 is unreliable, in one sentence: the sampling delay in MSDC_IOCON was trained by
   // the boot firmware for the inherited divider, and this code never retrains it.  At a shorter
   // period the same delay lands at a different point of the read eye, so reads sit on the edge of
