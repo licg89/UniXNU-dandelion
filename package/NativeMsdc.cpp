@@ -679,6 +679,13 @@ void hostRaiseClock (void)
       continue;
     }
     IOLog ("NativeMsdc: divider %u did not verify; keeping %u\n", dividers[d], best);
+    // Put the card back at the divider that was working before this attempt.  Without this the
+    // controller stayed at the rejected rate while native_msdc_clock_divider claimed the old one,
+    // and every later read answered EIO: the console (written through this same card) went silent,
+    // the owner cache mount failed, and exec of launchd failed with errno 5.  Measured: the boot
+    // that reported verified=0 with div=260 wedged; the boots that verified at divider 4 ran all
+    // the way to launchd.
+    hostSetClockDivider (best, dividers[d]);
     break;
   }
   wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((bestSample & 0x3fu) << 16));

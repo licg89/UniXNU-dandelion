@@ -5998,6 +5998,64 @@ load_init_program: attempting to load /sbin/launchd   ✓
 | 参数 | `native-msdc-clock=1`、`native-msdc-clk=4`（快档）✓ |
 | 预期 | 约 1/3 的启动"快 + 挂上"✓ 其余跳过缓存继续（不再卡死）✓ |
 
+---
+
+## 0.112 根因找到了：分频校验失败时**没有把分频恢复回去**（2026-11-09 23:1x）
+
+### 一、一行 panic 定案
+
+`native-msdc-clkreport=1` 让 `hostRaiseClock()` 结束处 panic（屏幕不依赖那张卡），拍到：
+
+```
+D4K clock: div=260 smp=0 verified=0 cfg=02200099 sdc=ff027ffc @NativeMsdc.cpp:693
+```
+
+- `verified=0` = **`hostSweepMatches()` 在分频 4 上校验失败** ✓
+- `div=260` = 软件认为"保持继承的 260" ✓
+
+### 二、真正的 bug
+
+`NativeMsdc.cpp` 的 `hostRaiseClock()` 失败分支：
+
+```cpp
+IOLog ("NativeMsdc: divider %u did not verify; keeping %u\n", dividers[d], best);
+break;                       // ← 只 break，没有 hostSetClockDivider(best, ...)
+}
+wr (kMsdcIoCon, ...);        // 只恢复了采样时钟(IOCON)
+native_msdc_clock_divider = best;   // ← 软件写 260，硬件还在被拒的那个速率
+```
+
+即：**校验失败后，采样恢复了，但分频没有恢复** ✗
+于是控制器停在一个**没通过校验的坏速率**上，而驱动以为自己是 260 ✓
+
+后果（全部对得上）：
+
+| 现象 | 原因 |
+| --- | --- |
+| 控制台在 306 秒后静默 | 控制台**走同一张卡写** ✓ 卡一坏就写不出去 ✓ |
+| `D4K mounted` 的 EIO | 读全部失败 ✓ |
+| `process 1 exec of /sbin/launchd failed, errno 5` | 同一张卡 ✓ |
+| "有时成功有时失败" | 校验通过（`verified=1`）就好 ✓ 失败（`verified=0`）就全盘坏 ✓ |
+
+这也解释了为什么慢档（`clock=0`，压根不扫）从来不出问题 ✓
+
+### 三、修复（三行）
+
+```cpp
+IOLog ("...did not verify; keeping %u\n", ...);
+hostSetClockDivider (best, dividers[d]);   // ← 把卡放回原来的分频
+break;
+```
+
+修完之后：**校验通过 → 快（14 MB/s）✓ 校验失败 → 慢（0.32 MB/s）但正确 ✓ 再也不会"卡坏"** ✓
+
+### 四、验证要点（下次读日志）
+
+- `NativeMsdc: clock divider 4 sample 0 verified` + `clock settled at divider 4` → 快档 ✓
+- 或 `divider 4 did not verify; keeping 260` + `settled at divider 260` → 慢档 ✓（但系统能继续）
+- 两种情况都应出现 `D4K mounted:` 或 `D4K not mounted:`（不再是无输出就死）✓
+
+
 
 
 
