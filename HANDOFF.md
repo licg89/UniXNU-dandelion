@@ -5744,5 +5744,41 @@ if (!resolvesToNode(candidatePath)) {                         // 卷自己的名
 **一次启动可同时判定**：显示（`DISP armio=` / `disp probe= attach= start=`）✓
 压缩机（`"vm_compressor_mode" is 2`）✓ D4K（若仍失败，panic 里有 `dev=` 和 `path='…'`）✓
 
+---
+
+## 0.107 里程碑：provider 检查**通过了**（2026-11-09 12:14）
+
+### 证据（镜像 `9600d37b` 的 188 行控制台日志）
+
+| 旧（`03662823`，189 行）| 新（`9600d37b`，188 行）|
+| --- | --- |
+| `virtual bool IOMobileFramebufferLegacy::start(IOService *)` | 同样一行 ✓ |
+| `virtual bool …: provider was not AppleARMIODevice.` ✗ | **这一行没有了** ✓ |
+| 无 `IOMFB:` | **`IOMFB: driver commit: `** ✓ |
+
+**判定**：
+
+1. `provider was not` 计数 = **0** ✓ → `OSDynamicCast(AppleARMIODevice, provider)` **通过了** ✓
+   即 `OSMetaClass::allocClassWithName("AppleARMIODevice")` 真的取到了那个类 ✓
+   （§0.102 的两条硬结论——必须用真类、类在核心里——都被实测确认 ✓）
+2. `IOMFB: driver commit: %s` 这条日志在原版 `start()` 里位于**类型检查之后** ✓
+   它出现 = 原版 `start()` 已经**越过**那道门 ✓
+3. 总数从 189 → 188，正好少的是一行 ✓ 没有引入新错误 ✓
+
+**这就是本项目第一次让 `IOMobileFramebufferLegacy::start()` 走进去** ✓ 显示栈的
+"provider 类型"这一关**过了** ✓
+
+### 仍未通的地方
+
+日志里没有 `launchd` / `backboardd` / `SpringBoard` ✓ 也没有 `D4K`（panic 只上屏 ✓）
+→ 系统仍死在 §0.106 那个 SystemOS 挂载 ✗ 所以还没到用户态显示那一步 ✓
+
+### 下一步（已刷入，等日志）
+
+`6fb80606…`（`out3/boot-d4k-anchored.img`，12:15 刷入）✓ 带 `slog` 诊断 ✓
+下一份日志应出现 `DANDELION-DISP armio=1 class=AppleARMIODevice` ✓
+以及 `disp probe=… attach=… start=…` ✓ —— 那是"显示提供者真正上线"的直接证据 ✓
+
+
 
 
