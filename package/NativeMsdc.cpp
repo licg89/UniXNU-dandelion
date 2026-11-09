@@ -338,9 +338,12 @@ IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
   wr (kDmaSaHigh, 0);
   wr (kDmaSa, uint32_t (gHost.dmaPhys));
   wr (kDmaLength, 0);
-  // Checksum validation is off for this experiment: if the engine rejects the descriptors it never
-  // starts, which is exactly the kIOReturnTimeout the PIO comparison reports.
-  wr (kDmaCfg, rd (kDmaCfg) & ~kDmaCfgChecksum);
+  // MSDC_DMA_CFG bit 1 is DECSEN, the descriptor engine enable -- not a checksum switch.  Clearing
+  // it here is why every DMA transfer timed out with 0xe00002d6: the engine never fetched the
+  // GPD/BD, so the data phase never drained, whatever the descriptors said.  The descriptors this
+  // driver builds do carry valid checksums (dmaChecksum over 16 bytes, the same sum the vendor
+  // uses), so the bit is enabled for the transfer and cleared again afterwards.
+  wr (kDmaCfg, rd (kDmaCfg) | kDmaCfgDescEn);
   wr (kDmaCtrl, (rd (kDmaCtrl) & ~(kDmaCtrlStart | kDmaCtrlStop | kDmaCtrlLastBuffer | kDmaCtrlBurstMask)) |
                 kDmaCtrlDescriptor | kDmaCtrlBurst64);
   wr (kDmaCtrl, rd (kDmaCtrl) | kDmaCtrlStart);
@@ -365,7 +368,7 @@ IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
     }
   }
   wr (kDmaCtrl, rd (kDmaCtrl) | kDmaCtrlStop);
-  if (waitClear (kDmaCfg, kDmaCfgActive) != kIOReturnSuccess) {
+  if (waitClear (kDmaCfg, kDmaCfgStatus) != kIOReturnSuccess) {
     gHost.poisoned = true;
     gHost.dmaEnabled = false;
     native_msdc_dma = 3;
@@ -373,7 +376,7 @@ IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
     IOLog ("NativeMsdc: DMA engine did not stop; transport quarantined\n");
     return kIOReturnNotReady;
   }
-  wr (kDmaCfg, rd (kDmaCfg) & ~kDmaCfgChecksum);
+  wr (kDmaCfg, rd (kDmaCfg) & ~kDmaCfgDescEn);
   wr (kMsdcCfg, rd (kMsdcCfg) | kCfgPio);
   if (result != kIOReturnSuccess) {
     if (multi) (void) hostCommand (kCmdStop, 0, Data::None, &response);

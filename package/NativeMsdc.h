@@ -54,8 +54,8 @@ constexpr uint32_t kDmaCtrlDescriptor = 1u << 8;
 constexpr uint32_t kDmaCtrlLastBuffer = 1u << 10;
 constexpr uint32_t kDmaCtrlBurstMask = 7u << 12;
 constexpr uint32_t kDmaCtrlBurst64 = 6u << 12;
-constexpr uint32_t kDmaCfgActive = 1u << 0;
-constexpr uint32_t kDmaCfgChecksum = 1u << 1;
+constexpr uint32_t kDmaCfgStatus = 1u << 0;   // MSDC_DMA_CFG_STS, read-only
+constexpr uint32_t kDmaCfgDescEn = 1u << 1;   // MSDC_DMA_CFG_DECSEN, descriptor engine enable
 constexpr unsigned kFifoBytes = 128;
 
 // Pure decoding of MT8167 controller fields and existing CMD8 EXT_CSD bytes.
