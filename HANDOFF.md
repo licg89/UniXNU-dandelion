@@ -5662,4 +5662,87 @@ boot-arg `vm_compressor=N` **优先级更高**（`vm_fault.c:286-296`）✓
 | 镜像 | `dc535c9b3f3b45fd…` = `out3/boot-disp-diag-compressor.img` ✓ |
 | 状态 | **待刷** ⬜（手机还在跑 10:17 那张，必须等它进 fastboot 才能换 ✓）|
 
+---
+
+## 0.106 D4K 挂载：名字指向"合成 APFS 卷"，改成锚定有节点的祖先（2026-11-09 11:1x–12:1x）
+
+### 一、panic 屏给的确定信息
+
+用户报的 panic 屏原文：
+
+```
+D4K cache: err=2 stage=3 status=2 @kern_exec.c:8185
+```
+
+三点：
+
+1. 停在 `kern_exec.c:8185` = `load_init_program()` 里的那个 `panic` ✓
+   即：**boot task / 显示那一段已经跑过去了** ✓ 系统是在 exec PID 1 之前死的 ✓
+2. `stage=3` + `status=2` = `mount()` 自己返回 ENOENT ✓（不是卷没认证：那是 stage 1 / EAUTH 80 ✓）
+3. 这一张（`9600d37b`）还是**旧格式** panic（没有 dev/path）✓ 所以看不到设备名 ✓
+
+### 二、ENOENT 到底出在哪（已排除 devfs）
+
+| 假设 | 结论 |
+| --- | --- |
+| `/dev` 没挂 → namei 失败 | ✗ **推翻** ✓ `bsd_init()` 里无条件 `devfs_kernel_mount("/dev")`（`bsd_init.c:1201-1208`）✓ 且日志里没有 `devfs_kernel_mount: kernel_mount failed` ✓ 且 `dev_init:306: disk0 …` 说明 APFS 拿到过 devvp ✓ |
+| 重试就能等到节点 | ✗ 节点不会自己出现 ✓ |
+| 传 dev_t 绕过 namei | ✗ `mount_common` 只 `copyin` 一个**路径**再 `namei` ✓ 没有 dev_t 字段 ✓ |
+
+**真正的机制**：`native_verified_block_volume_device()` 拿到的那个 IOMedia 是**合成的
+`AppleAPFSVolume`**（本移植自己的 `NativeMsdc.cpp:1607` 就是按这个类名判就绪 ✓）
+它有 BSD major/minor 属性，但**它的 `/dev` 节点要等容器挂上才存在** ✗
+而 `mount_common` 在进入文件系统**之前**就 `namei()` 这个路径 ✓ → 鸡生蛋 ENOENT ✗
+
+### 三、修法（已编译进内核 ✓）
+
+`drivers/VirtioMmioBlock/NativeVirtioBlock.cpp`（框架子模块）：
+
+```cpp
+static bool resolvesToNode(const char *devicePath) {          // vnode_lookup(..., vfs_context_kernel())
+static bool anchoredDevicePath(IOService *volumeMedia, ...)   // 沿 getProvider() 找"节点真的存在"的祖先
+...
+if (!resolvesToNode(candidatePath)) {                         // 卷自己的名字能用就原样返回（行为逐字节不变）
+    anchoredDevicePath(media, candidatePath, candidate, &anchoredDevice, anchoredPath, ...);
+    candidate = anchoredDevice; strlcpy(candidatePath, anchoredPath, ...);
+}
+```
+
+- 卷自己的路径**先试** ✓ 能解析就完全保持今天的行为 ✓
+- 解析不了才用祖先：cryptex 窗口没有 GPT（`NXSB` 在偏移 32）→ 祖先就是整个窗口媒体 `disk0` ✓
+  有 GPT 的窗口则会是容器切片（`disk5s1` 那种）✓
+- 授权不变：祖先在"已认证媒体的 provider 链"上 ✓
+- `vnode_lookup` / `vfs_context_kernel` / `vnode_put` 都在导出的 `<sys/vnode.h>` 里 ✓ 只多一个 include ✓
+
+### 四、⚠️ 新硬规矩：框架子模块**不要提交**，要留"脏"
+
+第一次我把改动 `git commit` 进了 `drivers/VirtioMmioBlock` ✓
+结果构建的 submodule 步骤把它**重置回 pin 的 revision** ✗ 改动**静默消失** ✗
+（编译出来的对象里 `vnode_lookup` 导入数为 0 ✓ 是我事后查对象才发现的 ✗）
+
+日志里那行是判据：
+
+```
+== submodules: drivers/DarwinBoot has local changes, not updated
+== submodules: drivers/VirtioMmioBlock has local changes, not updated   ← 脏就跳过 ✓
+```
+
+**所以：改框架/子模块 → 保持未提交（staged 也算脏）✓ 不要 commit ✗**
+验证要看到对象证据：`llvm-nm -u …/NativeVirtioBlock.o | grep vnode_lookup` 应有 2 条 ✓
+
+### 五、现在的镜像（三合一）
+
+| 项 | 值 |
+| --- | --- |
+| 内核 | `d4559a2bd045688c…`（`slog` 诊断 ✓ D4K 打印 `dev=/path=` ✓ 锚定路径 ✓）|
+| kernel_args | 含 `vm_compressor=2` ✓ |
+| FV | 已知可用 `93145a30…` ✓ |
+| 镜像 | `6fb80606dfad0481…` = `out3/boot-d4k-anchored.img` ✓ |
+| 驱动对象 | 259912 B，`vnode_lookup`/`vfs_context_kernel` 各 1 ✓ `anchoredDevicePath` ✓ |
+| 状态 | **待刷** ⬜ |
+
+**一次启动可同时判定**：显示（`DISP armio=` / `disp probe= attach= start=`）✓
+压缩机（`"vm_compressor_mode" is 2`）✓ D4K（若仍失败，panic 里有 `dev=` 和 `path='…'`）✓
+
+
 

@@ -1,12 +1,16 @@
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -8181,7 +8181,8 @@
+@@ -8181,7 +8181,12 @@
  	user_addr_t init_envp = USER_ADDR_NULL;
  #if defined(XNU_OWNER_CACHE_MOUNT) && XNU_OWNER_CACHE_MOUNT
  	int cache_error = native_owner_cache_prepare(p, (user_addr_t)scratch_addr, &init_envp);
 -	if (cache_error) panic("offline owner SystemOS mount failed: %d", cache_error);
-+	if (cache_error) panic("D4K cache: err=%d stage=%d status=%d",
-+	    cache_error, (int)native_owner_cache_stage, native_owner_cache_mount_status);
++	/* stage/status alone cannot separate the two ENOENT sites in mount_common (namei of the
++	 * device path, or apfs_vfsop_mount itself), and panic() output only reaches the panic screen,
++	 * never the console log block.  Name the device the mount was handed. */
++	if (cache_error) panic("D4K cache: err=%d stage=%d status=%d dev=%d path='%s'",
++	    cache_error, (int)native_owner_cache_stage, native_owner_cache_mount_status,
++	    (int)native_owner_cache_selected_device, native_owner_cache_device_path);
  #endif
  #if defined(XNU_OWNER_DATA_MOUNT) && XNU_OWNER_DATA_MOUNT
  	int data_error = native_owner_data_prepare(p, (user_addr_t)scratch_addr);
