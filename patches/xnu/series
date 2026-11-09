@@ -67,3 +67,10 @@ dandelion-owner-stage.patch
 # attempt, instead of deciding on one name.
 #
 dandelion-owner-retry.patch
+#
+# After early boot launchd logs through the unified log, which never reaches this console, so a
+# userland process that dies leaves no trace: the 49-minute run reached pid 1257 with 27 live
+# processes and told us nothing about why they went.  One line per exit names the process, the
+# raw code and whether it was signalled (crash, or jetsam's SIGKILL) or exited normally.
+#
+dandelion-exit-trace.patch

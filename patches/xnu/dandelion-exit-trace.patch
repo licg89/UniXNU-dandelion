@@ -1,0 +1,20 @@
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -1515,6 +1515,17 @@
+ #endif
+ 
+ 	/*
++	 * Board diagnostic: after early boot launchd switches to unified logging, which never
++	 * reaches this console, so a userland process that dies leaves no trace here at all.  One
++	 * line per exit names the process, the raw code, and whether it was signalled (a crash or
++	 * jetsam's SIGKILL) or exited normally.
++	 */
++	printf("DANDELION-EXIT: pid=%d comm=%s rv=%#x sig=%d status=%d\n",
++	    proc_getpid(p), p->p_comm, rv,
++	    WIFSIGNALED(rv) ? WTERMSIG(rv) : 0,
++	    WIFEXITED(rv) ? WEXITSTATUS(rv) : -1);
++
++	/*
+ 	 * If a thread in this task has already
+ 	 * called exit(), then halt any others
+ 	 * right here.
