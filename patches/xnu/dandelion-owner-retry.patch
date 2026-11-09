@@ -1,18 +1,11 @@
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -7018,6 +7018,7 @@
- #error The offline owner cache mount is a development instrument
- #endif
- extern int native_verified_block_volume_device(const char *, dev_t *, char *, size_t);
-+extern int native_verified_block_candidate(int, dev_t *, char *, size_t);
- #if defined(XNU_OWNER_BOOT_MANIFEST) && XNU_OWNER_BOOT_MANIFEST
- extern int native_owner_publish_boot_manifest(dev_t, const char *, dev_t, const char *);
- #endif
-@@ -7027,6 +7028,11 @@
+@@ -7027,6 +7027,12 @@
  #endif
  extern int native_verified_block_root_authorized(dev_t);
  volatile int native_owner_cache_stage = 0;
 +volatile int native_owner_cache_attempts = 0;
++volatile int native_owner_cache_seen_device = -1;
 +volatile int native_owner_cache_attempt_errors[4] = {-1, -1, -1, -1};
 +extern char native_verified_block_candidate_path[4][64];
 +extern char native_verified_block_media_class[32];
@@ -20,67 +13,65 @@
  volatile int native_owner_cache_status = -1;
  volatile int native_owner_cache_mount_status = -1;
  volatile int native_owner_cache_readonly = 0;
-@@ -7114,9 +7120,56 @@
+@@ -7114,9 +7120,54 @@
  	    (error = copyout(device_path, spec, strlen(device_path) + 1)) != 0 ||
  	    (error = copyout(mount_data, request.data, sizeof(mount_data))) != 0) goto done;
  	native_owner_cache_stage = 3;
 -	error = mount(p, &request, &result);
 -	native_owner_cache_mount_status = error;
 -	if (error) goto done;
-+	/* The SystemOS window is published twice per boot: the first instance carries the volume's
-+	 * /dev node but its backing device is already gone, so mounting it answers EIO, while the
-+	 * second instance is the one APFS opens ("dev_init:306: disk3 ... block count 806400") and
-+	 * the one every successful mount of this volume named.  On some boots the second publication
-+	 * has not happened yet when init is exec'd, and hammering the dead instance wedges the
-+	 * console with it -- the log stops at the same second in every failing boot.  So: wait for a
-+	 * *different* device instance (a new dev_t), never retry one that answered EIO, and if it
-+	 * never arrives carry on without the cache instead of panicking. */
++	/* The volume mounts as "disk3s1 ... SystemCryptex" whenever the media instance the UUID
++	 * query returns is the live one, and answers EIO when it is the instance the driver published
++	 * before APFS probed the window -- the two look identical from here (same dev_t, same node),
++	 * so the only way to tell is to try.  A failed attempt must not be repeated quickly: one
++	 * attempt on the dead instance is enough to stop the console for the rest of the boot, which
++	 * is why every failing run's log ends at the same second.  So try three times, thirty seconds
++	 * apart, never retrying a device that already answered EIO, and carry on without the cache
++	 * rather than wedge the machine. */
 +	dev_t dead_device = NODEV;
-+	for (int attempt = 0; attempt < 60; attempt++) {
++	dev_t mounted_device = NODEV;
++	for (int attempt = 0; attempt < 3; attempt++) {
 +		if (attempt) {
-+			tsleep((caddr_t)&native_owner_cache_stage, PRIBIO, "d4knode", hz * 2);
++			tsleep((caddr_t)&native_owner_cache_stage, PRIBIO, "d4knode", hz * 30);
++			dev_t seen = NODEV;
++			char seen_path[64] = {};
++			if (!native_verified_block_volume_device(volume, &seen, seen_path, sizeof(seen_path))) {
++				continue;
++			}
++			if (seen == dead_device) {
++				continue;
++			}
++			selected = seen;
++			strlcpy(device_path, seen_path, sizeof(device_path));
++			native_owner_cache_selected_device = selected;
++			strlcpy(native_owner_cache_device_path, device_path,
++			    sizeof(native_owner_cache_device_path));
++			if ((error = copyout(device_path, spec, strlen(device_path) + 1)) != 0) break;
 +		}
-+		dev_t seen = NODEV;
-+		char seen_path[64] = {};
-+		if (!native_verified_block_volume_device(volume, &seen, seen_path, sizeof(seen_path))) {
-+			continue;
-+		}
-+		if (seen == dead_device) {
-+			continue;
-+		}
-+		selected = seen;
-+		strlcpy(device_path, seen_path, sizeof(device_path));
-+		native_owner_cache_selected_device = selected;
-+		strlcpy(native_owner_cache_device_path, device_path,
-+		    sizeof(native_owner_cache_device_path));
-+		if ((error = copyout(device_path, spec, strlen(device_path) + 1)) != 0) break;
 +		native_owner_cache_attempts = attempt + 1;
 +		error = mount(p, &request, &result);
 +		native_owner_cache_mount_status = error;
 +		native_owner_cache_attempt_errors[attempt & 3] = error;
 +		if (!error) {
++			mounted_device = selected;
 +			printf("D4K mounted: attempt=%d dev=%d path='%s'\n", attempt,
 +			    (int)selected, device_path);
 +			break;
 +		}
 +		if (error == EIO || error == ENXIO) {
-+			dead_device = seen;
++			dead_device = selected;
 +		}
 +	}
-+	if (error) {
-+		/* Not fatal: the boot continues without the shared cache so the next stage can be
-+		 * observed, and this line says why. */
-+		printf("D4K not mounted: err=%d dev=%d path='%s' tries=%d n=%d media=%s [%s|%s|%s|%s]\n",
-+		    error, (int)selected, device_path, (int)native_owner_cache_attempts,
-+		    (int)native_verified_block_candidate_count, native_verified_block_media_class,
-+		    native_verified_block_candidate_path[0], native_verified_block_candidate_path[1],
-+		    native_verified_block_candidate_path[2], native_verified_block_candidate_path[3]);
++	if (!mounted_device) {
++		printf("D4K not mounted: err=%d dev=%d path='%s' tries=%d\n", error,
++		    (int)selected, device_path, (int)native_owner_cache_attempts);
++		error = 0;                              /* not fatal: continue without the cache */
 +		goto done;
 +	}
  	native_owner_cache_stage = 4;
  	error = vnode_lookup(mountpoint, 0, &mounted_root, vfs_context_current());
  	if (error) goto done;
-@@ -8184,7 +8237,7 @@
+@@ -8184,7 +8235,7 @@
  	/* stage/status alone cannot separate the two ENOENT sites in mount_common (namei of the
  	 * device path, or apfs_vfsop_mount itself), and panic() output only reaches the panic screen,
  	 * never the console log block.  Name the device the mount was handed. */
