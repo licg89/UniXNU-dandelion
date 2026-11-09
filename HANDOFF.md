@@ -5779,6 +5779,67 @@ if (!resolvesToNode(candidatePath)) {                         // 卷自己的名
 下一份日志应出现 `DANDELION-DISP armio=1 class=AppleARMIODevice` ✓
 以及 `disp probe=… attach=… start=…` ✓ —— 那是"显示提供者真正上线"的直接证据 ✓
 
+---
+
+## 0.108 三关同破：显示上线 + SystemOS 挂上 + launchd 走完 early boot（2026-11-09 12:37）
+
+镜像 `6fb80606`（12:15 刷入，跑 22 分钟）的控制台日志 **1867 行**（上一版 188 行 ✓）：
+
+### 一、显示：提供者完整上线 ✓✓✓
+
+```
+DANDELION-DISP late surface=0 found=1 phase=4 video=7ec50000 720x1600
+DANDELION-DISP armio=1 class=AppleARMIODevice      ← 按名字取到了真类
+DANDELION-DISP nub parent=ArmDTPlatform attach=1 start=1
+DANDELION-DISP dtattach=1
+DANDELION-DISP disp probe=1 attach=1 start=1       ← 原版 probe/attach/start 全过
+DANDELION-DISP UP
+```
+
+对照 §0.101 的死点（`provider was not AppleARMIODevice`）—— **那一行已经彻底消失** ✓
+且 `nub start=1` 说明真 `AppleARMIODevice` 挂到我们的 `ArmDTPlatform` 下**能启动** ✓
+（§0.102 里"IOPlatformDevice 期望平台专家做 provider"的判断是对的 ✓）
+
+### 二、SystemOS 挂载：锚定路径生效 ✓
+
+- 没有 `D4K cache` panic ✓ 日志继续往下走 ✓
+- `Early boot complete. Continuing system boot.`（launchd，两次：自己的 + System Event）✓
+- pid 到 **240** ✓ `D4K beat 50: procs=46` ✓
+
+即 §0.106 的"合成 APFS 卷没有 /dev 节点 → 锚定到有节点的祖先"这个修法**是对的** ✓
+（换 `vnode_lookup` 守卫后卷自己的名字能解析就完全不变行为 ✓ 所以没有回归 ✓）
+
+### 三、压缩机：真的开了 ✓
+
+```
+"vm_compressor_mode" is 2
+compressor              : 0xfffffffbc7ded000 - 0xfffffffbffdfc000 (896M)
+```
+`vm_page_bootstrap: 47762 free pages` 仍是 1 GiB ✓（内存那条要等 UEFI ✓）
+
+### 四、下一个瓶颈：存储吞吐（这是现在唯一拖慢启动的东西）
+
+```
+NativeMsdc: signed root policy read in 227935 ms, 2 entries, 1123 reads, 0 retries, 0 failures
+```
+73,291,104 B / 227,935 ms = **0.32 MB/s** ✗（不是 §0.77 那个 25–33 MB/s ✓）
+每次读 65 KB 要 **203 ms** ✓ 这段发生在**时钟抬升之前**的早期路径 ✓
+整段启动被它拖住：22 分钟才到 beat 50 / pid 240 ✓ 仍没到 `backboardd` / `SpringBoard` ✓
+
+其它观察：
+
+- `NativeMsdc: verify … got … want …` **8 次**（读回数据与期望哈希不符，重试后成功 ✓ `failures=0`）✓
+  与 §0.80 的 ~1e-5 误码率一致 ✓ 但每次都要重读 → 又加时间 ✓
+- `procs` 在 40–92 之间来回（有进程在退出 ✓ jetsam/崩溃都有可能 ✓）
+- 日志里完全没有 `backboardd` / `SpringBoard` 字样 ✓ 说明还没走到那一步 ✓
+
+### 五、下一步（已重新刷入，让它跑 90 分钟）
+
+同一张 `6fb80606` 再刷（12:39）✓ 这次给足时间看它能否走到 `backboardd`/`SpringBoard` ✓
+若仍停在同一个地方 → 下一轮就该动**存储吞吐**（早期路径的读粒度/时钟/重试）✓
+而不是继续在显示上花时间 ✓
+
+
 
 
 
