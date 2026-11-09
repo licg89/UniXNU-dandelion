@@ -332,24 +332,26 @@ IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
   result = hostPrepareData (blocks);
   if (result != kIOReturnSuccess) return result;
   wr (kMsdcCfg, rd (kMsdcCfg) & ~kCfgPio);
-  // Arm the engine before the card starts sending.  With the descriptors programmed only after the
-  // read command, the data phase has no destination and the transfer never completes: the PIO
-  // comparison reported kIOReturnTimeout (0xe00002d6) for exactly this reason.
+  // Order follows the vendor's msdc_start_data() (mtk-sd.c:1236-1243): program the descriptors,
+  // enable the engine, config MSDC_DMA_CTRL and the descriptor address, send the read command, and
+  // only start the engine once the card's response has arrived.  Starting it before the command
+  // leaves the engine with nothing to fetch until the card answers, which is the other half of the
+  // kIOReturnTimeout 0xe00002d6 this path kept reporting; arming the descriptors after the command
+  // was the opposite mistake and is what the old comment described.
   wr (kDmaSaHigh, 0);
   wr (kDmaSa, uint32_t (gHost.dmaPhys));
   wr (kDmaLength, 0);
-  // MSDC_DMA_CFG bit 1 is DECSEN, the descriptor engine enable -- not a checksum switch.  Clearing
-  // it here is why every DMA transfer timed out with 0xe00002d6: the engine never fetched the
-  // GPD/BD, so the data phase never drained, whatever the descriptors said.  The descriptors this
+  // MSDC_DMA_CFG bit 1 is DECSEN, the descriptor engine enable -- not a checksum switch.  It was
+  // being cleared here, so the engine never fetched the GPD/BD at all.  The descriptors this
   // driver builds do carry valid checksums (dmaChecksum over 16 bytes, the same sum the vendor
   // uses), so the bit is enabled for the transfer and cleared again afterwards.
   wr (kDmaCfg, rd (kDmaCfg) | kDmaCfgDescEn);
   wr (kDmaCtrl, (rd (kDmaCtrl) & ~(kDmaCtrlStart | kDmaCtrlStop | kDmaCtrlLastBuffer | kDmaCtrlBurstMask)) |
                 kDmaCtrlDescriptor | kDmaCtrlBurst64);
-  wr (kDmaCtrl, rd (kDmaCtrl) | kDmaCtrlStart);
-  result = hostCommand (multi ? kCmdReadMulti : kCmdReadSingle, argument, multi ? Data::ReadMulti : Data::ReadSingle,
-                        &response);
+  /* Command only: Data::None leaves the data phase to the engine, which is started below. */
+  result = hostCommand (multi ? kCmdReadMulti : kCmdReadSingle, argument, Data::None, &response);
   if (result == kIOReturnSuccess) {
+    wr (kDmaCtrl, rd (kDmaCtrl) | kDmaCtrlStart);
     uint64_t end = deadlineAfter (kCommandTimeoutNs);
     for (;;) {
       uint32_t interrupts = rd (kMsdcIntr) & (kIntXferDone | kIntDataErrors | kIntDmaErrors);
