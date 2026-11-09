@@ -5949,6 +5949,56 @@ shared_region: [1(launchd)] check_np(…) vm_shared_region_start_address() faile
 - 想立刻回到"能真正启动"的状态：把 `board.toml` 的 `native-msdc-clock` 改回 `1`，
   `bash /mnt/d/aios/_work/payload_only.sh` 即可（2 分钟，不重编内核）✓
 
+---
+
+## 0.111 分频没有中间地带：4 是唯一过校验的，而抬到 4 就会破坏窗口（2026-11-09 22:33–23:00）
+
+镜像 `b544df18`（`native-msdc-clk=0` 让扫描自选分频 + v7 挂载逻辑）跑 25 分钟，日志 **325 行**：
+
+```
+NativeMsdc: divider 64 did not verify; keeping 260
+NativeMsdc: clock settled at divider 260 sample 0 (inherited 260)
+D4K mounted: attempt=0 dev=16777221 path='/dev/disk3s1'
+disk3s1 mount-complete …SystemCryptex   ✓
+disk2s1 mount-complete …OwnerData        ✓
+load_init_program: attempting to load /sbin/launchd   ✓
+```
+
+### 一、结论：没有"温和提速"这条路
+
+- 扫描**只试了 64**，64 **校验不通过** → 退回继承的 **260** ✓
+- 也就是说 **4 是唯一能过校验的分频** ✓ 更温和的 64/32/16/8 全部不过 ✓（§0.76 记过 8 也不过 ✓）
+- 只剩两档：**260（约 40 KB/s，3.7 GB 缓存要 ~26 小时 ✗）** 与 **4（14 MB/s，但抬时钟会随机破坏窗口 ✗）**
+
+### 二、慢档（260）反而"最完整"
+
+两个卷都挂上、launchd 起来 ✓ 与 §0.110 一致 ✓ 差别只是慢到无法加载共享缓存 ✗
+
+### 三、下次第一件事：查 EIO 到底来自哪里（新线索，不用上机）
+
+`NativeMsdc.cpp:35-37` 写着：**已验证的窗口在发布前就被整段读进内核只读内存**，
+之后每次读都从内存取 ✓ 如果 SystemOS 窗口也在这个集合里，
+那么**挂载时的 EIO 根本不该来自卡** ✗ 那它只能来自 `vr_verify_block` 的哈希不符 ✓
+
+下次从这三处日志确认（都不用上机）：
+
+1. 有没有 `NativeMsdc: published SystemOS` 与 `SystemOS volume ready` ✓
+2. 有没有 `NativeMsdc: verify … got … want …`（哈希不符），以及它出现在**抬时钟之前还是之后** ✓
+3. `native_msdc_dma`（0=PIO / 1=DMA 已验证）与 `native_msdc_blocks_published` 的值 ✓
+
+- 若"抬时钟后校验开始失败" → 正解是**抬时钟后重新校验并重发布窗口** ✓
+- 若是"从卡读 vs 从内存读"的路径差异 → 那就是驱动里那条路径的 bug ✓
+
+### 四、当前最佳镜像（已备好，未刷；手机在 Android）
+
+| 项 | 值 |
+| --- | --- |
+| 镜像 | `e279fa58…` = `out3/boot-best.img` ✓ |
+| 内核 | `50a82084…`（v7：3 次间隔 30 秒的挂载尝试 + 失败不 panic ✓）|
+| 参数 | `native-msdc-clock=1`、`native-msdc-clk=4`（快档）✓ |
+| 预期 | 约 1/3 的启动"快 + 挂上"✓ 其余跳过缓存继续（不再卡死）✓ |
+
+
 
 
 

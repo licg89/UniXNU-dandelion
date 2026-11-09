@@ -174,14 +174,13 @@ title = "UniXNU"
 #
 trust_cache_sha256 = "4563bdbf6ed8f72237d45dbba3ccde432634338f95c10d79d5d4631678a97c7c"
 kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1", "sheng-no-lc=1", "sheng-skip-cs=1",
-               "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480", "native-msdc-mode=1", "launchd_unsecure_cache=1", "wdt=-1", "ignition_level=1", "-no_slto_panic", "sheng-aks=1", "native-msdc-clock=1", "native-msdc-clk=0", "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=1", "offline-legacy-register=1", "offline-legacy-gop=1", "offline-legacy-unit-scale=2", "offline-legacy-pm=1", "offline-legacy-phase=4", "offline-legacy-transfer=1", "offline-legacy-validate=1", "offline-legacy-cpu-present=1", "vm_compressor=2"]
+               "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480", "native-msdc-mode=1", "launchd_unsecure_cache=1", "wdt=-1", "ignition_level=1", "-no_slto_panic", "sheng-aks=1", "native-msdc-clock=1", "native-msdc-clk=4", "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=1", "offline-legacy-register=1", "offline-legacy-gop=1", "offline-legacy-unit-scale=2", "offline-legacy-pm=1", "offline-legacy-phase=4", "offline-legacy-transfer=1", "offline-legacy-validate=1", "offline-legacy-cpu-present=1", "vm_compressor=2"]
 #
-# native-msdc-clk=0 lets hostRaiseClock() sweep every divider and keep the last one that still
-# reads correctly, instead of insisting on 4.  The clock raise is what breaks the published
-# windows (HANDOFF 0.110: clock=0 is stable but ~44x slower; clock=1 with divider 4 mounts the
-# SystemOS volume on some boots only), and 4 was chosen when the only criterion was "does a
-# reference read verify".  If a less aggressive divider also verifies and leaves the windows
-# alone, this gets both speed and a mountable volume.
+# native-msdc-clk=4 is the only divider that verifies on this card: the sweep (clk=0) tried 64
+# first and it failed verification, then kept the inherited 260 -- 40 KB/s, which cannot load a
+# 3.7 GB dyld cache.  Divider 4 verifies and is fast, but the raise is what leaves the published
+# windows answering EIO on some boots (HANDOFF 0.110/0.111).  Speed is the default; the mount
+# side tolerates the failure (three spaced attempts, then carry on) so a boot is never wedged.
 #
 # vm_compressor=2 is VM_PAGER_COMPRESSOR_NO_SWAP (osfmk/vm/vm_pageout.h:656), and it is the single
 # cheapest memory win on this board.  Without the argument the kernel takes the RELEASE default
