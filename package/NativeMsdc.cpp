@@ -947,6 +947,36 @@ void hostRaiseClock (void)
         OSSafeReleaseNULL (apmixedMap);
       }
       OSSafeReleaseNULL (apmixedMemory);
+      // CKDIV turned out to have no effect at all: the same 4 KiB read takes 7.5 ms at divider 0 and
+      // 8.0 ms at divider 16, so the controller is not dividing the parent this driver thinks it is.
+      // The firmware's clock library names two gates on this path, INFRA_AO ifr3 bit 2 (MSDC0) and
+      // ifr5 bit 9 (MSDC0_SRC) with CLR/SET/STA at 0x88/0x8c/0x94 and 0xc0/0xc4/0xc8.  A closed
+      // source gate is exactly what would leave the controller on a fallback clock that no divider
+      // reaches.  Read the status, and if either gate is closed, open it the way the firmware's
+      // SdUngateClock does, then time a read again so the effect is visible in the same log.
+      IODeviceMemory *infraMemory = IODeviceMemory::withRange (0x10001000ULL, 0x1000);
+      IOMemoryMap *infraMap = infraMemory ? infraMemory->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+      if (infraMap && infraMap->getVirtualAddress () && infraMap->getLength () >= 0xcc) {
+        volatile uint32_t *ao = reinterpret_cast<volatile uint32_t *> (uintptr_t (infraMap->getVirtualAddress ()));
+        const uint32_t sta3 = ao[0x94 / 4], sta5 = ao[0xc8 / 4];
+        const bool msdc0Gated = (sta3 & (1u << 2)) == 0, srcGated = (sta5 & (1u << 9)) == 0;
+        IOLog ("NativeMsdc: infra_ao ifr3=%08x ifr5=%08x msdc0=%s src=%s\n", sta3, sta5,
+               msdc0Gated ? "gated" : "on", srcGated ? "gated" : "on");
+        if (msdc0Gated || srcGated) {
+          if (msdc0Gated) ao[0x8c / 4] = 1u << 2;
+          if (srcGated) ao[0xc4 / 4] = 1u << 9;
+          __asm__ volatile ("dsb sy" ::: "memory");
+          IODelay (1000);
+          IOLog ("NativeMsdc: infra_ao ungated, ifr3=%08x ifr5=%08x\n", ao[0x94 / 4], ao[0xc8 / 4]);
+          const uint64_t before = mach_absolute_time ();
+          const IOReturn got = hostReadPio (kCmdReadMulti, 0, gHost.bounce + kSweepCount * kSector, 8);
+          const uint64_t ticks = mach_absolute_time () - before;
+          IOLog ("NativeMsdc: ungated read timed %llu us (%s)\n", (ticks * 1000) / 24000,
+                 got == kIOReturnSuccess ? "ok" : "failed");
+        }
+        OSSafeReleaseNULL (infraMap);
+      }
+      OSSafeReleaseNULL (infraMemory);
       uint8_t *reference = gHost.bounce;
       uint8_t *candidate = gHost.bounce + kSweepCount * kSector;
       bool haveReference = hostReadPio (kCmdReadSingle, kSweepSectors[0], reference, 1) == kIOReturnSuccess;
