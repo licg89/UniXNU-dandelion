@@ -180,7 +180,7 @@ title = "UniXNU"
 #
 trust_cache_sha256 = "4563bdbf6ed8f72237d45dbba3ccde432634338f95c10d79d5d4631678a97c7c"
 kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1", "sheng-no-lc=1", "sheng-skip-cs=1",
-               "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480", "native-msdc-mode=1", "launchd_unsecure_cache=1", "wdt=-1", "ignition_level=1", "-no_slto_panic", "sheng-aks=1", "native-msdc-clock=1", "native-msdc-clk=0", "native-msdc-srcclk=1", "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=1", "offline-legacy-register=1", "offline-legacy-gop=1", "offline-legacy-unit-scale=2", "offline-legacy-pm=1", "offline-legacy-phase=4", "offline-legacy-transfer=1", "offline-legacy-validate=1", "offline-legacy-cpu-present=1", "vm_compressor=2"]
+               "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480", "native-msdc-mode=1", "launchd_unsecure_cache=1", "wdt=-1", "ignition_level=1", "-no_slto_panic", "sheng-aks=1", "native-msdc-clock=1", "native-msdc-clk=0", "native-msdc-srcclk=1", "native-msdc-hs200=1", "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=1", "offline-legacy-register=1", "offline-legacy-gop=1", "offline-legacy-unit-scale=2", "offline-legacy-pm=1", "offline-legacy-phase=4", "offline-legacy-transfer=1", "offline-legacy-validate=1", "offline-legacy-cpu-present=1", "vm_compressor=2"]
 #
 # native-msdc-dma is off again, deliberately and after six rounds.  What the trace settled: the
 # engine never fetched its descriptor (GPD.HWO stayed 1), MSDC_CFG carried PIO again at the point

@@ -776,6 +776,84 @@ void hostSetClockDivider (unsigned divider, unsigned previous)
          divider, previous, dtoc, (unsigned)scaled, rd (kMsdcCfg));
 }
 
+// Card speed-mode switch: CMD6 (SWITCH) writing one EXT_CSD byte, then wait for the card to leave the
+// programming state.  The argument shape is the one kFlushCacheArgument already uses -- access 1 in
+// [31:26], "write byte" 3 in [25:24], the index in [23:16] and the value in [15:8].
+bool hostSwitchExtCsd (unsigned index, unsigned value)
+{
+  const uint32_t argument = (1u << 26) | (3u << 24) | ((index & 0xffu) << 16) | ((value & 0xffu) << 8);
+  uint32_t response = 0;
+  IOReturn result = hostCommand (kCmdSwitch, argument, Data::None, &response);
+  if (result != kIOReturnSuccess) return false;
+  // The card is busy while it programs; SEND_STATUS until it reports the transfer state again.
+  for (unsigned i = 0; i < 100; ++i) {
+    uint32_t status = 0;
+    if (hostCommand (kCmdStatus, kStatusArgument, Data::None, &status) != kIOReturnSuccess) return false;
+    if (cardInTransfer (status)) return true;
+    IODelay (1000);
+  }
+  return false;
+}
+
+// The Android kernel on this same phone says what the hardware should be doing:
+//
+//   msdc0 -> Set<400KHz>    Source<400000KHz> -> sclk<400KHz>   timing<0>  div<250>
+//   msdc0 -> Set<200000KHz> Source<400000KHz> -> sclk<200000KHz> timing<9>  mode<0> div<0>
+//   [AUTOK] eMMC HS200 Tune
+//   msdc0 -> Set<200000KHz> Source<400000KHz> -> sclk<200000KHz> timing<10> mode<3> div<0>
+//   [AUTOK] eMMC HS400 Tune   ->  "new HS400 MMC card"
+//
+// So the card is meant to run in HS200/HS400 at 200 MHz off the 400 MHz MSDCPLL, and the boot
+// firmware leaves it in plain HS at the bring-up clock.  That is why every divider this driver
+// tried changed nothing: the card never left HS, and the host clock never left the bring-up rate.
+// HS200 is the mode this driver can reach with what it already has (8-bit bus, a working sampling
+// sweep and CMD6), so it is tried first, with the card put back to HS if anything fails to verify.
+bool hostEnterHs200 (const uint8_t *reference)
+{
+  uint32_t cfg = rd (kMsdcCfg);
+  if (!hostSwitchExtCsd (185, 2)) {                    // EXT_CSD[185] HS_TIMING = 2 (HS200)
+    IOLog ("NativeMsdc: HS_TIMING=2 refused; staying in HS\n");
+    return false;
+  }
+  IODelay (20000);
+  // Host side: the vendor's HS200 line is mode 0 (SDR with the divider) and div 0, which its own
+  // formula turns into source/2.  Bits [17:16] are CKMOD and [15:8] CKDIV.  The data timeout counter
+  // was scaled for the old, much slower clock, so it goes to its maximum here -- the vendor calls
+  // msdc_set_timeout() after every clock change for exactly this reason, and a counter sized for
+  // 400 kHz would expire long before a 200 MHz block finishes arriving from the card.
+  wr (kMsdcCfg, (cfg & ~((0x3u << 16) | (0xffu << 8))) | (0u << 16) | (0u << 8));
+  wr (kSdcCfg, (rd (kSdcCfg) & ~kSdcCfgDtoc) | (0xffu << 24));
+  IODelay (20000);
+  // Retune the sampling point at the new rate; the old one belongs to the old clock.
+  const uint32_t iocon = rd (kMsdcIoCon);
+  int firstPass = -1, lastPass = -1;
+  for (unsigned sample = 0; sample < 64; ++sample) {
+    wr (kMsdcIoCon, (iocon & ~(0x3fu << 16)) | ((sample & 0x3fu) << 16));
+    IODelay (200);
+    if (hostSweepMatches (reference)) {
+      if (firstPass < 0) firstPass = (int)sample;
+      lastPass = (int)sample;
+    }
+  }
+  const unsigned centre = firstPass >= 0 ? (unsigned)((firstPass + lastPass) / 2) : 0;
+  if (firstPass >= 0) {
+    wr (kMsdcIoCon, (iocon & ~(0x3fu << 16)) | ((centre & 0x3fu) << 16));
+    IODelay (200);
+  }
+  IOLog ("NativeMsdc: HS200 tuning window %d..%d centre %u, cfg %08x\n", firstPass, lastPass, centre,
+         rd (kMsdcCfg));
+  if (firstPass < 0 || !hostSweepMatches (reference)) {
+    // Put everything back the way it was: HS mode, the inherited clock and sampling point.
+    (void)hostSwitchExtCsd (185, 1);
+    wr (kMsdcCfg, cfg);
+    wr (kMsdcIoCon, iocon);
+    IODelay (20000);
+    IOLog ("NativeMsdc: HS200 did not verify; back in HS\n");
+    return false;
+  }
+  return true;
+}
+
 void hostRaiseClock (void)
 {
   if (!gHost.bounce) return;
@@ -861,6 +939,25 @@ void hostRaiseClock (void)
     break;
   }
   wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((bestSample & 0x3fu) << 16));
+  // Card speed mode.  Everything above only divides whatever clock the firmware left in place; the
+  // card itself is still in plain HS, which is not what this hardware does -- the Android kernel on
+  // this phone runs it in HS400 at 200 MHz.  HS200 is the fast mode this driver can reach with the
+  // pieces it already has, and it is kept only if the reference sectors still read back identical.
+  // The timing read is eight blocks at the spare offset so it stays inside the bounce buffer.
+  if (bootArgument ("native-msdc-hs200", 1, 0)) {
+    uint8_t *scratch = gHost.bounce + kSweepCount * kSector;
+    const uint64_t before = mach_absolute_time ();
+    const IOReturn beforeResult = hostReadPio (kCmdReadMulti, 0, scratch, 8);
+    const uint64_t beforeTicks = mach_absolute_time () - before;
+    if (hostEnterHs200 (reference)) {
+      const uint64_t after = mach_absolute_time ();
+      const IOReturn afterResult = hostReadPio (kCmdReadMulti, 0, scratch, 8);
+      const uint64_t afterTicks = mach_absolute_time () - after;
+      IOLog ("NativeMsdc: HS200 read %llu us -> %llu us (%s/%s)\n", (beforeTicks * 1000) / 24000,
+             (afterTicks * 1000) / 24000, beforeResult == kIOReturnSuccess ? "ok" : "failed",
+             afterResult == kIOReturnSuccess ? "ok" : "failed");
+    }
+  }
   // Rate curve at the divider and sampling point that just verified.  The clock tree says MSDCPLL is
   // running and CLK_CFG_3 already selects it, yet the card delivers about 600 KB/s -- a factor of
   // roughly 170 away from what that path should give.  Timing the same read at several dividers
