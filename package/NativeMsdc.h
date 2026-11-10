@@ -28,10 +28,16 @@ enum : unsigned {
   kSdcResp0 = 0x40,
   kSdcBlkNum = 0x50,
   kDmaSaHigh = 0x8c,   // MSDC_DMA_SA_HIGH4BIT
-  kDmaSa = 0x90,
-  kDmaCtrl = 0x98,     // bit 0 start, bit 1 stop, bit 8 descriptor mode, bit 10 last buffer, [14:12] burst
-  kDmaCfg = 0x9c,      // bit 0 active, bit 1 descriptor checksum
-  kDmaLength = 0xa8,
+  kDmaSa = 0x90,       // MSDC_DMA_SA: physical address of the GPD
+  kDmaCtrl = 0x98,     // MSDC_DMA_CTRL: bit 0 start (write-only), bit 1 stop (write-1, self-clearing),
+                       //                 bit 8 descriptor mode, bit 10 last buffer, [14:12] burst size
+  kDmaCfg = 0x9c,      // MSDC_DMA_CFG: bit 0 STS (read-only), bit 1 DECSEN (descriptor engine enable)
+                       // There is deliberately no 0xa8 entry: this driver used to write 0 there before
+                       // every transfer, but the vendor driver's register list (mtk-sd.c:52-90) has
+                       // nothing between MSDC_DMA_CFG at 0x9c and MSDC_PATCH_BIT at 0xb0 and never
+                       // touches 0xa8.  Writing an unexplained zero into an undocumented register on
+                       // the DMA block, just before starting the engine, is not something to keep
+                       // doing while the engine refuses to fetch its descriptor.
 };
 
 constexpr uint32_t kCfgPio = 1u << 3;

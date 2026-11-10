@@ -351,7 +351,8 @@ IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
                 kDmaCtrlDescriptor | kDmaCtrlBurst64);
   wr (kDmaSaHigh, 0);
   wr (kDmaSa, uint32_t (gHost.dmaPhys));
-  wr (kDmaLength, 0);
+  // 0xa8 is not written any more: see the note in NativeMsdc.h.  The vendor programs the descriptor
+  // address and nothing else in that gap.
   /* Command only: Data::None leaves the data phase to the engine, which is started below. */
   result = hostCommand (multi ? kCmdReadMulti : kCmdReadSingle, argument, Data::None, &response);
   // hostCommand runs its transaction with PIO selected and restores the configuration afterwards,
