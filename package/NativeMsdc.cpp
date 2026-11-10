@@ -314,6 +314,15 @@ IOReturn hostReadPio (unsigned opcode, uint32_t argument, uint8_t *buffer, uint3
 IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
 {
   if (!gHost.dmaVirt || !blocks || blocks > kMaxBlocks) return kIOReturnBadArgument;
+  // Take the card for the whole transfer.  The console is written through this same controller and
+  // its sink already declines while native_msdc_busy is set; without this the console inserted a
+  // HostSession in the middle of the DMA, that session selected PIO and restored its configuration
+  // snapshot, and the engine was left with the mode taken away from it.  The trace showed exactly
+  // that: PIO set again (cfg 0x02210499) and the GPD still hardware-owned, i.e. never fetched.
+  struct DmaBusy {
+    DmaBusy () { __atomic_add_fetch (&native_msdc_busy, 1, __ATOMIC_ACQ_REL); }
+    ~DmaBusy () { __atomic_sub_fetch (&native_msdc_busy, 1, __ATOMIC_ACQ_REL); }
+  } dmaBusy;
   unsigned bytes = blocks * kSector;
   DmaGpd *gpd = reinterpret_cast<DmaGpd *> (gHost.dmaVirt);
   DmaBd *bd = reinterpret_cast<DmaBd *> (gHost.dmaVirt + 64);
