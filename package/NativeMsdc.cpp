@@ -369,6 +369,16 @@ IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
       }
     }
   }
+  // Why the engine never stops, in one line: the GPD's HWO bit is cleared by the hardware when it
+  // takes the descriptor, so reading it back says whether the engine ever fetched one at all.  The
+  // BD's length and info say whether it reached the buffer, and the interrupt/status words say what
+  // the controller thinks happened.  Without this the only observable was "did not stop", which
+  // fits both "never started" and "transferred but never signalled".
+  cacheCleanInvalidate (gHost.dmaVirt, kDmaDescriptorBytes);
+  IOLog ("NativeMsdc: dma trace gpd_info=%08x gpd_len=%08x gpd_blk=%u bd_info=%08x bd_len=%08x "
+         "intr=%08x inten=%08x sts=%08x dmactrl=%08x cfg=%08x\n",
+         gpd[0].info, gpd[0].length, gpd[0].blocks, bd->info, bd->length,
+         rd (kMsdcIntr), rd (kMsdcIntEn), rd (kSdcSts), rd (kDmaCtrl), rd (kMsdcCfg));
   wr (kDmaCtrl, rd (kDmaCtrl) | kDmaCtrlStop);
   // The vendor waits for the STOP bit in MSDC_DMA_CTRL to clear itself (mtk-sd.c:1601-1605:
   // sdr_set_field(DMA_CTRL, STOP, 1) then poll until !(val & STOP)).  This code polled
