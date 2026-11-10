@@ -261,6 +261,12 @@ IOReturn hostPrepareData (uint32_t blocks)
 // different fix.  Pure PIO, no register is written that the working path does not already write.
 static uint64_t readPhaseTicks[4];
 static unsigned readPhaseCount, readPhaseSamples;
+// Two counters that separate "the card is slow" from "our drain loop is slow": spins where the FIFO
+// reported nothing and the loop went round again, and words actually read out of the FIFO.  A 64 KiB
+// transfer needs exactly 16384 word reads, so if wordsRead matches that and the drain still takes
+// ~98 ms, each MMIO read costs about 6 us and the loop is the problem; if the spins dominate, the
+// transfer is waiting for the card.
+static uint64_t readFifoSpins, readFifoWords;
 
 static void readPhaseSummary (void)
 {
@@ -271,8 +277,12 @@ static void readPhaseSummary (void)
          readPhaseTicks[0] / n, readPhaseTicks[1] / n, readPhaseTicks[2] / n,
          (readPhaseTicks[3] - readPhaseTicks[0] - readPhaseTicks[1] - readPhaseTicks[2]) / n, per,
          (per * 1000) / 24000);
+  IOLog ("NativeMsdc: read drain spins=%llu words=%llu per-read (spins %llu words %llu)\n",
+         readFifoSpins, readFifoWords, readFifoSpins / n, readFifoWords / n);
   for (unsigned i = 0; i < 4; ++i) readPhaseTicks[i] = 0;
   readPhaseSamples = 0;
+  readFifoSpins = 0;
+  readFifoWords = 0;
 }
 
 IOReturn hostReadPio (unsigned opcode, uint32_t argument, uint8_t *buffer, uint32_t blocks)
@@ -314,9 +324,11 @@ IOReturn hostReadPio (unsigned opcode, uint32_t argument, uint8_t *buffer, uint3
       // MSDC_FIFOCS reports the receive level in bytes here: this must stay a byte count, because
       // treating it as words stopped the root volume from mounting at all when it was tried.
       unsigned available = rd (kMsdcFifoCs) & 255u;
+      if (!available && offset < total) ++readFifoSpins;
       while (available && offset < total) {
         if (available >= 4 && total - offset >= 4) {
           uint32_t word = rd (kMsdcRxData);
+          ++readFifoWords;
           memcpy (buffer + offset, &word, 4);
           offset += 4;
           available -= 4;
