@@ -6356,6 +6356,59 @@ ungated read timed 7532 us (ok)                   ← 速度不变
 | 读速 | 600 KB/s（CKDIV 无效，门控是嫌疑）|
 | 全部提交 | `d10030f` … `a91e283`，工作区干净 |
 
+---
+
+## 0.119 HS200 被拒的根因：IO 电压是 3.3V（2026-11-10 23:00–23:50）
+
+### 一、卡拒绝 HS200 的确切证据
+
+```
+NativeMsdc: before HS200 cfg=0221009b bv18ctl=0 bv18status=0
+NativeMsdc: CMD6 ok arg=07b90200 rsp=00000800 state=4 errors=0800
+NativeMsdc: CMD13 rsp=00000900 state=4 errors=0900
+```
+
+| 读数 | 含义 |
+| --- | --- |
+| `bv18status=0`（`MSDC_CFG` bit 6，只读）| **IO 电压 3.3V** ✗ |
+| `CMD6 ok` / `state=4` | 命令被接收、卡在 TRAN ✓ |
+| `errors=0x0800` | 卡返回错误位 —— **HS200 在 3.3V 下不被允许** ✓ |
+
+→ HS200/HS400 **只能在 1.8V** 下工作 ✓ 固件把 VCCQ 留在 3.3V ✗ 这就是最后一道硬件门 ✓
+
+### 二、为什么内核里切不了
+
+厂商的 `msdc_ops_switch_volt()` 走 `regulator_set_vqmmc()` + pinctrl ✗
+**本移植没有调节器/PMIC 框架** ✗ 写一个 PMIC 驱动是"另开一个子系统"的工作量 ✓
+
+### 三、推荐的解法：让 UEFI 固件做（工作量小一个数量级）
+
+`/root/work/uefi-dandelion` 里已有 MT6765 的 **PMIC 驱动**和 SD/eMMC 驱动 ✓
+让固件在交棒前完成：
+
+1. VCCQ 切 1.8V（PMIC）
+2. 卡切 HS200 → tuning →（可选）HS400
+3. 时钟按 Android 的值：源 400 MHz、sclk 200 MHz、`mode<3>`、`div<0>`
+4. 内核只继承 ✓（与真实 iPhone 的 iBoot 分工一致 ✓）
+
+**目标配置的权威来源**（Android 内核日志，同一块硬件）：
+
+```
+msdc0 -> Set<200000KHz> Source<400000KHz> -> sclk<200000KHz> timing<10> mode<3> div<0> hs400_div_dis<1>
+[AUTOK] eMMC HS400 Tune  ->  "new HS400 MMC card"
+```
+
+### 四、当前状态
+
+| 项 | 值 |
+| --- | --- |
+| 最新镜像 | `boot-hs200dbg` = `0f1cf1b1`（含全部时钟/模式诊断）|
+| 稳定性 | ✓ 每次都到 launchd，无 panic |
+| 读速 | 600 KB/s（HS 模式 + 3.3V，与实测完全自洽）|
+| **阻塞点** | **VCCQ 3.3V → 需固件侧切 1.8V** |
+| 全部提交 | `d10030f` … `2228395`，工作区干净 |
+
+
 
 
 
