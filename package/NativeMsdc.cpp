@@ -889,12 +889,22 @@ void hostRaiseClock (void)
     // inside hostReadPio: far - x21 was 0xF800, the 64 KiB the call asked for.  Eight blocks (4 KiB)
     // is enough to time the bus and leaves the allocation intact.
     constexpr unsigned kSrcClkBlocks = 8;
+    // The eMMC clock's parent is not in CLK_CFG_0.  The firmware's own clock library says where it
+    // is: TOPCKGEN CLK_CFG_3 (0x70) with CLK_TOP_MSDC50_0_SEL at bits [10:8], update bit 13, and the
+    // parent tables put MSDCPLL in slot 1 (Silicon/MediaTek/MT6765Pkg/Library/ClockImplLib).
+    // CLK_CFG_0 [13:11] is what the earlier sweep changed, which is why seven selectors all measured
+    // the same speed: they were not this clock at all.
+    constexpr unsigned kTopCfg3Offset = 0x70;
+    constexpr unsigned kMsdc50SelShift = 8;
+    constexpr uint32_t kMsdc50SelMask = 7u << kMsdc50SelShift;
+    constexpr uint32_t kTopCfgUpdate = 1u << 13;
     IODeviceMemory *clockMemory = IODeviceMemory::withRange (0x10000000ULL, 0x1000);
     IOMemoryMap *clockMap = clockMemory ? clockMemory->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
-    if (clockMap && clockMap->getVirtualAddress () && clockMap->getLength () >= sizeof (uint32_t)) {
-      volatile uint32_t *cfg0 = reinterpret_cast<volatile uint32_t *> (uintptr_t (clockMap->getVirtualAddress ()));
-      const uint32_t original = *cfg0;
-      const unsigned inheritedSel = (original >> 11) & 7u;
+    if (clockMap && clockMap->getVirtualAddress () && clockMap->getLength () >= kTopCfg3Offset + sizeof (uint32_t)) {
+      volatile uint32_t *cfg3 = reinterpret_cast<volatile uint32_t *> (uintptr_t (clockMap->getVirtualAddress ()) + kTopCfg3Offset);
+      const uint32_t original = *cfg3;
+      const unsigned inheritedSel = (original >> kMsdc50SelShift) & 7u;
+      IOLog ("NativeMsdc: source CLK_CFG_3=%08x msdc50_0_sel=%u\n", original, inheritedSel);
       uint8_t *reference = gHost.bounce;
       uint8_t *candidate = gHost.bounce + kSweepCount * kSector;
       bool haveReference = hostReadPio (kCmdReadSingle, kSweepSectors[0], reference, 1) == kIOReturnSuccess;
@@ -909,7 +919,7 @@ void hostRaiseClock (void)
       if (haveReference) {
         for (unsigned sel = 0; sel < 8; ++sel) {
           if (sel == inheritedSel) continue;
-          *cfg0 = (original & ~(7u << 11)) | ((sel & 7u) << 11);
+          *cfg3 = (original & ~kMsdc50SelMask) | ((sel & 7u) << kMsdc50SelShift) | kTopCfgUpdate;
           __asm__ volatile ("dsb sy" ::: "memory");
           IODelay (1000);
           const uint64_t before = mach_absolute_time ();
@@ -927,7 +937,7 @@ void hostRaiseClock (void)
             bestSel = sel;
           }
         }
-        *cfg0 = (original & ~(7u << 11)) | ((bestSel & 7u) << 11);
+        *cfg3 = (original & ~kMsdc50SelMask) | ((bestSel & 7u) << kMsdc50SelShift) | kTopCfgUpdate;
         __asm__ volatile ("dsb sy" ::: "memory");
         IODelay (1000);
         // Only keep the new parent if the card still reads correctly through it.
@@ -935,7 +945,7 @@ void hostRaiseClock (void)
             (hostReadPio (kCmdReadSingle, kSweepSectors[0], candidate, 1) != kIOReturnSuccess ||
              memcmp (candidate, reference, kSector) != 0)) {
           bestSel = inheritedSel;
-          *cfg0 = original;
+          *cfg3 = original | kTopCfgUpdate;
           __asm__ volatile ("dsb sy" ::: "memory");
           IODelay (1000);
         }
