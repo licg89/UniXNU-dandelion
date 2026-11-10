@@ -871,6 +871,77 @@ void hostRaiseClock (void)
   // the 320 KB/s the policy read measures, while a DMA transfer should cost a fraction of it.
   IOLog ("NativeMsdc: dma state %u enabled %u phys 0x%llx\n", native_msdc_dma,
          unsigned (gHost.dmaEnabled), gHost.dmaPhys);
+  // The bus looks slow in the wrong place.  A 64 KiB read spends 99.4% of its time in the FIFO
+  // drain, and the drain loop spins about 738000 times per transfer waiting for data: the loop is
+  // not the cost, the card's delivery rate is, and that lands at roughly 640 KB/s.  MSDC0's source
+  // clock is selected by TOPCKGEN CLK_CFG_0 bits [13:11] (the driver already reads that register
+  // for telemetry) and it reads 0 -- the slowest parent.  Raising the divider was never going to
+  // help beyond the fastest division of a slow parent.
+  //
+  // So sweep the parent selectors with the same discipline as the divider sweep: keep the fastest
+  // one whose reads still match the data the current parent returns, restore the original when
+  // nothing beats it, and gate the whole thing on a boot argument so a selector that wedges the bus
+  // costs one experiment rather than every boot.
+  if (bootArgument ("native-msdc-srcclk", 1, 0)) {
+    IODeviceMemory *clockMemory = IODeviceMemory::withRange (0x10000000ULL, 0x1000);
+    IOMemoryMap *clockMap = clockMemory ? clockMemory->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+    if (clockMap && clockMap->getVirtualAddress () && clockMap->getLength () >= sizeof (uint32_t)) {
+      volatile uint32_t *cfg0 = reinterpret_cast<volatile uint32_t *> (uintptr_t (clockMap->getVirtualAddress ()));
+      const uint32_t original = *cfg0;
+      const unsigned inheritedSel = (original >> 11) & 7u;
+      uint8_t *reference = gHost.bounce;
+      uint8_t *candidate = gHost.bounce + kSweepCount * kSector;
+      bool haveReference = hostReadPio (kCmdReadSingle, kSweepSectors[0], reference, 1) == kIOReturnSuccess;
+      uint64_t baseline = ~0ULL;
+      if (haveReference) {
+        const uint64_t before = mach_absolute_time ();
+        if (hostReadPio (kCmdReadMulti, 0, candidate, kMaxBlocks) != kIOReturnSuccess) haveReference = false;
+        else baseline = mach_absolute_time () - before;
+      }
+      unsigned bestSel = inheritedSel;
+      uint64_t bestTicks = baseline;
+      if (haveReference) {
+        for (unsigned sel = 0; sel < 8; ++sel) {
+          if (sel == inheritedSel) continue;
+          *cfg0 = (original & ~(7u << 11)) | ((sel & 7u) << 11);
+          __asm__ volatile ("dsb sy" ::: "memory");
+          IODelay (1000);
+          const uint64_t before = mach_absolute_time ();
+          IOReturn got = hostReadPio (kCmdReadMulti, 0, candidate, kMaxBlocks);
+          const uint64_t ticks = mach_absolute_time () - before;
+          bool same = got == kIOReturnSuccess;
+          if (same) {
+            got = hostReadPio (kCmdReadSingle, kSweepSectors[0], candidate, 1);
+            same = got == kIOReturnSuccess && memcmp (candidate, reference, kSector) == 0;
+          }
+          IOLog ("NativeMsdc: source selector %u reads %s in %llu ticks%s\n", sel,
+                 (got == kIOReturnSuccess) ? "ok" : "failed", ticks, same ? "" : " (data differs)");
+          if (same && ticks < bestTicks) {
+            bestTicks = ticks;
+            bestSel = sel;
+          }
+        }
+        *cfg0 = (original & ~(7u << 11)) | ((bestSel & 7u) << 11);
+        __asm__ volatile ("dsb sy" ::: "memory");
+        IODelay (1000);
+        // Only keep the new parent if the card still reads correctly through it.
+        if (bestSel != inheritedSel &&
+            (hostReadPio (kCmdReadSingle, kSweepSectors[0], candidate, 1) != kIOReturnSuccess ||
+             memcmp (candidate, reference, kSector) != 0)) {
+          bestSel = inheritedSel;
+          *cfg0 = original;
+          __asm__ volatile ("dsb sy" ::: "memory");
+          IODelay (1000);
+        }
+        IOLog ("NativeMsdc: source clock selector %u (inherited %u, was %llu ticks, now %llu)\n",
+               bestSel, inheritedSel, baseline / 1000, bestTicks / 1000);
+      } else {
+        IOLog ("NativeMsdc: source clock sweep skipped (no reference read)\n");
+      }
+      OSSafeReleaseNULL (clockMap);
+    }
+    OSSafeReleaseNULL (clockMemory);
+  }
   // The console is written through this same card, so report the outcome where storage cannot hide
   // it: the panic screen is drawn from the framebuffer.
   if (bootArgument ("native-msdc-clkreport", 1, 0)) {
