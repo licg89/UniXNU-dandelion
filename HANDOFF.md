@@ -6576,3 +6576,53 @@ ungated divider 16 timed 7997 us      ← 16 倍分频只差 6%
 | 已达成 | 显示 ✓ / 双卷挂载 ✓ / 卡可进 HS200 ✓ / 门控可打开 ✓ |
 | 未解决 | 读速恒定 550 KB/s，与时钟配置无关 |
 | 全部提交 | `d10030f` … `2b7df4a`，工作区干净 |
+
+---
+
+## 0.122 决定性发现：时钟 mux 从未被提交（2026-11-11 02:25–02:45）
+
+### 一、权威源码在本地找到了
+
+```
+/mnt/d/aios/research/_v_clk-mt6765.c        ← 厂商 clk 驱动（1420 行）
+/mnt/d/aios/research/_v_mt6765-clk.h        ← 时钟 ID 定义
+/mnt/d/aios/research/refs/mt6765-vendor     ← 参考目录
+```
+
+### 二、真正的机制
+
+```c
+#define CLK_CFG_3       0x70
+#define CLK_CFG_3_SET   0x74
+#define CLK_CFG_3_CLR   0x78
+#define CLK_CFG_UPDATE  0x004        /* ★ 提交位在独立寄存器 */
+
+MUX_GATE_CLR_SET_UPD(CLK_TOP_MSDC50_0_SEL, "msdc50_0_sel",
+    msdc50_0_parents, CLK_CFG_3, CLK_CFG_3_SET, CLK_CFG_3_CLR,
+    8, 3, 15, CLK_CFG_UPDATE, 13)
+     ↑shift ↑width ↑gate              ↑提交位 13
+```
+
+**移植代码一直把 `1<<13` 写进 `CLK_CFG_3`** ✗ —— 那属于 `MSDC30_1_SEL` 字段的第 5 位 ✗
+→ **选择器从来没有被提交** ✓ → 时钟一直是原来的值 ✓
+
+### 三、这一处错误解释了之前所有实测
+
+| 实测现象 | 原因 |
+| --- | --- |
+| 7 个父时钟选择器速度完全一样（全 ~180,000 ticks）| mux 没提交 ✓ |
+| 打开 INFRA_AO 门控后速度不变 | 门控位是 mux 字段的一部分，同样没提交 ✓ |
+| CKDIV 0→16 只差 5% | 上游时钟从未改变 ✓ |
+| 速率恒定 550 KB/s | 一直跑在固件留的时钟上 ✓ |
+
+### 四、本轮修复
+
+1. 选择器写入后，向 **`CLK_CFG_UPDATE`(0x04) 写 `1<<13`** 提交 ✓（恢复路径同样提交 ✓）
+2. 增加**时基校验**：`cntfrq_el0` + 10 次 `IODelay(1000)` 与 `mach_absolute_time()` 交叉核对 ✓
+
+镜像 `boot-update-bit` = `5e2c090b` 已编好并提交为 `6a3e747`，**等待刷机验证**（手机当时在 payload 里，非 Android/fastboot，无法推送）。
+
+### 五、预期
+
+首次提交 mux 后，`source selector 0..7` 的耗时**应出现明显差异**（不再是全部相同）✓
+若某个选择器显著更快 → 时钟终于生效 → 再配合 CKDIV 与卡模式即可追到 HS400 ✓
