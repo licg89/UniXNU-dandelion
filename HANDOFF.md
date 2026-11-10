@@ -6486,3 +6486,48 @@ Still waiting for root device
 
 
 
+
+---
+
+## 0.120 门控打开、卡进 HS200，但主机时钟仍是 400 kHz（2026-11-11 00:00–01:10）
+
+### 一、今天新达成的两点
+
+```
+infra_ao ifr3=00080900 ifr5=00000000 msdc0=gated src=gated    ← 之前
+infra_ao ungated, ifr3=00080904 ifr5=00000200                 ← ★ 门控打开成功
+HS200 tuning window 31..63 centre 47
+HS200 read 7528 us -> 7491 us (ok/ok)                         ← ★ HS200 验证通过
+```
+
+| 项 | 状态 |
+| --- | --- |
+| INFRA_AO 的 MSDC0 / MSDC0_SRC 门控 | ✅ 打开（写 SET 寄存器 0x88/0xc0，之前误写 CLR 0x8c/0xc4）|
+| 卡 HS200 | ✅ 切换并验证通过（`EXT_CSD[185]=2`）|
+
+### 二、仍未解决：CKDIV 依旧无效
+
+```
+ungated divider 0  timed 7532 us
+ungated divider 16 timed 7997 us      ← 16 倍分频只差 6%
+```
+
+→ **控制器的时钟不由 `MSDC_CFG.CKDIV` 决定** ✓ 400 kHz 来自更上游 ✗
+
+### 三、明天的第一个目标：`msdc0_top @ 0x11CD0000`
+
+固件源码 `MT6765Pkg/Library/MsdcImplLib/MsdcImplLib.c` 的注释（`[VERIFIED]`）写明：
+
+> TODO(MT6765): Dandelion's **msdc0_top** (the HS200/HS400 delay-line tuning block) is at
+> **0x11CD0000** (vendor DT msdc0_top@11cd0000), while lancelot's MemoryMapLib maps
+> "MSDC Top-0" at 0x11C90000. Nothing in this library or in MT6765Pkg reads it.
+
+- 该块里的 `EMMC_TOP_CONTROL` / `EMMC_TOP_CMD` 在部分 MTK SoC 上带时钟/延时控制 ✓
+- `MSDC_PAD_TUNE`(0xec) / `MSDC_PAD_TUNE0`(0xf0) 的延时链也在此体系里 ✓
+- 下一步：读 0x11CD0000 前 0x100 字节，和 PAD_TUNE 一起看，找出 400 kHz 的真正来源 ✓
+
+### 四、其它本轮修正
+
+- `SDC_CFG[17:16]` 原本就是 2（8-bit）✓ —— 总线宽度从来不是瓶颈 ✓
+- `CLK_CFG_3 = 0x00010101`：选择器已是 MSDCPLL ✓、gate 位 15 = 0 ✓ 但打开 gate 无效 ✗
+- 新增的所有写入都有**验证 + 回滚**（总线宽度、HS200、门控、分频）✓ 启动始终可用 ✓
