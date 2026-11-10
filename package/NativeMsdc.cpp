@@ -1165,20 +1165,34 @@ void hostRaiseClock (void)
           const uint64_t ticks = mach_absolute_time () - before;
           IOLog ("NativeMsdc: ungated read timed %llu us (%s)\n", (ticks * 1000) / 24000,
                  got == kIOReturnSuccess ? "ok" : "failed");
-          for (unsigned i = 0; i < 6; ++i) {
-            static const unsigned curve2[] = { 0, 1, 2, 4, 8, 16 };
-            hostSetClockDivider (curve2[i], best);
+          // With the gate open the clock is faster, and the fastest division of it is more than the
+          // card's current speed mode can take: restoring divider 0 here hung the machine -- the log
+          // ended on the restore line and never came back, with the console blocked because the card
+          // had stopped answering.  So walk it the other way: slowest first, then step towards fast,
+          // and stop at the last setting that still reads back correctly.  Slower is always safe.
+          static const unsigned climb[] = { 16, 8, 4, 2, 1, 0 };
+          unsigned kept = 16;
+          uint64_t keptTicks = 0;
+          bool anyOk = false;
+          for (unsigned i = 0; i < sizeof (climb) / sizeof (climb[0]); ++i) {
+            hostSetClockDivider (climb[i], kept);
             const uint64_t t0 = mach_absolute_time ();
             const IOReturn r2 = hostReadPio (kCmdReadMulti, 0, gHost.bounce + kSweepCount * kSector, 8);
-            IOLog ("NativeMsdc: ungated divider %u timed %llu us (%s)\n", curve2[i],
-                   ((mach_absolute_time () - t0) * 1000) / 24000, r2 == kIOReturnSuccess ? "ok" : "failed");
+            const uint64_t ticks = mach_absolute_time () - t0;
+            IOLog ("NativeMsdc: ungated divider %u timed %llu us (%s)\n", climb[i], (ticks * 1000) / 24000,
+                   r2 == kIOReturnSuccess ? "ok" : "failed");
+            if (r2 != kIOReturnSuccess) break;
+            anyOk = true;
+            kept = climb[i];
+            keptTicks = ticks;
           }
-          hostSetClockDivider (best, 16);
-          // Safety net: with the source gate open the controller may run far faster than the card's
-          // current speed mode allows, in which case reads fail.  Shut the gate again rather than
-          // leave the boot without storage -- the CLR registers are 0x8c (ifr3) and 0xc4 (ifr5).
-          const IOReturn check = hostReadPio (kCmdReadMulti, 0, gHost.bounce + kSweepCount * kSector, 8);
-          if (check != kIOReturnSuccess) {
+          if (anyOk) {
+            hostSetClockDivider (kept, 16);
+            IOLog ("NativeMsdc: ungated clock kept at divider %u (%llu us per 4 KiB)\n", kept,
+                   (keptTicks * 1000) / 24000);
+          } else {
+            // Not even the slowest division of the ungated clock reads: shut the gates again and put
+            // the divider back where it was, so the boot keeps its storage.
             if (srcGated) ao[0xc4 / 4] = 1u << 9;
             if (msdc0Gated) ao[0x8c / 4] = 1u << 2;
             __asm__ volatile ("dsb sy" ::: "memory");
