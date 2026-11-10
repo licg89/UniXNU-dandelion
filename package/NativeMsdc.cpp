@@ -370,7 +370,21 @@ IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
     }
   }
   wr (kDmaCtrl, rd (kDmaCtrl) | kDmaCtrlStop);
-  if (waitClear (kDmaCfg, kDmaCfgStatus) != kIOReturnSuccess) {
+  // The vendor waits for the STOP bit in MSDC_DMA_CTRL to clear itself (mtk-sd.c:1601-1605:
+  // sdr_set_field(DMA_CTRL, STOP, 1) then poll until !(val & STOP)).  This code polled
+  // MSDC_DMA_CFG.STS instead, a different register, so a stop that had happened was reported as
+  // one that never did: the engine was quarantined, the transport marked poisoned, and the root
+  // volume stopped being readable ("Still waiting for root device").  Poll the register the vendor
+  // polls; STOP is write-1 and clears when the engine is idle.
+  bool stopped = false;
+  for (unsigned poll = 0; poll < 2000; ++poll) {
+    if (!(rd (kDmaCtrl) & kDmaCtrlStop)) {
+      stopped = true;
+      break;
+    }
+    IODelay (10);
+  }
+  if (!stopped) {
     gHost.poisoned = true;
     gHost.dmaEnabled = false;
     native_msdc_dma = 3;
