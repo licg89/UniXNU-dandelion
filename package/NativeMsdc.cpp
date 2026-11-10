@@ -309,8 +309,13 @@ IOReturn hostReadPio (unsigned opcode, uint32_t argument, uint8_t *buffer, uint3
   return result;
 }
 
-// Descriptor DMA read into the private bounce buffer, then a copy out. The buffer is never reused while the engine
-// may still write to it: if the engine does not stop, the transport is quarantined and the memory kept.
+// Defined further down.  The DMA failure paths below have to stop the card and leave it in a state
+// where the next read works, which is what this does.
+void hostRecoverAfterError (void);
+
+// Descriptor DMA read into the private bounce buffer, then a copy out.  A failed transfer no longer
+// quarantines anything: it puts the controller back in PIO, stops the card and returns an error, so
+// the caller falls back to the path that works and the boot continues.
 IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
 {
   if (!gHost.dmaVirt || !blocks || blocks > kMaxBlocks) return kIOReturnBadArgument;
@@ -406,15 +411,13 @@ IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
          gpd[0].info, gpd[0].length, gpd[0].blocks, bd->info, bd->length,
          rd (kMsdcIntr), rd (kMsdcIntEn), rd (kSdcSts), rd (kDmaCtrl), rd (kMsdcCfg));
   wr (kDmaCtrl, rd (kDmaCtrl) | kDmaCtrlStop);
-  // The vendor waits for the STOP bit in MSDC_DMA_CTRL to clear itself (mtk-sd.c:1601-1605:
-  // sdr_set_field(DMA_CTRL, STOP, 1) then poll until !(val & STOP)).  This code polled
-  // MSDC_DMA_CFG.STS instead, a different register, so a stop that had happened was reported as
-  // one that never did: the engine was quarantined, the transport marked poisoned, and the root
-  // volume stopped being readable ("Still waiting for root device").  Poll the register the vendor
-  // polls; STOP is write-1 and clears when the engine is idle.
+  // The vendor polls two places after a stop, and both are watched here: MSDC_DMA_CTRL.STOP
+  // clearing itself (mtk-sd.c:1601-1605) and MSDC_DMA_CFG.STS clearing (1609-1610).  The earlier
+  // change to watch only the first was wrong about the second being the wrong register -- the port
+  // was already watching a register the vendor watches.  Either clearing means the engine is idle.
   bool stopped = false;
   for (unsigned poll = 0; poll < 2000; ++poll) {
-    if (!(rd (kDmaCtrl) & kDmaCtrlStop)) {
+    if (!(rd (kDmaCtrl) & kDmaCtrlStop) || !(rd (kDmaCfg) & kDmaCfgStatus)) {
       stopped = true;
       break;
     }
@@ -437,11 +440,18 @@ IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
   wr (kDmaCfg, rd (kDmaCfg) & ~kDmaCfgDescEn);
   wr (kMsdcCfg, rd (kMsdcCfg) | kCfgPio);
   if (result != kIOReturnSuccess) {
+    // A failed engine leaves the card in the middle of a data phase, and every later read then
+    // fails -- that is what took the root volume away after the earlier attempts.  Stop the
+    // transfer and let the card return to transfer state before giving up.
     if (multi) (void) hostCommand (kCmdStop, 0, Data::None, &response);
+    hostRecoverAfterError ();
     return result;
   }
   result = waitClear (kSdcSts, kStsSdcBusy);
-  if (result != kIOReturnSuccess) return result;
+  if (result != kIOReturnSuccess) {
+    hostRecoverAfterError ();
+    return result;
+  }
   cacheCleanInvalidate (data, bytes);
   memcpy (buffer, data, bytes);
   return kIOReturnSuccess;
