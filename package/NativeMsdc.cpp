@@ -254,20 +254,48 @@ IOReturn hostPrepareData (uint32_t blocks)
 
 // PIO read. Multi-block reads are bounded by SET_BLOCK_COUNT, so a completed transfer needs no STOP; an interrupted one
 // is stopped and its original error kept.
+// Where the time actually goes on a read.  A 64 KiB transfer at this bus rate should take about
+// 0.65 ms; the policy read measures about 190 ms per 64 KiB, so 99.7% of it is not the transfer.
+// These accumulate the three phases and a summary is printed every 256 reads, which says whether
+// the cost is the command, the data phase setup, or the FIFO drain -- and each of those is a
+// different fix.  Pure PIO, no register is written that the working path does not already write.
+static uint64_t readPhaseTicks[4];
+static unsigned readPhaseCount, readPhaseSamples;
+
+static void readPhaseSummary (void)
+{
+  if (++readPhaseCount % 256) return;
+  const uint64_t n = readPhaseSamples ? readPhaseSamples : 1;
+  const uint64_t per = readPhaseTicks[3] / n;
+  IOLog ("NativeMsdc: read timing setblk=%llu prep=%llu cmd=%llu drain=%llu total=%llu (%llu us each)\n",
+         readPhaseTicks[0] / n, readPhaseTicks[1] / n, readPhaseTicks[2] / n,
+         (readPhaseTicks[3] - readPhaseTicks[0] - readPhaseTicks[1] - readPhaseTicks[2]) / n, per,
+         (per * 1000) / 24000);
+  for (unsigned i = 0; i < 4; ++i) readPhaseTicks[i] = 0;
+  readPhaseSamples = 0;
+}
+
 IOReturn hostReadPio (unsigned opcode, uint32_t argument, uint8_t *buffer, uint32_t blocks)
 {
   if (!blocks || blocks > kMaxBlocks) return kIOReturnBadArgument;
   uint32_t response = 0;
   bool multi = blocks > 1;
   IOReturn result;
+  uint64_t phase0 = mach_absolute_time ();
   if (multi) {
     result = hostCommand (kCmdSetBlockCount, blocks, Data::None, &response);
     if (result != kIOReturnSuccess) return result;
     opcode = kCmdReadMulti;
   }
+  uint64_t phase1 = mach_absolute_time ();
   result = hostPrepareData (blocks);
   if (result != kIOReturnSuccess) return result;
+  uint64_t phase2 = mach_absolute_time ();
   result = hostCommand (opcode, argument, multi ? Data::ReadMulti : Data::ReadSingle, &response);
+  uint64_t phase3 = mach_absolute_time ();
+  readPhaseTicks[0] += phase1 - phase0;
+  readPhaseTicks[1] += phase2 - phase1;
+  readPhaseTicks[2] += phase3 - phase2;
   if (result == kIOReturnSuccess) {
     uint64_t end = deadlineAfter (kCommandTimeoutNs);
     unsigned offset = 0, total = blocks * kSector;
@@ -297,12 +325,22 @@ IOReturn hostReadPio (unsigned opcode, uint32_t argument, uint8_t *buffer, uint3
           available--;
         }
       }
-      if (done && offset == total) return kIOReturnSuccess;
+      if (done && offset == total) {
+        readPhaseTicks[3] += mach_absolute_time () - phase0;
+        ++readPhaseSamples;
+        readPhaseSummary ();
+        return kIOReturnSuccess;
+      }
       // All bytes are in the buffer and the controller is idle: the XferDone interrupt may
       // have been consumed by the same status read, so do not wait for a bit that will never
       // come.  This is what used to turn a completed read into ETIMEDOUT (errno 60).
       if (offset == total && !(rd (kSdcSts) & kStsSdcBusy) &&
-          !(rd (kMsdcFifoCs) & 255u)) return kIOReturnSuccess;
+          !(rd (kMsdcFifoCs) & 255u)) {
+        readPhaseTicks[3] += mach_absolute_time () - phase0;
+        ++readPhaseSamples;
+        readPhaseSummary ();
+        return kIOReturnSuccess;
+      }
     } while (mach_absolute_time () < end);
   }
   if (multi) (void) hostCommand (kCmdStop, 0, Data::None, &response);
