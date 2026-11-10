@@ -784,14 +784,25 @@ bool hostSwitchExtCsd (unsigned index, unsigned value)
   const uint32_t argument = (1u << 26) | (3u << 24) | ((index & 0xffu) << 16) | ((value & 0xffu) << 8);
   uint32_t response = 0;
   IOReturn result = hostCommand (kCmdSwitch, argument, Data::None, &response);
+  // Say why, not just "refused": the R1 response carries the card's status, whose low 16 bits are
+  // the error flags and [12:9] the current state.  Without them a failed switch is indistinguishable
+  // from a command that never completed.
+  IOLog ("NativeMsdc: CMD6 %s arg=%08x rsp=%08x state=%u errors=%04x\n",
+         result == kIOReturnSuccess ? "ok" : "failed", argument, response,
+         unsigned ((response >> 9) & 0xfu), unsigned (response & 0xffffu));
   if (result != kIOReturnSuccess) return false;
   // The card is busy while it programs; SEND_STATUS until it reports the transfer state again.
   for (unsigned i = 0; i < 100; ++i) {
     uint32_t status = 0;
     if (hostCommand (kCmdStatus, kStatusArgument, Data::None, &status) != kIOReturnSuccess) return false;
+    if (i == 0) {
+      IOLog ("NativeMsdc: CMD13 rsp=%08x state=%u errors=%04x\n", status,
+             unsigned ((status >> 9) & 0xfu), unsigned (status & 0xffffu));
+    }
     if (cardInTransfer (status)) return true;
     IODelay (1000);
   }
+  IOLog ("NativeMsdc: card never left the programming state\n");
   return false;
 }
 
@@ -811,6 +822,12 @@ bool hostSwitchExtCsd (unsigned index, unsigned value)
 bool hostEnterHs200 (const uint8_t *reference)
 {
   uint32_t cfg = rd (kMsdcCfg);
+  // HS200 needs a 1.8 V IO.  The vendor switches that through a PMIC regulator this port has no
+  // driver for, so the interesting question is whether the firmware already left it at 1.8 V --
+  // Android runs this card at HS400, which needs it.  MSDC_CFG bit 5 is the 1.8 V control and bit 6
+  // the power status (mtk-sd.c: MSDC_CFG_BV18SDT / MSDC_CFG_BV18PSS).
+  IOLog ("NativeMsdc: before HS200 cfg=%08x bv18ctl=%u bv18status=%u\n", cfg,
+         unsigned ((cfg >> 5) & 1u), unsigned ((cfg >> 6) & 1u));
   if (!hostSwitchExtCsd (185, 2)) {                    // EXT_CSD[185] HS_TIMING = 2 (HS200)
     IOLog ("NativeMsdc: HS_TIMING=2 refused; staying in HS\n");
     return false;
