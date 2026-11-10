@@ -6304,6 +6304,59 @@ read drain spins=189156249 words=4020336 per-read (spins 738891 words 15704)
 | 阻塞点 | 时钟路径上那级未知分频 |
 | 全部提交 | `d10030f` … `91993b2`，工作区干净 |
 
+---
+
+## 0.118 CKDIV 完全无效 —— 时钟门控是最后一层（2026-11-10 22:00–23:00）
+
+### 一、速率曲线：CKDIV 没有任何作用
+
+```
+divider  0 → 7541 us
+divider  1 → 7540 us
+divider  2 → 7568 us
+divider  4 → 7627 us
+divider  8 → 7743 us
+divider 16 → 7975 us
+```
+
+同样的 4 KiB 读，**16 倍分频只让时间变化 5%** ✗ → 控制器根本没有在分那个父时钟 ✓
+这是"600 KB/s 之谜"的决定性一步：**分频器不在路径上** ✓
+
+### 二、门控检查：UEFI 里的偏移在 MT6765 上不成立
+
+```
+infra_ao ifr3=00080900 ifr5=00000000 msdc0=gated src=gated
+infra_ao ungated, ifr3=00080900 ifr5=00000000    ← 写 SET 后读回完全没变
+ungated read timed 7532 us (ok)                   ← 速度不变
+```
+
+- `ifr5 = 0`：一个门控状态寄存器不可能全 0 → **`0xc8` 不是状态寄存器** ✗
+- 写 `0x8c`/`0xc4` 读回无变化 → **不是 SET 寄存器** ✗
+- 原因：`ClockImplLib.c` 自己标着 `TODO(MT6765)`，这些值是从 **MT6768Pkg 继承**的，
+  只有 MSDCPLL（CON0/CON1/CON3）被核对过 ✓
+
+### 三、下一步（唯一未解的问题）
+
+需要 **MT6765 真实的 `clk-mt6765.c` 门控表**（`static const struct mtk_gate_regs`）：
+
+- 在厂商内核源码里：`drivers/clk/mediatek/clk-mt6765.c`
+- 或者从 `/proc/clk_summary`（Android 侧）读出 MSDC0 的实际频率
+- 关键问题：**MSDC0 的时钟是不是被门控在"旁路/32 kHz"上** —— 若门控关闭，控制器运行在
+  低频率旁路时钟，CKDIV 自然无效 ✓ 与全部实测吻合 ✓
+
+**另一个独立验证途径（不用改内核）**：Android 侧读 `/sys/kernel/debug/clk/clk_summary`，
+看 `msdc0` 的实际频率 ✓ 这能立刻区分"时钟低"和"检测方式有其他问题" ✓
+
+### 四、当前状态
+
+| 项 | 值 |
+| --- | --- |
+| 最新镜像 | `boot-gate` = `ab9cc58b`（含 timing / spins / CLK_CFG_3 / MSDCPLL / infra_ao 读数）|
+| 稳定性 | ✓ 每次都到 launchd，无 panic（324 行日志）|
+| 读速 | 600 KB/s（CKDIV 无效，门控是嫌疑）|
+| 全部提交 | `d10030f` … `a91e283`，工作区干净 |
+
+
 
 
 
