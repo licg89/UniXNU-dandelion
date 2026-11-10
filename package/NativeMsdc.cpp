@@ -905,6 +905,24 @@ void hostRaiseClock (void)
       const uint32_t original = *cfg3;
       const unsigned inheritedSel = (original >> kMsdc50SelShift) & 7u;
       IOLog ("NativeMsdc: source CLK_CFG_3=%08x msdc50_0_sel=%u\n", original, inheritedSel);
+      // The selector already points at MSDCPLL, so the question moves one block up: is that PLL
+      // running, and at what rate?  The firmware's clock library gives the MT6765 map (APMIXED
+      // 0x1000C000; MSDCPLL CON0 0x27c, CON1 0x280 with a 22-bit pcw at shift 8, CON3 0x288 with the
+      // power/ISO enable) and clk-mt6765's formula, pcw = rate * 2^8 / 26 MHz.  Read only.
+      IODeviceMemory *apmixedMemory = IODeviceMemory::withRange (0x1000C000ULL, 0x1000);
+      IOMemoryMap *apmixedMap = apmixedMemory ? apmixedMemory->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+      if (apmixedMap && apmixedMap->getVirtualAddress () && apmixedMap->getLength () >= 0x28c) {
+        volatile uint32_t *base = reinterpret_cast<volatile uint32_t *> (uintptr_t (apmixedMap->getVirtualAddress ()));
+        const uint32_t con0 = base[0x27c / 4], con1 = base[0x280 / 4], con3 = base[0x288 / 4];
+        const uint32_t pcw = (con1 >> 8) & 0x3fffffu;
+        const uint32_t postdiv = con1 & 7u;
+        // pcw = rate * 256 / 26 MHz  ->  rate = pcw * 26 MHz / 256, divided by postdiv + 1.
+        const uint64_t mhz = pcw ? (uint64_t (pcw) * 26000000ull) / 256ull / 1000000ull : 0;
+        IOLog ("NativeMsdc: MSDCPLL con0=%08x con1=%08x con3=%08x pcw=%u postdiv=%u ~%llu MHz\n",
+               con0, con1, con3, pcw, postdiv, mhz / (postdiv + 1));
+        OSSafeReleaseNULL (apmixedMap);
+      }
+      OSSafeReleaseNULL (apmixedMemory);
       uint8_t *reference = gHost.bounce;
       uint8_t *candidate = gHost.bounce + kSweepCount * kSector;
       bool haveReference = hostReadPio (kCmdReadSingle, kSweepSectors[0], reference, 1) == kIOReturnSuccess;
