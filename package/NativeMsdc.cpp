@@ -1107,12 +1107,14 @@ void hostRaiseClock (void)
     constexpr unsigned kTopCfg3Offset = 0x70;
     constexpr unsigned kMsdc50SelShift = 8;
     constexpr uint32_t kMsdc50SelMask = 7u << kMsdc50SelShift;
-    constexpr uint32_t kTopCfgUpdate = 1u << 13;    // commit the field
+    constexpr uint32_t kTopCfgUpdate = 1u << 13;    // MSDC50_0 commit bit, in CLK_CFG_UPDATE (0x04)
+    constexpr unsigned kTopCfgUpdateOffset = 0x04;  // MT6765 CLK_CFG_UPDATE: bit 12 HCLK, 13 MSDC50_0, 14 MSDC30_1
     constexpr uint32_t kTopCfgGate = 1u << 15;      // CLK_CFG_3 [15] is the gate bit for the same field
     IODeviceMemory *clockMemory = IODeviceMemory::withRange (0x10000000ULL, 0x1000);
     IOMemoryMap *clockMap = clockMemory ? clockMemory->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
     if (clockMap && clockMap->getVirtualAddress () && clockMap->getLength () >= kTopCfg3Offset + sizeof (uint32_t)) {
       volatile uint32_t *cfg3 = reinterpret_cast<volatile uint32_t *> (uintptr_t (clockMap->getVirtualAddress ()) + kTopCfg3Offset);
+      volatile uint32_t *cfgUpdate = reinterpret_cast<volatile uint32_t *> (uintptr_t (clockMap->getVirtualAddress ()) + kTopCfgUpdateOffset);
       const uint32_t original = *cfg3;
       const unsigned inheritedSel = (original >> kMsdc50SelShift) & 7u;
       IOLog ("NativeMsdc: source CLK_CFG_3=%08x msdc50_0_sel=%u\n", original, inheritedSel);
@@ -1219,7 +1221,8 @@ void hostRaiseClock (void)
       if (haveReference) {
         for (unsigned sel = 0; sel < 8; ++sel) {
           if (sel == inheritedSel) continue;
-          *cfg3 = (original & ~kMsdc50SelMask) | ((sel & 7u) << kMsdc50SelShift) | kTopCfgGate | kTopCfgUpdate;
+          *cfg3 = (original & ~kMsdc50SelMask) | ((sel & 7u) << kMsdc50SelShift) | kTopCfgGate;
+          *cfgUpdate = kTopCfgUpdate;
           __asm__ volatile ("dsb sy" ::: "memory");
           IODelay (1000);
           const uint64_t before = mach_absolute_time ();
@@ -1240,9 +1243,12 @@ void hostRaiseClock (void)
         // When nothing beat the inherited selector, put the register back exactly as it was: the gate
         // bit is what the sweep added to every candidate, and it must not be left set on a clock the
         // card has not been proven to read through.
-        *cfg3 = bestSel == inheritedSel ? original
-                                        : ((original & ~kMsdc50SelMask) |
-                                           ((bestSel & 7u) << kMsdc50SelShift) | kTopCfgGate | kTopCfgUpdate);
+        if (bestSel == inheritedSel) {
+          *cfg3 = original;
+        } else {
+          *cfg3 = (original & ~kMsdc50SelMask) | ((bestSel & 7u) << kMsdc50SelShift) | kTopCfgGate;
+        }
+        *cfgUpdate = kTopCfgUpdate;
         __asm__ volatile ("dsb sy" ::: "memory");
         IODelay (1000);
         // Only keep the new parent if the card still reads correctly through it.
@@ -1250,7 +1256,8 @@ void hostRaiseClock (void)
             (hostReadPio (kCmdReadSingle, kSweepSectors[0], candidate, 1) != kIOReturnSuccess ||
              memcmp (candidate, reference, kSector) != 0)) {
           bestSel = inheritedSel;
-          *cfg3 = original | kTopCfgUpdate;
+          *cfg3 = original;
+          *cfgUpdate = kTopCfgUpdate;
           __asm__ volatile ("dsb sy" ::: "memory");
           IODelay (1000);
         }
@@ -1262,6 +1269,21 @@ void hostRaiseClock (void)
       OSSafeReleaseNULL (clockMap);
     }
     OSSafeReleaseNULL (clockMemory);
+  }
+  // Every microsecond in this file's logs is derived from mach_absolute_time(), which the port
+  // assumes ticks at 24 MHz.  If the real counter frequency is something else, every absolute number
+  // is scaled by that ratio -- the relative conclusions (drain dominating, CKDIV not mattering) hold
+  // because they are ratios, but the stated MB/s would be wrong by the same factor.  Print the
+  // counter frequency the CPU actually reports, and time a fixed number of 1 ms delays against it as
+  // a second opinion, so a timebase problem can be ruled in or out rather than assumed.
+  {
+    uint64_t cntfrq = 0;
+    __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (cntfrq));
+    const uint64_t t0 = mach_absolute_time ();
+    for (unsigned i = 0; i < 10; ++i) IODelay (1000);
+    const uint64_t elapsed = mach_absolute_time () - t0;
+    IOLog ("NativeMsdc: cntfrq=%llu Hz, 10000 us of IODelay took %llu ticks (%llu us at 24 MHz)\n",
+           cntfrq, elapsed, (elapsed * 1000) / 24000);
   }
   // Read only: dump the two clock blocks the firmware's own notes point at, so the next step is
   // based on what is actually programmed rather than on which register the vendor driver happens to
