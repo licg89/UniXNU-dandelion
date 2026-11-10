@@ -332,26 +332,30 @@ IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
   result = hostPrepareData (blocks);
   if (result != kIOReturnSuccess) return result;
   wr (kMsdcCfg, rd (kMsdcCfg) & ~kCfgPio);
-  // Order follows the vendor's msdc_start_data() (mtk-sd.c:1236-1243): program the descriptors,
-  // enable the engine, config MSDC_DMA_CTRL and the descriptor address, send the read command, and
-  // only start the engine once the card's response has arrived.  Starting it before the command
-  // leaves the engine with nothing to fetch until the card answers, which is the other half of the
-  // kIOReturnTimeout 0xe00002d6 this path kept reporting; arming the descriptors after the command
-  // was the opposite mistake and is what the old comment described.
-  wr (kDmaSaHigh, 0);
-  wr (kDmaSa, uint32_t (gHost.dmaPhys));
-  wr (kDmaLength, 0);
-  // MSDC_DMA_CFG bit 1 is DECSEN, the descriptor engine enable -- not a checksum switch.  It was
-  // being cleared here, so the engine never fetched the GPD/BD at all.  The descriptors this
-  // driver builds do carry valid checksums (dmaChecksum over 16 bytes, the same sum the vendor
-  // uses), so the bit is enabled for the transfer and cleared again afterwards.
+  // Order follows the vendor's msdc_dma_setup() and msdc_start_data(): MSDC_DMA_CFG.DECSEN, then
+  // MSDC_DMA_CTRL, and the descriptor address (MSDC_DMA_SA) written last --- the vendor writes
+  // gpd_addr after both.  This path used to write SA first, which is the one ordering difference
+  // left from a setup that otherwise matches register for register.  The command is issued with
+  // Data::None so the data phase belongs to the engine, and START follows the response.
   wr (kDmaCfg, rd (kDmaCfg) | kDmaCfgDescEn);
   wr (kDmaCtrl, (rd (kDmaCtrl) & ~(kDmaCtrlStart | kDmaCtrlStop | kDmaCtrlLastBuffer | kDmaCtrlBurstMask)) |
                 kDmaCtrlDescriptor | kDmaCtrlBurst64);
+  wr (kDmaSaHigh, 0);
+  wr (kDmaSa, uint32_t (gHost.dmaPhys));
+  wr (kDmaLength, 0);
   /* Command only: Data::None leaves the data phase to the engine, which is started below. */
   result = hostCommand (multi ? kCmdReadMulti : kCmdReadSingle, argument, Data::None, &response);
-  if (result == kIOReturnSuccess) {
+  // hostCommand runs its transaction with PIO selected and restores the configuration afterwards,
+  // so the DMA mode set above is gone by the time it returns.  The trace proved it: at the point
+  // where the engine should have been running, MSDC_CFG still had PIO set (cfg=02210499), DMA_CTRL
+  // had no START bit and the GPD's HWO was still 1 -- the engine had never been asked to do
+  // anything.  Clear PIO again here, after the command path has finished with the controller, and
+  // only then start the engine.
+  wr (kMsdcCfg, rd (kMsdcCfg) & ~kCfgPio);
+  {
+    const IOReturn commandResult = result;
     wr (kDmaCtrl, rd (kDmaCtrl) | kDmaCtrlStart);
+    const uint64_t start = mach_absolute_time ();
     uint64_t end = deadlineAfter (kCommandTimeoutNs);
     for (;;) {
       uint32_t interrupts = rd (kMsdcIntr) & (kIntXferDone | kIntDataErrors | kIntDmaErrors);
@@ -363,17 +367,27 @@ IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
         }
         if (interrupts & kIntXferDone) break;
       }
+      // The interrupt *status* is looked at rather than waited for, so a masked INTEN (HostSession
+      // clears it for the duration of a request) only hides the IRQ, not the event.  Belt and
+      // braces on top of that: an engine that has gone idle while the card is not busy has finished,
+      // and treating that as done is what the PIO path already does.
+      if (mach_absolute_time () - start > 1000000 &&
+          !(rd (kDmaCfg) & kDmaCfgStatus) && !(rd (kSdcSts) & kStsSdcBusy)) {
+        break;
+      }
       if (mach_absolute_time () >= end) {
         result = kIOReturnTimeout;
         break;
       }
     }
+    // The engine was started even when the command path reported a failure, so that the trace below
+    // always describes a machine that was actually asked to transfer.  The command's error is still
+    // what the caller gets when the transfer itself looked fine.
+    if (result == kIOReturnSuccess && commandResult != kIOReturnSuccess) result = commandResult;
   }
-  // Why the engine never stops, in one line: the GPD's HWO bit is cleared by the hardware when it
-  // takes the descriptor, so reading it back says whether the engine ever fetched one at all.  The
-  // BD's length and info say whether it reached the buffer, and the interrupt/status words say what
-  // the controller thinks happened.  Without this the only observable was "did not stop", which
-  // fits both "never started" and "transferred but never signalled".
+  // What the engine did, in one line: the GPD's HWO bit is cleared by the hardware when it takes
+  // the descriptor, so reading it back says whether the engine ever fetched one; DMA_CTRL says
+  // whether START survived; MSDC_CFG says whether the controller was still in DMA mode.
   cacheCleanInvalidate (gHost.dmaVirt, kDmaDescriptorBytes);
   IOLog ("NativeMsdc: dma trace gpd_info=%08x gpd_len=%08x gpd_blk=%u bd_info=%08x bd_len=%08x "
          "intr=%08x inten=%08x sts=%08x dmactrl=%08x cfg=%08x\n",
