@@ -861,6 +861,30 @@ void hostRaiseClock (void)
     break;
   }
   wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((bestSample & 0x3fu) << 16));
+  // Rate curve at the divider and sampling point that just verified.  The clock tree says MSDCPLL is
+  // running and CLK_CFG_3 already selects it, yet the card delivers about 600 KB/s -- a factor of
+  // roughly 170 away from what that path should give.  Timing the same read at several dividers
+  // separates the two explanations: if the time scales with the divider then this division works and
+  // the limit is the source clock; if it does not, there is a fixed division upstream that CKDIV
+  // cannot see.  Eight blocks fits in the bounce buffer past the reference copy.
+  {
+    static const unsigned curve[] = { 0, 1, 2, 4, 8, 16 };
+    constexpr unsigned kCurveBlocks = 8;
+    uint8_t *scratch = gHost.bounce + kSweepCount * kSector;
+    for (unsigned i = 0; i < sizeof (curve) / sizeof (curve[0]); ++i) {
+      hostSetClockDivider (curve[i], best);
+      wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((bestSample & 0x3fu) << 16));
+      IODelay (200);
+      const uint64_t before = mach_absolute_time ();
+      const IOReturn got = hostReadPio (kCmdReadMulti, 0, scratch, kCurveBlocks);
+      const uint64_t ticks = mach_absolute_time () - before;
+      IOLog ("NativeMsdc: divider %u timed %llu us (%s)\n", curve[i], (ticks * 1000) / 24000,
+             got == kIOReturnSuccess ? "ok" : "failed");
+    }
+    hostSetClockDivider (best, 16);
+    wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((bestSample & 0x3fu) << 16));
+    IODelay (200);
+  }
   native_msdc_clock_divider = best;
   native_msdc_sample_delay = bestSample;
   IOLog ("NativeMsdc: clock settled at divider %u sample %u (inherited %u)\n",
