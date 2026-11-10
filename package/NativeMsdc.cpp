@@ -883,6 +883,12 @@ void hostRaiseClock (void)
   // nothing beats it, and gate the whole thing on a boot argument so a selector that wedges the bus
   // costs one experiment rather than every boot.
   if (bootArgument ("native-msdc-srcclk", 1, 0)) {
+    // The timing read has to fit where it is aimed.  gHost.bounce is exactly kTransferBytes
+    // (kMaxBlocks * kSector = 64 KiB) and `candidate` starts kSweepCount sectors into it, so asking
+    // for kMaxBlocks there reads 2 KiB past the end -- which is what panicked with a data abort
+    // inside hostReadPio: far - x21 was 0xF800, the 64 KiB the call asked for.  Eight blocks (4 KiB)
+    // is enough to time the bus and leaves the allocation intact.
+    constexpr unsigned kSrcClkBlocks = 8;
     IODeviceMemory *clockMemory = IODeviceMemory::withRange (0x10000000ULL, 0x1000);
     IOMemoryMap *clockMap = clockMemory ? clockMemory->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
     if (clockMap && clockMap->getVirtualAddress () && clockMap->getLength () >= sizeof (uint32_t)) {
@@ -895,7 +901,7 @@ void hostRaiseClock (void)
       uint64_t baseline = ~0ULL;
       if (haveReference) {
         const uint64_t before = mach_absolute_time ();
-        if (hostReadPio (kCmdReadMulti, 0, candidate, kMaxBlocks) != kIOReturnSuccess) haveReference = false;
+        if (hostReadPio (kCmdReadMulti, 0, candidate, kSrcClkBlocks) != kIOReturnSuccess) haveReference = false;
         else baseline = mach_absolute_time () - before;
       }
       unsigned bestSel = inheritedSel;
@@ -907,7 +913,7 @@ void hostRaiseClock (void)
           __asm__ volatile ("dsb sy" ::: "memory");
           IODelay (1000);
           const uint64_t before = mach_absolute_time ();
-          IOReturn got = hostReadPio (kCmdReadMulti, 0, candidate, kMaxBlocks);
+          IOReturn got = hostReadPio (kCmdReadMulti, 0, candidate, kSrcClkBlocks);
           const uint64_t ticks = mach_absolute_time () - before;
           bool same = got == kIOReturnSuccess;
           if (same) {
