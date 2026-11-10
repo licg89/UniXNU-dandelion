@@ -1150,16 +1150,43 @@ void hostRaiseClock (void)
         IOLog ("NativeMsdc: infra_ao ifr3=%08x ifr5=%08x msdc0=%s src=%s\n", sta3, sta5,
                msdc0Gated ? "gated" : "on", srcGated ? "gated" : "on");
         if (msdc0Gated || srcGated) {
-          if (msdc0Gated) ao[0x8c / 4] = 1u << 2;
-          if (srcGated) ao[0xc4 / 4] = 1u << 9;
+          // SET is at 0x88 / 0xc0 and CLR at 0x8c / 0xc4 (the firmware's clock library, verified
+          // against clk-mt6765.c).  The first attempt wrote 0x8c / 0xc4 -- the clear registers -- which
+          // is why nothing changed and why the status still read back with both gates shut.
+          if (msdc0Gated) ao[0x88 / 4] = 1u << 2;
+          if (srcGated) ao[0xc0 / 4] = 1u << 9;
           __asm__ volatile ("dsb sy" ::: "memory");
           IODelay (1000);
           IOLog ("NativeMsdc: infra_ao ungated, ifr3=%08x ifr5=%08x\n", ao[0x94 / 4], ao[0xc8 / 4]);
+          // With the source gate open the divider should finally do something: run the curve again so
+          // this same log says whether CKDIV has an effect now, and what the read costs.
           const uint64_t before = mach_absolute_time ();
           const IOReturn got = hostReadPio (kCmdReadMulti, 0, gHost.bounce + kSweepCount * kSector, 8);
           const uint64_t ticks = mach_absolute_time () - before;
           IOLog ("NativeMsdc: ungated read timed %llu us (%s)\n", (ticks * 1000) / 24000,
                  got == kIOReturnSuccess ? "ok" : "failed");
+          for (unsigned i = 0; i < 6; ++i) {
+            static const unsigned curve2[] = { 0, 1, 2, 4, 8, 16 };
+            hostSetClockDivider (curve2[i], best);
+            const uint64_t t0 = mach_absolute_time ();
+            const IOReturn r2 = hostReadPio (kCmdReadMulti, 0, gHost.bounce + kSweepCount * kSector, 8);
+            IOLog ("NativeMsdc: ungated divider %u timed %llu us (%s)\n", curve2[i],
+                   ((mach_absolute_time () - t0) * 1000) / 24000, r2 == kIOReturnSuccess ? "ok" : "failed");
+          }
+          hostSetClockDivider (best, 16);
+          // Safety net: with the source gate open the controller may run far faster than the card's
+          // current speed mode allows, in which case reads fail.  Shut the gate again rather than
+          // leave the boot without storage -- the CLR registers are 0x8c (ifr3) and 0xc4 (ifr5).
+          const IOReturn check = hostReadPio (kCmdReadMulti, 0, gHost.bounce + kSweepCount * kSector, 8);
+          if (check != kIOReturnSuccess) {
+            if (srcGated) ao[0xc4 / 4] = 1u << 9;
+            if (msdc0Gated) ao[0x8c / 4] = 1u << 2;
+            __asm__ volatile ("dsb sy" ::: "memory");
+            IODelay (1000);
+            hostSetClockDivider (best, 16);
+            IOLog ("NativeMsdc: ungated clock unreadable, gates closed again (ifr3=%08x ifr5=%08x)\n",
+                   ao[0x94 / 4], ao[0xc8 / 4]);
+          }
         }
         OSSafeReleaseNULL (infraMap);
       }
