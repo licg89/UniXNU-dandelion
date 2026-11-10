@@ -180,15 +180,17 @@ title = "UniXNU"
 #
 trust_cache_sha256 = "4563bdbf6ed8f72237d45dbba3ccde432634338f95c10d79d5d4631678a97c7c"
 kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1", "sheng-no-lc=1", "sheng-skip-cs=1",
-               "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480", "native-msdc-mode=1", "launchd_unsecure_cache=1", "wdt=-1", "ignition_level=1", "-no_slto_panic", "sheng-aks=1", "native-msdc-clock=1", "native-msdc-clk=0", "native-msdc-dma=1", "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=1", "offline-legacy-register=1", "offline-legacy-gop=1", "offline-legacy-unit-scale=2", "offline-legacy-pm=1", "offline-legacy-phase=4", "offline-legacy-transfer=1", "offline-legacy-validate=1", "offline-legacy-cpu-present=1", "vm_compressor=2"]
+               "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480", "native-msdc-mode=1", "launchd_unsecure_cache=1", "wdt=-1", "ignition_level=1", "-no_slto_panic", "sheng-aks=1", "native-msdc-clock=1", "native-msdc-clk=0", "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=1", "offline-legacy-register=1", "offline-legacy-gop=1", "offline-legacy-unit-scale=2", "offline-legacy-pm=1", "offline-legacy-phase=4", "offline-legacy-transfer=1", "offline-legacy-validate=1", "offline-legacy-cpu-present=1", "vm_compressor=2"]
 #
-# native-msdc-dma=1 for one run: hostReadDma now follows the vendor's msdc_start_data() order --
-# descriptors and DECSEN programmed first, the read command issued with Data::None so the data
-# phase is left to the engine, and MSDC_DMA_CTRL_START written only after the response arrives.
-# The two earlier orders (start before the command; arm after the command) are what the old
-# comments describe as broken, and both end in kIOReturnTimeout 0xe00002d6.  If the comparison
-# passes, reads stop costing 0.2 s per 64 KiB and the 3.7 GB dyld cache stops being a five-hour
-# read.  If it still times out, revert to PIO by dropping this argument (the default is off).
+# native-msdc-dma is off again, deliberately and after six rounds.  What the trace settled: the
+# engine never fetched its descriptor (GPD.HWO stayed 1), MSDC_CFG carried PIO again at the point
+# where the engine should have been running, and DMA_CTRL had no START (that bit is write-only, so
+# it reads back clear either way).  Holding native_msdc_busy to keep the console out made it worse,
+# not better: when the DMA transfer hangs, the console -- written through this same card -- is
+# blocked for the whole hang and the boot goes silent with the controller holding the card (121
+# lines, no display lines at all, then nothing).  So: PIO only, boots stay stable, and the read
+# cost stays at about 0.2 s per 64 KiB until someone takes the DMA path further with the vendor's
+# own register programming in hand (HANDOFF 0.115 lists what is already aligned and what is left).
 
 
 #
