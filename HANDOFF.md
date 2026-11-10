@@ -6185,6 +6185,63 @@ trace 那一行（`dma trace gpd_info=… bd_len=… intr=…`）一旦读到，
 | `boot-stable-fast` = `2f1dc40a` | DMA 关、时钟 CKDIV 0、两卷挂载正常 | 保底可跑（慢但稳）|
 | `boot-dmatrace` = `dad0009d` | 较早的 trace 版 | 已被 `bf24a59e` 取代 |
 
+---
+
+## 0.116 DMA 寄存器审计 + 0xa8 的未文档化写入（2026-11-10 15:55–16:30）
+
+### 一、用户要求的"线路核实"：逐寄存器对厂商
+
+| 用途 | 端口偏移 | 厂商 `mtk-sd.c` | 结论 |
+| --- | --- | --- | --- |
+| MSDC_CFG | 0x00 | 0x0 | ✓ |
+| MSDC_INT | 0x0c | 0x0c | ✓ |
+| MSDC_INTEN | 0x10 | 0x10 | ✓ |
+| MSDC_FIFOCS | 0x14 | 0x14 | ✓ |
+| SDC_CMD / ARG / STS | 0x34 / 0x38 / 0x3c | 同 | ✓ |
+| SDC_BLK_NUM | 0x50 | 0x50 | ✓ |
+| DMA_SA_H4BIT | 0x8c | 0x8c | ✓ |
+| MSDC_DMA_SA | 0x90 | 0x90 | ✓ |
+| MSDC_DMA_CTRL | 0x98 | 0x98 | ✓ |
+| MSDC_DMA_CFG | 0x9c | 0x9c | ✓ |
+| **0xa8（旧 `kDmaLength`）** | **每次写 0** ✗ | **不存在、从不写** | **已删除** |
+
+位定义同样全部一致：`DECSEN=BIT1`、`STS=BIT0`、`CTRL.START=BIT0`、`STOP=BIT1`（写 1 自清）、
+`MODE=BIT8`、`BURST=BIT[14:12]`；GPD 28 字节 / BD 16 字节、校验和算法、`gpd->next` 指向终止 GPD 也一致 ✓
+
+→ 厂商寄存器表在 `MSDC_DMA_CFG(0x9c)` 与 `MSDC_PATCH_BIT(0xb0)` 之间是空的，而移植代码每次 DMA 前
+往 **0xa8 写 0** ✗ 在未文档化的 DMA 寄存器上写 0、紧挨着启动引擎，是"引擎不取描述符"的头号嫌疑 ✓
+→ 已删除（`ee9256c`），现在每次 DMA 寄存器写入都有厂商代码为依据 ✓
+
+### 二、本轮其它修复（都已提交）
+
+| 提交 | 内容 |
+| --- | --- |
+| `8834c1f` | DMA 失败不再 poison transport（实验不该决定能不能启动）；加 `dma arm` / `dma start` 两行 `MSDC_CFG` 读数 |
+| `2c73125` | 失败后发 CMD12 + `hostRecoverAfterError()`（否则卡留在数据阶段，之后所有读都失败 → 根卷消失）；停止检查同时看 `DMA_CTRL.STOP` 与 `DMA_CFG.STS`（厂商两处都轮询）|
+| `d10030f` | busy guard 移除（DMA 挂住时会把控制台永久堵死：只出 121 行、连显示日志都没有）|
+| `ee9256c` | 删除 0xa8 写入 |
+
+### 三、待验证（下次刷机）
+
+镜像 `boot-dma-noa8` = `533ae895`（含上表全部修复 + 诊断行）。日志判据：
+
+```
+NativeMsdc: dma arm   cfg=???????? pio=?    ← PIO 位到底能不能写进去
+NativeMsdc: dma start cfg=???????? pio=?
+NativeMsdc: dma trace gpd_info=????…       ← HWO 是否被清（引擎是否取描述符）
+NativeMsdc: DMA comparison with PIO passed/failed, PIO kept
+```
+
+| 读数 | 含义 |
+| --- | --- |
+| `arm pio=1` | 清除写不生效 → 查 `wr()`/位定义 |
+| `arm pio=0`、`start pio=1` | 被中途改回 → 查并发会话（控制台已排除，需查其他 I/O 线程）|
+| `gpd_info` bit0=0 | 引擎取到描述符 → DMA 有进展 ✓ |
+| `comparison … passed` | **DMA 打通** ✓ 读速换量级 |
+
+**这张镜像无论如何都应该能启动**（失败自动回退 PIO + 卡状态恢复）✓
+
+
 
 ---
 
