@@ -819,6 +819,48 @@ bool hostSwitchExtCsd (unsigned index, unsigned value)
 // tried changed nothing: the card never left HS, and the host clock never left the bring-up rate.
 // HS200 is the mode this driver can reach with what it already has (8-bit bus, a working sampling
 // sweep and CMD6), so it is tried first, with the card put back to HS if anything fails to verify.
+// The card's bus width.  This is the one part of the speed problem that needs no 1.8 V: eight data
+// lines work at 3.3 V and in High Speed, and the firmware's own storage diagnostics on this board
+// record the card coming back as 1-bit ("inherits from LK ... i.e. 1-bit bus") after their CMD6
+// experiments, which is what this kernel then inherits.  One bit instead of eight is a factor of
+// eight on every transfer, on top of whatever the clock is doing.
+bool hostSetBusWidth (unsigned bits)
+{
+  const unsigned extCsd = bits == 8 ? 2u : bits == 4 ? 1u : 0u;   // EXT_CSD[183]: 0 1-bit, 1 4-bit, 2 8-bit
+  if (!hostSwitchExtCsd (183, extCsd)) {
+    IOLog ("NativeMsdc: BUS_WIDTH=%u refused\n", extCsd);
+    return false;
+  }
+  // Host side: SDC_CFG[17:16] is the bus width, 0 = 1-bit, 1 = 4-bit, 2 = 8-bit.
+  const uint32_t sdc = rd (kSdcCfg);
+  wr (kSdcCfg, (sdc & ~(0x3u << 16)) | ((extCsd & 0x3u) << 16));
+  IODelay (20000);
+  IOLog ("NativeMsdc: bus width %u written (card %u, sdc %08x -> %08x)\n", bits, extCsd, sdc, rd (kSdcCfg));
+  return true;
+}
+
+// Sweep the read sampling delay at whatever clock and bus width are in force now, keep the centre of
+// the widest passing run, and report whether the reference sectors still read back identical.
+bool hostRetune (const uint8_t *reference, int *windowFirst, int *windowLast)
+{
+  const uint32_t iocon = rd (kMsdcIoCon);
+  int first = -1, last = -1;
+  for (unsigned sample = 0; sample < 64; ++sample) {
+    wr (kMsdcIoCon, (iocon & ~(0x3fu << 16)) | ((sample & 0x3fu) << 16));
+    IODelay (200);
+    if (hostSweepMatches (reference)) {
+      if (first < 0) first = (int)sample;
+      last = (int)sample;
+    }
+  }
+  if (windowFirst) *windowFirst = first;
+  if (windowLast) *windowLast = last;
+  if (first < 0) return false;
+  wr (kMsdcIoCon, (iocon & ~(0x3fu << 16)) | (((unsigned)((first + last) / 2) & 0x3fu) << 16));
+  IODelay (200);
+  return hostSweepMatches (reference);
+}
+
 bool hostEnterHs200 (const uint8_t *reference)
 {
   uint32_t cfg = rd (kMsdcCfg);
@@ -956,6 +998,36 @@ void hostRaiseClock (void)
     break;
   }
   wr (kMsdcIoCon, (iocon0 & ~(0x3fu << 16)) | ((bestSample & 0x3fu) << 16));
+  // Eight data lines before anything that needs a voltage change.  The firmware's storage
+  // diagnostics on this board leave the card in 1-bit (their own notes record reading it back that
+  // way), and one bit instead of eight is a factor of eight on every transfer with no PMIC work at
+  // all.  The reference sectors decide, and the sampling point is retuned because a wider bus has a
+  // different eye.
+  if (bootArgument ("native-msdc-buswidth", 1, 0)) {
+    uint8_t *scratch = gHost.bounce + kSweepCount * kSector;
+    const uint64_t before = mach_absolute_time ();
+    const IOReturn beforeResult = hostReadPio (kCmdReadMulti, 0, scratch, 8);
+    const uint64_t beforeTicks = mach_absolute_time () - before;
+    const uint32_t sdcBefore = rd (kSdcCfg);
+    if (hostSetBusWidth (8)) {
+      int first = -1, last = -1;
+      const bool ok = hostRetune (reference, &first, &last);
+      const uint64_t after = mach_absolute_time ();
+      const IOReturn afterResult = hostReadPio (kCmdReadMulti, 0, scratch, 8);
+      const uint64_t afterTicks = mach_absolute_time () - after;
+      IOLog ("NativeMsdc: bus width 8 window %d..%d, read %llu us -> %llu us (%s/%s)\n", first, last,
+             (beforeTicks * 1000) / 24000, (afterTicks * 1000) / 24000,
+             beforeResult == kIOReturnSuccess ? "ok" : "failed",
+             afterResult == kIOReturnSuccess ? "ok" : "failed");
+      if (!ok) {
+        // Back to whatever the firmware left: no point keeping a width that cannot be read.
+        (void)hostSetBusWidth (1);
+        wr (kSdcCfg, sdcBefore);
+        IODelay (20000);
+        IOLog ("NativeMsdc: 8-bit did not verify; back to 1-bit\n");
+      }
+    }
+  }
   // Card speed mode.  Everything above only divides whatever clock the firmware left in place; the
   // card itself is still in plain HS, which is not what this hardware does -- the Android kernel on
   // this phone runs it in HS400 at 200 MHz.  HS200 is the fast mode this driver can reach with the
@@ -1035,7 +1107,8 @@ void hostRaiseClock (void)
     constexpr unsigned kTopCfg3Offset = 0x70;
     constexpr unsigned kMsdc50SelShift = 8;
     constexpr uint32_t kMsdc50SelMask = 7u << kMsdc50SelShift;
-    constexpr uint32_t kTopCfgUpdate = 1u << 13;
+    constexpr uint32_t kTopCfgUpdate = 1u << 13;    // commit the field
+    constexpr uint32_t kTopCfgGate = 1u << 15;      // CLK_CFG_3 [15] is the gate bit for the same field
     IODeviceMemory *clockMemory = IODeviceMemory::withRange (0x10000000ULL, 0x1000);
     IOMemoryMap *clockMap = clockMemory ? clockMemory->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
     if (clockMap && clockMap->getVirtualAddress () && clockMap->getLength () >= kTopCfg3Offset + sizeof (uint32_t)) {
@@ -1105,7 +1178,7 @@ void hostRaiseClock (void)
       if (haveReference) {
         for (unsigned sel = 0; sel < 8; ++sel) {
           if (sel == inheritedSel) continue;
-          *cfg3 = (original & ~kMsdc50SelMask) | ((sel & 7u) << kMsdc50SelShift) | kTopCfgUpdate;
+          *cfg3 = (original & ~kMsdc50SelMask) | ((sel & 7u) << kMsdc50SelShift) | kTopCfgGate | kTopCfgUpdate;
           __asm__ volatile ("dsb sy" ::: "memory");
           IODelay (1000);
           const uint64_t before = mach_absolute_time ();
@@ -1123,7 +1196,12 @@ void hostRaiseClock (void)
             bestSel = sel;
           }
         }
-        *cfg3 = (original & ~kMsdc50SelMask) | ((bestSel & 7u) << kMsdc50SelShift) | kTopCfgUpdate;
+        // When nothing beat the inherited selector, put the register back exactly as it was: the gate
+        // bit is what the sweep added to every candidate, and it must not be left set on a clock the
+        // card has not been proven to read through.
+        *cfg3 = bestSel == inheritedSel ? original
+                                        : ((original & ~kMsdc50SelMask) |
+                                           ((bestSel & 7u) << kMsdc50SelShift) | kTopCfgGate | kTopCfgUpdate);
         __asm__ volatile ("dsb sy" ::: "memory");
         IODelay (1000);
         // Only keep the new parent if the card still reads correctly through it.
