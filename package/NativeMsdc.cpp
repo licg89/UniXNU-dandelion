@@ -361,9 +361,17 @@ IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
   // anything.  Clear PIO again here, after the command path has finished with the controller, and
   // only then start the engine.
   wr (kMsdcCfg, rd (kMsdcCfg) & ~kCfgPio);
+  // Two readings of the same register, one line apart: if PIO is already back at the first one the
+  // write did not stick (wrong bit, or a read-modify-write race), and if it comes back at the second
+  // something between the arm and the start put it back.  Everything else in the trace is the same
+  // for both cases, which is why this could not be settled from the one line.
+  IOLog ("NativeMsdc: dma arm cfg=%08x pio=%u dma=%08x\n", rd (kMsdcCfg),
+         unsigned ((rd (kMsdcCfg) & kCfgPio) != 0), rd (kDmaCfg));
   {
     const IOReturn commandResult = result;
     wr (kDmaCtrl, rd (kDmaCtrl) | kDmaCtrlStart);
+    IOLog ("NativeMsdc: dma start cfg=%08x pio=%u ctrl=%08x\n", rd (kMsdcCfg),
+           unsigned ((rd (kMsdcCfg) & kCfgPio) != 0), rd (kDmaCtrl));
     const uint64_t start = mach_absolute_time ();
     uint64_t end = deadlineAfter (kCommandTimeoutNs);
     for (;;) {
@@ -418,11 +426,17 @@ IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
     IODelay (10);
   }
   if (!stopped) {
-    gHost.poisoned = true;
+    // A DMA experiment must not decide whether the machine boots.  This used to poison the
+    // transport here, which left the controller unable to read at all: the root volume never
+    // appeared ("Still waiting for root device") and the boot was over.  Instead put the
+    // controller back in PIO, forget the DMA buffer, and let the caller fall back to the path that
+    // is known to work.  Same for every other DMA failure below.
+    wr (kDmaCfg, rd (kDmaCfg) & ~kDmaCfgDescEn);
+    wr (kMsdcCfg, rd (kMsdcCfg) | kCfgPio);
     gHost.dmaEnabled = false;
-    native_msdc_dma = 3;
-    native_msdc_failure = "DMA engine did not stop";
-    IOLog ("NativeMsdc: DMA engine did not stop; transport quarantined\n");
+    native_msdc_dma = 2;
+    native_msdc_failure = "DMA engine did not stop; PIO kept";
+    IOLog ("NativeMsdc: DMA engine did not stop; PIO kept\n");
     return kIOReturnNotReady;
   }
   wr (kDmaCfg, rd (kDmaCfg) & ~kDmaCfgDescEn);
