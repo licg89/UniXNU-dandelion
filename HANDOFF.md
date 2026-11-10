@@ -6134,6 +6134,60 @@ DMA 一旦可用，每次传输的 0.2 秒开销应该降到几毫秒 → **3.7 
 
 ---
 
+## 0.115 DMA 的六轮推进 + AppleKeyStoreState 的链接问题（2026-11-10 01:45–09:40）
+
+### 一、DMA：从"引擎不动"到"引擎动了但停不下来"
+
+| 轮 | 观察 | 修法 |
+| --- | --- | --- |
+| 1 | `dma state 0 enabled 0 phys 0x0` —— `hostEnableDma()` 从未被调用 | `bootArgument(name, maximum, fallback)` 顺序用反：`(…,1,0)` 的默认是 **0** → 显式传 `native-msdc-dma=1` |
+| 2 | `DMA comparison … failed (0xe00002d6)` 超时 | `kDmaCfgChecksum = BIT(1)` 实为 **DECSEN（描述符引擎使能）**，每次启动前被清掉 → 改成置 1/传输后清 0 |
+| 3 | 仍旧超时 | 启动顺序：厂商是"配置描述符 → 发命令 → 响应后 START"，我们是"START → 发命令" → 改序 |
+| 4 | **`DMA engine did not stop; transport quarantined`** ← 引擎终于动了 | 停止检查查错寄存器（厂商轮询 `DMA_CTRL.STOP` 自清，我们查 `DMA_CFG.STS`）→ 改对 |
+| 5 | 仍然 `did not stop` | 加 trace：打印 GPD 的 `HWO` 位（硬件取走描述符会清它）、BD 长度、`intr/inten/sts/dmactrl` |
+| 6 | 待测：`DMA_SA` 按厂商最后写 + "引擎空闲且卡不忙"也视为完成 | 已编入 `boot-dmaorder`（`bf24a59e`）|
+
+**当前判断**：自检路径的等待依赖 `MSDC_INTR` 的**状态位**，而 `HostSession` 会 `wr(kMsdcIntEn, 0)` 屏蔽中断 ✗
+虽然状态位通常不受 mask 影响，但第 6 轮加了"引擎空闲 + 卡不忙"的兜底完成判定 ✓
+
+trace 那一行（`dma trace gpd_info=… bd_len=… intr=…`）一旦读到，就能一次分清：
+`gpd_info` bit0 还是 1 → 引擎没取描述符（查 `DMA_SA`/`DECSEN`）；是 0 → 取了，卡在数据阶段（查中断/BD 长度）✓
+
+### 二、AppleKeyStoreState：组件能编，但链接里没有它
+
+试过把 catalog 里的 `AppleKeyStoreState` 接进来（替掉 `native_keyevents_allocate` 的空桩）：
+
+- ✅ 组件对象编出来了，`llvm-nm` 显示 `_native_keyevents_allocate` 是 **`T`（已定义）** ✓
+- ✅ 归档 `build/apple-key-store-state/libAppleKeyStoreState.a` 也生成了（252832 B）✓
+- ❌ **链接命令里没有这个归档** → 符号仍是 undefined（`_native_keyevents_allocate referenced from libNativeLegacyDisplay.late.a(DandelionLegacyDisplay.o)`）✗
+
+→ **已回退**（board.toml 的 include/archives 去掉，空桩恢复），保持构建绿色 ✓
+→ 下次要查：`scripts/unixnu/kernel.py` 的 `archive_plan()` 如何把 `[kernel] archives` 变成链接参数（为什么别的组件归档进去了、这个没有）✓
+
+### 三、GPU 结论（用户已确认：先进 SpringBoard，再谈 GPU）
+
+| | merlinx（参考）| dandelion（本机）|
+| --- | --- | --- |
+| SoC / GPU | MT6768 / **Mali-G52 MC2** | MT6762G / **PowerVR GE8320** |
+
+- 参考移植的 `MaliG52` 组件**不可复用**（厂商不同），且不在框架 catalog 里
+- 框架 catalog 的 GPU 组件只有 **Adreno**（高通）→ 也不适用
+- 设备树里连 GPU 节点都没有（只有 `mediatek,mt6765-gpufreq`）
+
+→ **iOS 图形界面（SpringBoard/Metal）在本机缺驱动** ✓
+用户决定：**先把系统跑进 SpringBoard，GPU 之后再说** ✓ 本文档按这个优先级记录 ✓
+
+### 四、当前可刷的镜像
+
+| 镜像 | 内容 | 用途 |
+| --- | --- | --- |
+| `boot-dmaorder` = `bf24a59e` | DMA：SA 最后写 + 空闲兜底完成判定（含 trace）| **下次首选**，一次判定 DMA 通不通 |
+| `boot-stable-fast` = `2f1dc40a` | DMA 关、时钟 CKDIV 0、两卷挂载正常 | 保底可跑（慢但稳）|
+| `boot-dmatrace` = `dad0009d` | 较早的 trace 版 | 已被 `bf24a59e` 取代 |
+
+
+---
+
 ## 0.114 DMA：两个位定义 bug 修好，但仍然超时（2026-11-10 01:45–02:10）
 
 ### 一、先修好的两个 bug

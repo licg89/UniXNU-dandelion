@@ -793,8 +793,10 @@ native_gop_redraw_ring (void)
 }
 
 /*
- * Provided by the AppleKeyStoreState component, which this port does not select yet.  The kernel's
- * display path allocates a key-store service here; returning nothing keeps the link honest.
+ * Provided by the AppleKeyStoreState component.  Selecting that component is prepared but does not
+ * link yet: its object defines this function and its archive builds, but the framework's link does
+ * not name libAppleKeyStoreState.a, so the symbol stays undefined (HANDOFF 0.115).  The stub keeps
+ * the link honest and returns nothing; the caller above treats that as "no key store yet".
  */
 class IOService;
 extern "C" IOService *

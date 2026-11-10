@@ -28,6 +28,12 @@ kit = "dandelion"
 # ArmDTPlatform: the device-tree platform expert - replaces the generic-platform-expert
 #         fallback this port had to patch into IOKit.
 include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink", "DarwinBoot", "RamBlock",
+           #
+           # AppleKeyStoreState was tried here and then reverted: the component builds, its object
+           # defines native_keyevents_allocate, but the framework's link does not name
+           # libAppleKeyStoreState.a, so the symbol stays undefined and the link fails.  The stub
+           # in package/DandelionLegacyDisplay.cpp is back until that is sorted; see HANDOFF 0.115.
+           #
            # The authenticated-block kit: iPadOS wants the root volume authenticated, and this
            # is what serves the eMMC windows through owner-signed policies (the
            # NATIVE_VERIFIED_BLOCK build of NativeMsdc).
