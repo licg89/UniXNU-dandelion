@@ -1249,6 +1249,31 @@ void hostRaiseClock (void)
     }
     OSSafeReleaseNULL (clockMemory);
   }
+  // Read only: dump the two clock blocks the firmware's own notes point at, so the next step is
+  // based on what is actually programmed rather than on which register the vendor driver happens to
+  // name.  TOPCKGEN holds the MSDC50_0 mux (CLK_CFG_3 at 0x70) and its misc registers; msdc0_top at
+  // 0x11CD0000 is "the HS200/HS400 delay-line tuning block" per MT6765Pkg's MsdcImplLib, and on
+  // several MTK parts that block also carries the eMMC clock control.  26 MHz / 64 is 406 kHz, which
+  // is the rate the reads measure, so something is dividing the crystal down and it is not CKDIV.
+  if (bootArgument ("native-msdc-regdump", 1, 0)) {
+    struct { uint64_t base; unsigned words; const char *name; } blocks[] = {
+      { 0x10000000ULL, 64, "topckgen" },
+      { 0x11cd0000ULL, 16, "msdc0_top" },
+    };
+    for (unsigned b = 0; b < 2; ++b) {
+      IODeviceMemory *memory = IODeviceMemory::withRange (blocks[b].base, 0x100);
+      IOMemoryMap *map = memory ? memory->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
+      if (map && map->getVirtualAddress () && map->getLength () >= blocks[b].words * 4) {
+        volatile uint32_t *r = reinterpret_cast<volatile uint32_t *> (uintptr_t (map->getVirtualAddress ()));
+        for (unsigned i = 0; i < blocks[b].words; i += 4) {
+          IOLog ("NativeMsdc: %s +%02x: %08x %08x %08x %08x\n", blocks[b].name, i * 4,
+                 r[i], r[i + 1], r[i + 2], r[i + 3]);
+        }
+        OSSafeReleaseNULL (map);
+      }
+      OSSafeReleaseNULL (memory);
+    }
+  }
   // The console is written through this same card, so report the outcome where storage cannot hide
   // it: the panic screen is drawn from the framebuffer.
   if (bootArgument ("native-msdc-clkreport", 1, 0)) {
