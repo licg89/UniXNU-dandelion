@@ -1257,10 +1257,12 @@ void hostRaiseClock (void)
   // is the rate the reads measure, so something is dividing the crystal down and it is not CKDIV.
   if (bootArgument ("native-msdc-regdump", 1, 0)) {
     struct { uint64_t base; unsigned words; const char *name; } blocks[] = {
+      // msdc0_top at 0x11CD0000 is deliberately absent: reading a block whose clock is not running
+      // stalls the bus and hangs the CPU, which is exactly what happened when it was included -- the
+      // log ended at the line before this dump and never came back.
       { 0x10000000ULL, 64, "topckgen" },
-      { 0x11cd0000ULL, 16, "msdc0_top" },
     };
-    for (unsigned b = 0; b < 2; ++b) {
+    for (unsigned b = 0; b < sizeof (blocks) / sizeof (blocks[0]); ++b) {
       IODeviceMemory *memory = IODeviceMemory::withRange (blocks[b].base, 0x100);
       IOMemoryMap *map = memory ? memory->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
       if (map && map->getVirtualAddress () && map->getLength () >= blocks[b].words * 4) {
