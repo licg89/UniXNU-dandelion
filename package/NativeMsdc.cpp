@@ -593,7 +593,11 @@ public:
   ~HostSession ()
   {
     wr (kMsdcIntr, rd (kMsdcIntr));
-    wr (kMsdcCfg, cfg);
+    // Restore everything the firmware had EXCEPT the clock fields, which belong to whoever set the
+    // bus rate last.  Restoring them too is what undid every clock change this port ever made: the
+    // console writes through this card, so the first log line after a clock change put the old
+    // divider and mode straight back, and the measured rate never budged no matter what was written.
+    wr (kMsdcCfg, (cfg & ~kCfgClockFields) | (rd (kMsdcCfg) & kCfgClockFields));
     wr (kMsdcIntEn, interruptEnable);
     IOLockUnlock (gHost.lock);
   }

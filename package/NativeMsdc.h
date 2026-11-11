@@ -41,6 +41,9 @@ enum : unsigned {
 };
 
 constexpr uint32_t kCfgPio = 1u << 3;
+// CKMOD [17:16] and CKDIV [15:8]: the bus rate.  A transaction guard restores the firmware's
+// configuration around its own work but must not put the clock back -- see HostSession.
+constexpr uint32_t kCfgClockFields = (0x3u << 16) | (0xffu << 8);
 // MSDC_CFG clock controls (vendor mtk-sd.c: CKPDN is bit 1, CKSTB is bit 7).
 constexpr uint32_t kCfgCkPdn = 1u << 1;
 constexpr uint32_t kCfgCkStb = 1u << 7;
