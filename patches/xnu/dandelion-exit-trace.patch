@@ -9,8 +9,8 @@
 +	 * line per exit names the process, the raw code, and whether it was signalled (a crash or
 +	 * jetsam's SIGKILL) or exited normally.
 +	 */
-+	printf("DANDELION-EXIT: pid=%d comm=%s rv=%#x sig=%d status=%d\n",
-+	    proc_getpid(p), p->p_comm, rv,
++	printf("DANDELION-EXIT: pid=%d comm=%s ppid=%d rv=%#x sig=%d status=%d\n",
++	    proc_getpid(p), p->p_comm, p->p_ppid, rv,
 +	    WIFSIGNALED(rv) ? WTERMSIG(rv) : 0,
 +	    WIFEXITED(rv) ? WEXITSTATUS(rv) : -1);
 +
