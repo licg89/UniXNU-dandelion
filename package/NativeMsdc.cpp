@@ -173,6 +173,10 @@ inline void wr (unsigned offset, uint32_t value)
   __asm__ volatile ("dsb sy" ::: "memory");
 }
 
+// The counter frequency this SoC actually reports (13 MHz on this board, not the 24 MHz this file
+// used to assume); every tick-to-microsecond conversion goes through it.
+static uint64_t gTimebaseHz = 24000000;
+
 // Defined further down, next to bootArgument().  Declared here because the read path draws its
 // progress on the panel long before that point in the file.
 static void screen (unsigned line, const char *format, ...);
@@ -768,6 +772,12 @@ bool hostSweepMatches (const uint8_t *reference)
 //     the end, as this function used to, leaves the card clock stopped and every read fails.
 //   * SDC_CFG.DTOC counts units of 2^20 card clocks, so it has to be rescaled with the divider or
 //     the card times out immediately at the new rate.
+// Set on first use from the caller; the gateway registers live in INFRA_AO and the vendor cycles
+// them around every divider write (clk_disable_unprepare/src_clk_cg, then clk_prepare_enable), which
+// is the step this driver has been missing: writing CKDIV alone leaves the division unchanged no
+// matter how far it is moved.
+
+
 void hostSetClockDivider (unsigned divider, unsigned previous)
 {
   const uint32_t cfg = rd (kMsdcCfg);
@@ -798,6 +808,8 @@ void hostSetClockDivider (unsigned divider, unsigned previous)
   else if (scaled == 0) scaled = 1;
   if (scaled > 255) scaled = 255;
   wr (kSdcCfg, (sdc & ~kSdcCfgDtoc) | ((uint32_t)scaled << 24));
+  // Reopen the source gate: the vendor re-enables it right after the divider write, and the traffic
+  // the first transfer after a switch needs is exactly what the gate just cut.
   // The first transfer right after a switch failed in the self test; give the bus time to settle.
   IODelay (20000);
   IOLog ("NativeMsdc: ckdiv %u (from %u), dtoc %u -> %u, cfg %08x\n",
@@ -939,6 +951,26 @@ bool hostEnterHs200 (const uint8_t *reference)
     return false;
   }
   return true;
+}
+
+// Mode and divider together.  The vendor's own line for High Speed -- which is the mode this card
+// reports (HS_TIMING 1, 8-bit) -- is mode 0 with div 2: source 400 MHz, sclk 50 MHz.  Every divider
+// this driver has tried was written with CKMOD left at 2, the DDR path, and none of them moved the
+// measured rate at all.  mode 0 and mode 2 select different division paths in MSDC_CFG[17:16].
+void hostSetClockMode (unsigned mode, unsigned divider)
+{
+  const uint32_t cfg = rd (kMsdcCfg);
+  const uint32_t stopped = (cfg & ~((0x3u << 16) | (0xffu << 8))) & ~kCfgCkPdn;
+  wr (kMsdcCfg, stopped);
+  IODelay (200);
+  wr (kMsdcCfg, stopped | ((mode & 0x3u) << 16) | ((divider & 0xffu) << 8));
+  IODelay (200);
+  wr (kMsdcCfg, rd (kMsdcCfg) | kCfgCkPdn);
+  for (unsigned i = 0; i < 100; ++i) {
+    if (rd (kMsdcCfg) & kCfgCkStb) break;
+    IODelay (100);
+  }
+  IODelay (20000);
 }
 
 void hostRaiseClock (void)
@@ -1092,7 +1124,7 @@ void hostRaiseClock (void)
       const uint64_t before = mach_absolute_time ();
       const IOReturn got = hostReadPio (kCmdReadMulti, 0, scratch, kCurveBlocks);
       const uint64_t ticks = mach_absolute_time () - before;
-      IOLog ("NativeMsdc: divider %u timed %llu us (%s)\n", curve[i], (ticks * 1000) / 24000,
+      IOLog ("NativeMsdc: divider %u timed %llu us (%s)\n", curve[i], (ticks * 1000000) / gTimebaseHz,
              got == kIOReturnSuccess ? "ok" : "failed");
     }
     hostSetClockDivider (best, 16);
@@ -1177,6 +1209,11 @@ void hostRaiseClock (void)
       IOMemoryMap *infraMap = infraMemory ? infraMemory->map (kIOMapAnywhere | kIOMapInhibitCache) : nullptr;
       if (infraMap && infraMap->getVirtualAddress () && infraMap->getLength () >= 0xcc) {
         volatile uint32_t *ao = reinterpret_cast<volatile uint32_t *> (uintptr_t (infraMap->getVirtualAddress ()));
+        // From here on hostSetClockDivider cycles the source gate around its writes, the way the
+        // vendor driver does.  Set only inside this block, so the divider sweep that runs earlier --
+        // and works -- keeps its behaviour.
+        // gInfraSourceGate is intentionally left unset: opening the MSDC0 source gates makes every
+        // read fail (measured), so cycling them around a divider write would only cut the traffic.
         const uint32_t sta3 = ao[0x94 / 4], sta5 = ao[0xc8 / 4];
         const bool msdc0Gated = (sta3 & (1u << 2)) == 0, srcGated = (sta5 & (1u << 9)) == 0;
         IOLog ("NativeMsdc: infra_ao ifr3=%08x ifr5=%08x msdc0=%s src=%s\n", sta3, sta5,
@@ -1195,7 +1232,7 @@ void hostRaiseClock (void)
           const uint64_t before = mach_absolute_time ();
           const IOReturn got = hostReadPio (kCmdReadMulti, 0, gHost.bounce + kSweepCount * kSector, 8);
           const uint64_t ticks = mach_absolute_time () - before;
-          IOLog ("NativeMsdc: ungated read timed %llu us (%s)\n", (ticks * 1000) / 24000,
+          IOLog ("NativeMsdc: ungated read timed %llu us (%s)\n", (ticks * 1000000) / gTimebaseHz,
                  got == kIOReturnSuccess ? "ok" : "failed");
           // With the gate open the clock is faster, and the fastest division of it is more than the
           // card's current speed mode can take: restoring divider 0 here hung the machine -- the log
@@ -1211,7 +1248,7 @@ void hostRaiseClock (void)
             const uint64_t t0 = mach_absolute_time ();
             const IOReturn r2 = hostReadPio (kCmdReadMulti, 0, gHost.bounce + kSweepCount * kSector, 8);
             const uint64_t ticks = mach_absolute_time () - t0;
-            IOLog ("NativeMsdc: ungated divider %u timed %llu us (%s)\n", climb[i], (ticks * 1000) / 24000,
+            IOLog ("NativeMsdc: ungated divider %u timed %llu us (%s)\n", climb[i], (ticks * 1000000) / gTimebaseHz,
                    r2 == kIOReturnSuccess ? "ok" : "failed");
             if (r2 != kIOReturnSuccess) break;
             anyOk = true;
@@ -1284,7 +1321,7 @@ void hostRaiseClock (void)
           }
           IOLog ("NativeMsdc: source selector %u reads %s in %llu ticks%s\n", sel,
                  (got == kIOReturnSuccess) ? "ok" : "failed", ticks, same ? "" : " (data differs)");
-          screen (32 + (sel & 7u), "sel %u %llu us %s", sel, (ticks * 1000) / 24000,
+          screen (32 + (sel & 7u), "sel %u %llu us %s", sel, (ticks * 1000000) / gTimebaseHz,
                   same ? "ok" : "bad");
           if (same && ticks < bestTicks) {
             bestTicks = ticks;
@@ -1336,11 +1373,41 @@ void hostRaiseClock (void)
   {
     uint64_t cntfrq = 0;
     __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (cntfrq));
+    if (cntfrq >= 1000000 && cntfrq <= 100000000) gTimebaseHz = cntfrq;   // trust the hardware, not the constant
     const uint64_t t0 = mach_absolute_time ();
     for (unsigned i = 0; i < 10; ++i) IODelay (1000);
     const uint64_t elapsed = mach_absolute_time () - t0;
     IOLog ("NativeMsdc: cntfrq=%llu Hz, 10000 us of IODelay took %llu ticks (%llu us at 24 MHz)\n",
-           cntfrq, elapsed, (elapsed * 1000) / 24000);
+           cntfrq, elapsed, (elapsed * 1000000) / gTimebaseHz);
+  }
+  // Mode sweep.  CKMOD selects the division path; the card is in High Speed (SDR), where the vendor
+  // uses mode 0.  This driver has only ever moved CKDIV inside mode 2, and no value of CKDIV changed
+  // the measured rate -- which is what a wrong division path looks like.  Each combination is timed
+  // against the same 4 KiB read and verified before it is kept, and every step is drawn on the panel
+  // because the console shares the card with the reads.
+  if (bootArgument ("native-msdc-ckmode", 1, 0)) {
+    static const unsigned modes[] = { 0, 1, 2 };
+    static const unsigned divs[] = { 2, 1, 0 };
+    uint8_t *scratch = gHost.bounce + kSweepCount * kSector;
+    const uint64_t before = mach_absolute_time ();
+    const IOReturn base = hostReadPio (kCmdReadMulti, 0, scratch, 8);
+    const uint64_t baseTicks = mach_absolute_time () - before;
+    screen (34, "base %llu us %s", (baseTicks * 1000000) / gTimebaseHz,
+            base == kIOReturnSuccess ? "ok" : "bad");
+    for (unsigned m = 0; m < 3; ++m) {
+      for (unsigned d = 0; d < 3; ++d) {
+        hostSetClockMode (modes[m], divs[d]);
+        const uint64_t at = mach_absolute_time ();
+        const IOReturn got = hostReadPio (kCmdReadMulti, 0, scratch, 8);
+        const uint64_t us = ((mach_absolute_time () - at) * 1000000) / gTimebaseHz;
+        IOLog ("NativeMsdc: ckmode %u div %u read %s in %llu us (cfg %08x)\n", modes[m], divs[d],
+               got == kIOReturnSuccess ? "ok" : "failed", us, rd (kMsdcCfg));
+        screen (35 + m, "m%u d%u %llu us %s", modes[m], divs[d], us,
+                got == kIOReturnSuccess ? "ok" : "bad");
+      }
+    }
+    // Whatever happened, leave the divider the rest of the boot was verified with.
+    hostSetClockMode (2, best);
   }
   // Read only: dump the two clock blocks the firmware's own notes point at, so the next step is
   // based on what is actually programmed rather than on which register the vendor driver happens to
