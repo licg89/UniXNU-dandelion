@@ -1207,6 +1207,11 @@ void hostRaiseClock (void)
         OSSafeReleaseNULL (infraMap);
       }
       OSSafeReleaseNULL (infraMemory);
+      // Commit a mux with the divider at its slowest setting first.  The previous run committed the
+      // mux with CKDIV still at 0 and never printed another line: the new parent at the fastest
+      // division is far beyond what the card can take, and a read that cannot complete hangs with
+      // the console inside it.  Slow parent first, measure, and only then let the climb speed up.
+      hostSetClockDivider (16, best);
       uint8_t *reference = gHost.bounce;
       uint8_t *candidate = gHost.bounce + kSweepCount * kSector;
       bool haveReference = hostReadPio (kCmdReadSingle, kSweepSectors[0], reference, 1) == kIOReturnSuccess;
