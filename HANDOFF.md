@@ -6682,3 +6682,61 @@ eMMC 日志最后一条：read trace sector=71818903     ← 控制台在那一�
 | 12:39 | 83,868,655 | 9 分钟只涨 98 MB ≈ **0.18 MB/s** ✗ 落到真实卡速率 |
 
 → 快段（缓存）与慢段（cryptex/dyld 缓存必须从卡读）界限清晰 ✓
+
+---
+
+## 0.124 ★ 存储时钟问题彻底解决（2026-11-11 20:00–21:20）
+
+### 一、根因：事务守卫把时钟改回去了
+
+```cpp
+class HostSession {                       // 每次控制台写日志都用它
+    uint32_t cfg;
+    HostSession ()  { cfg = rd (kMsdcCfg); }
+    ~HostSession () { wr (kMsdcCfg, cfg); }   // ★ 连 CKMOD/CKDIV 一起恢复
+};
+```
+
+控制台日志走同一张 eMMC 卡 ✓ → **每打一行日志就把时钟配置恢复成固件旧值** ✗
+→ 三天里所有时钟改动都是"设置了、校验通过、然后被打回" ✓
+
+### 二、关键测量（`native-msdc-ckmode` 扫描，真实 µs）
+
+| 配置 | 4 KiB 读 | 说明 |
+| --- | --- | --- |
+| mode 2 div 0（原配置）| 27,679 µs | DDR 路径 ✗ |
+| mode 1 div 0 | 14,000 µs | 不分频路径 |
+| **mode 0 div 2** | **599 µs** | ★ 厂商给 HS 卡的配置 ✓ |
+| mode 0 div 0 | 439 µs（**失败**）| 卡跟不上 ✗ |
+
+厂商日志同一行佐证：`Set<52000KHz> Source<400000KHz> -> sclk<50000KHz> timing<1> mode<0> div<2>` ✓
+
+### 三、修复
+
+1. `hostSetClockMode(0, 2)` ✓ 用四段参考数据校验 ✓ 失败回滚 ✓
+2. **`HostSession` 只恢复非时钟字段**（`kCfgClockFields` = CKMOD|CKDIV）✓ ← 决定性
+
+### 四、实测结果
+
+```
+修复前：read timing ... total=103,000 us each   ✗
+修复后：read timing ... total=300 us each       ✓  稳定性持续
+```
+
+**约 340 倍提升** ✓ 3.7 GB 共享缓存从 ~7 小时降到 **几分钟** ✓
+
+### 五、顺带修正
+
+- `CNTFRQ_EL0 = 13 MHz`（不是 24 MHz）→ 所有 µs 换算改用真实时基 ✓
+- 屏幕可见化（§0.123）是这次能定位问题的关键工具 ✓
+
+### 六、新的卡点：进程被杀
+
+长跑日志中大量 `DANDELION-EXIT: ... sig=9` ✗ → 已加 `DANDELION-KILL` 追踪
+（`patches/xnu/dandelion-kill-trace.patch`）记录**发送者**：
+
+```
+DANDELION-KILL: pid=N comm=X flavor=F from=<launchd|kernel|watchdogd> fpid=Z
+```
+
+`from=kernel`（fpid=0）= jetsam 内存压力 ✓；`from=watchdogd` = 超时 ✓；`from=launchd` = 任务失败 ✓

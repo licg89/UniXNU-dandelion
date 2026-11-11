@@ -1,0 +1,24 @@
+--- a/bsd/kern/kern_sig.c
++++ b/bsd/kern/kern_sig.c
+@@ -2054,6 +2054,25 @@
+ 	boolean_t               update_thread_policy = FALSE;
+ 
++	/*
++	 * Board diagnostic: name the sender of every SIGKILL.
++	 *
++	 * The exit trace reports that a process died with signal 9 but not who sent it, and the
++	 * difference matters: launchd reaping a failed job, watchdogd on a timeout, or a jetsam
++	 * kernel thread under memory pressure all end the same way in the log.  current_proc() is
++	 * NULL in a kernel thread, which is itself the answer for the jetsam case.
++	 */
++	if (signum == SIGKILL && p != NULL) {
++		proc_t from = current_proc();
++		printf("DANDELION-KILL: pid=%d comm=%s flavor=%d from=%s fpid=%d\n",
++		    proc_getpid(p), p->p_comm, flavor,
++		    from ? from->p_comm : "kernel",
++		    from ? proc_getpid(from) : 0);
++	}
++
+ 	if ((u_int)signum >= NSIG || signum == 0) {
+ 		os_reason_free(signal_reason);
+ 		return;
