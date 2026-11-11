@@ -628,7 +628,9 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
       // apart without pulling the eMMC log.
       static volatile uint64_t shown;
       const uint64_t n = __atomic_add_fetch (&shown, 1, __ATOMIC_RELAXED);
-      screen (22, "reads %llu MB %llu", (unsigned long long)(n / 16), (unsigned long long)sector);
+      // Each increment is 400 reads; a read moves at most kMaxBlocks sectors, so the megabyte figure
+      // is a floor, not an estimate that can overshoot.
+      screen (22, "RD %llu MB LBA %llu", (unsigned long long)(n * 25), (unsigned long long)sector);
     }
   }
   for (unsigned attempt = 0; attempt < attempts; attempt++) {
@@ -1140,6 +1142,8 @@ void hostRaiseClock (void)
     if (clockMap && clockMap->getVirtualAddress () && clockMap->getLength () >= kTopCfg3Offset + sizeof (uint32_t)) {
       volatile uint32_t *cfg3 = reinterpret_cast<volatile uint32_t *> (uintptr_t (clockMap->getVirtualAddress ()) + kTopCfg3Offset);
       volatile uint32_t *cfgUpdate = reinterpret_cast<volatile uint32_t *> (uintptr_t (clockMap->getVirtualAddress ()) + kTopCfgUpdateOffset);
+      volatile uint32_t *cfgSet = reinterpret_cast<volatile uint32_t *> (uintptr_t (clockMap->getVirtualAddress ()) + 0x74);
+      volatile uint32_t *cfgClear = reinterpret_cast<volatile uint32_t *> (uintptr_t (clockMap->getVirtualAddress ()) + 0x78);
       const uint32_t original = *cfg3;
       const unsigned inheritedSel = (original >> kMsdc50SelShift) & 7u;
       IOLog ("NativeMsdc: source CLK_CFG_3=%08x msdc50_0_sel=%u\n", original, inheritedSel);
@@ -1251,8 +1255,14 @@ void hostRaiseClock (void)
       if (haveReference) {
         for (unsigned sel = 0; sel < 8; ++sel) {
           if (sel == inheritedSel) continue;
-          *cfg3 = (original & ~kMsdc50SelMask) | ((sel & 7u) << kMsdc50SelShift) | kTopCfgGate;
-          *cfgUpdate = kTopCfgUpdate;
+          // MTK programs a mux field through the clear and set aliases, then raises that field's bit in
+          // CLK_CFG_UPDATE.  Writing CLK_CFG_3 itself hung the machine at both divider settings, so the
+          // vendor's own form is used here: clear the field, set the new value, commit.
+          *cfgClear = kMsdc50SelMask;
+          __asm__ volatile ("dsb sy" ::: "memory");
+          *cfgSet = ((sel & 7u) << kMsdc50SelShift) | kTopCfgGate;
+          __asm__ volatile ("dsb sy" ::: "memory");
+          *cfgUpdate = *cfgUpdate | kTopCfgUpdate;
           __asm__ volatile ("dsb sy" ::: "memory");
           IODelay (1000);
           const uint64_t before = mach_absolute_time ();
@@ -1273,12 +1283,14 @@ void hostRaiseClock (void)
         // When nothing beat the inherited selector, put the register back exactly as it was: the gate
         // bit is what the sweep added to every candidate, and it must not be left set on a clock the
         // card has not been proven to read through.
-        if (bestSel == inheritedSel) {
-          *cfg3 = original;
-        } else {
-          *cfg3 = (original & ~kMsdc50SelMask) | ((bestSel & 7u) << kMsdc50SelShift) | kTopCfgGate;
+        if (bestSel != inheritedSel) {
+          *cfgClear = kMsdc50SelMask;
+          __asm__ volatile ("dsb sy" ::: "memory");
+          *cfgSet = ((bestSel & 7u) << kMsdc50SelShift) | kTopCfgGate;
+          __asm__ volatile ("dsb sy" ::: "memory");
+          *cfgUpdate = *cfgUpdate | kTopCfgUpdate;
+          __asm__ volatile ("dsb sy" ::: "memory");
         }
-        *cfgUpdate = kTopCfgUpdate;
         __asm__ volatile ("dsb sy" ::: "memory");
         IODelay (1000);
         // Only keep the new parent if the card still reads correctly through it.
@@ -1286,8 +1298,12 @@ void hostRaiseClock (void)
             (hostReadPio (kCmdReadSingle, kSweepSectors[0], candidate, 1) != kIOReturnSuccess ||
              memcmp (candidate, reference, kSector) != 0)) {
           bestSel = inheritedSel;
-          *cfg3 = original;
-          *cfgUpdate = kTopCfgUpdate;
+          // Restore through the same aliases, so the field is put back the way it was found.
+          *cfgClear = kMsdc50SelMask;
+          __asm__ volatile ("dsb sy" ::: "memory");
+          *cfgSet = (original & kMsdc50SelMask);
+          __asm__ volatile ("dsb sy" ::: "memory");
+          *cfgUpdate = *cfgUpdate | kTopCfgUpdate;
           __asm__ volatile ("dsb sy" ::: "memory");
           IODelay (1000);
         }
