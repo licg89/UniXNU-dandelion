@@ -621,7 +621,8 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
   // mean plist and metadata traffic.  One line every 400 reads is cheap on the console.
   if (!write) {
     static volatile uint64_t traceCounter = 0;
-    if ((__atomic_fetch_add (&traceCounter, 1, __ATOMIC_RELAXED) % 400) == 0) {
+    if ((__atomic_fetch_add (&traceCounter, 1, __ATOMIC_RELAXED) % 64) == 0) {   // ~7 s at the current rate
+
       IOLog ("NativeMsdc: read trace sector=%llu blocks=%u\n",
              (unsigned long long)sector, blocks);
       // The panel shows the same counter, so a boot in progress and a boot that stopped can be told
@@ -630,7 +631,7 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
       const uint64_t n = __atomic_add_fetch (&shown, 1, __ATOMIC_RELAXED);
       // Each increment is 400 reads; a read moves at most kMaxBlocks sectors, so the megabyte figure
       // is a floor, not an estimate that can overshoot.
-      screen (22, "RD %llu MB LBA %llu", (unsigned long long)(n * 25), (unsigned long long)sector);
+      screen (22, "RD %llu MB LBA %llu", (unsigned long long)(n * 4), (unsigned long long)sector);
     }
   }
   for (unsigned attempt = 0; attempt < attempts; attempt++) {
