@@ -1241,6 +1241,11 @@ void hostRaiseClock (void)
       // mux with CKDIV still at 0 and never printed another line: the new parent at the fastest
       // division is far beyond what the card can take, and a read that cannot complete hangs with
       // the console inside it.  Slow parent first, measure, and only then let the climb speed up.
+      // Slow first, as the comment above says, but also tell the PANEL: the console shares the card
+      // with these reads, so a mux change that wedges the transfer path takes the log with it and
+      // leaves nothing to look at.  The panel is drawn through the framebuffer and keeps showing the
+      // last state that was reached, which is the observation channel this experiment needs.
+      screen (30, "CFG3 %08x UPD %08x CFG %08x", *cfg3, *cfgUpdate, rd (kMsdcCfg));
       hostSetClockDivider (16, best);
       uint8_t *reference = gHost.bounce;
       uint8_t *candidate = gHost.bounce + kSweepCount * kSector;
@@ -1266,6 +1271,9 @@ void hostRaiseClock (void)
           *cfgUpdate = *cfgUpdate | kTopCfgUpdate;
           __asm__ volatile ("dsb sy" ::: "memory");
           IODelay (1000);
+          screen (32 + (sel & 7u), "sel %u st %08x", sel, *cfg3);   // drawn before the read: if this
+                                                                    // read never returns, this line
+                                                                    // is the evidence on the panel
           const uint64_t before = mach_absolute_time ();
           IOReturn got = hostReadPio (kCmdReadMulti, 0, candidate, kSrcClkBlocks);
           const uint64_t ticks = mach_absolute_time () - before;
@@ -1276,6 +1284,8 @@ void hostRaiseClock (void)
           }
           IOLog ("NativeMsdc: source selector %u reads %s in %llu ticks%s\n", sel,
                  (got == kIOReturnSuccess) ? "ok" : "failed", ticks, same ? "" : " (data differs)");
+          screen (32 + (sel & 7u), "sel %u %llu us %s", sel, (ticks * 1000) / 24000,
+                  same ? "ok" : "bad");
           if (same && ticks < bestTicks) {
             bestTicks = ticks;
             bestSel = sel;
