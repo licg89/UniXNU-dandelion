@@ -269,7 +269,14 @@ unixnu = "../UniXNU"
 "ios-16.5-20F66" = "dandelion_defconfig"
 
 [payload.adt]
-owned_memory_size = "0x10000000"   # raised from 0x10000000; the board has 4 GiB (see HANDOFF 0.92)
+# 1 GiB rather than the 256 MiB this sat at.  The board has 4 GiB and the firmware's
+# "DRAM Low Conv" runs to 0x7FFFFFFF, so the window the kernel is handed can be much
+# larger than a quarter of a gigabyte -- and the memory is what jetsam kills over: the
+# earlier measurement recorded 366 processes dying on OS_REASON_JETSAM subcode 0x4 at
+# 1 GiB, and the current run repeats it (4972 SIGKILLs, every one of the services that
+# matters).  vm_compressor=2 is already set; this gives the compressor something to work
+# with.
+owned_memory_size = "0x40000000"
 # TODO: the board's identity seed, as the framework requires.
 chip_id = "6765"   # hex; the board identity this port uses
 unique_chip_id = "required"
