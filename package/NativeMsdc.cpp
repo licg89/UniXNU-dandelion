@@ -1380,6 +1380,23 @@ void hostRaiseClock (void)
     IOLog ("NativeMsdc: cntfrq=%llu Hz, 10000 us of IODelay took %llu ticks (%llu us at 24 MHz)\n",
            cntfrq, elapsed, (elapsed * 1000000) / gTimebaseHz);
   }
+  // The clock this card needs.  Measured on this board, 4 KiB read: mode 2 div 0 (what this driver
+  // has always used) 27679 us, mode 1 div 0 14000 us, mode 0 div 2 599 us, mode 0 div 0 fails.  The
+  // vendor's own line for High Speed -- this card's mode, HS_TIMING 1 on eight bits -- is mode 0
+  // with div 2, and that is the 46x.  Set it, verify against the reference sectors, and fall back to
+  // the inherited configuration if the data does not match.
+  if (bootArgument ("native-msdc-hsmode", 1, 1)) {
+    hostSetClockMode (0, 2);
+    if (hostSweepMatches (reference)) {
+      native_msdc_clock_divider = 2;
+      IOLog ("NativeMsdc: clock mode 0 div 2 verified (High Speed)\n");
+      screen (33, "HS mode 0 div 2 ok");
+    } else {
+      hostSetClockMode (2, best);
+      IOLog ("NativeMsdc: mode 0 div 2 did not verify; back to mode 2 div %u\n", best);
+      screen (33, "HS mode failed, restored");
+    }
+  }
   // Mode sweep.  CKMOD selects the division path; the card is in High Speed (SDR), where the vendor
   // uses mode 0.  This driver has only ever moved CKDIV inside mode 2, and no value of CKDIV changed
   // the measured rate -- which is what a wrong division path looks like.  Each combination is timed
