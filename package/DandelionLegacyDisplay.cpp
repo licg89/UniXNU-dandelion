@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 // Bounded offline original lifecycle instrument; no desktop claim.
 #include <IOKit/IOPlatformExpert.h>
+#include "DandelionFont6x10.h"
 #include <IOKit/IODeviceMemory.h>
 #include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/IOLib.h>
@@ -780,12 +781,78 @@ native_diag_process_summary (void)
  * Boot-progress text hooks of the display path.  Stubbed while the provider is exercised: losing the
  * on-screen progress messages is acceptable, losing the provider is not.
  */
+/*
+ * On-screen boot progress.  The kernel console goes to the eMMC log block this port reads back, not
+ * to the panel, so a boot that is going well looks exactly like a boot that has stopped -- which is
+ * what makes hours-long bring-up runs hard to watch.  This draws text into the boot GOP framebuffer
+ * instead, using the same assumption gopPaint() already relies on: the boot framebuffer is still
+ * scanning out even after the original provider is released.  The glyphs come from a 6x10 table
+ * generated on the host from a monospace font (package/DandelionFont6x10.h), so nothing here depends
+ * on the layout of another project's font file.
+ */
+static IOMemoryMap *textMapping;
+static PE_Video textVideo;
+static bool textReady;
+
+static bool gopTextOpen(void) {
+    if (textReady) return true;
+    PE_Video video = {};
+    if (PE_current_console(&video) || !video.v_baseAddr || !video.v_width || !video.v_height ||
+        video.v_depth != 32 || video.v_rotate || !video.v_rowBytes ||
+        video.v_width > 16384 || video.v_height > 16384) return false;
+    IODeviceMemory *memory = IODeviceMemory::withRange(video.v_baseAddr,
+        (IOByteCount)video.v_rowBytes * video.v_height);
+    if (!memory) return false;
+    textMapping = memory->map(kIOMapAnywhere | kIOMapInhibitCache);
+    memory->release();
+    if (!textMapping || !textMapping->getVirtualAddress()) {
+        OSSafeReleaseNULL(textMapping);
+        return false;
+    }
+    textVideo = video;
+    textReady = true;
+    return true;
+}
+
 extern "C" void
 native_gop_text (unsigned line, const char *text)
 {
-  (void)line;
-  (void)text;
+  if (!text || !gopTextOpen()) return;
+  volatile uint8_t *base = reinterpret_cast<volatile uint8_t *>(textMapping->getVirtualAddress());
+  const unsigned scale = textVideo.v_width >= 600 ? 2u : 1u;
+  const unsigned cellW = 6u * scale, cellH = 10u * scale, gap = 2u;
+  const unsigned cols = textVideo.v_width / cellW;
+  if (!cols) return;
+  const unsigned y0 = 4u + line * (cellH + gap);
+  if (y0 + cellH > textVideo.v_height) return;
+  for (unsigned y = y0; y < y0 + cellH; ++y) {
+    volatile uint32_t *row = reinterpret_cast<volatile uint32_t *>(base + (uint64_t)y * textVideo.v_rowBytes);
+    for (unsigned x = 0; x < cols * cellW && x + 4 < textVideo.v_width; ++x) row[x + 4] = 0xFF000000u;
+  }
+  unsigned cx = 4;
+  for (const char *p = text; *p; ++p) {
+    const unsigned code = static_cast<unsigned char>(*p);
+    const unsigned char *glyph = (code >= 32 && code <= 95) ? kFont6x10[code - 32] : nullptr;
+    if (glyph && cx + cellW <= textVideo.v_width) {
+      for (unsigned gy = 0; gy < 10; ++gy) {
+        const unsigned bits = glyph[gy];
+        for (unsigned gx = 0; gx < 6; ++gx) {
+          if (!(bits & (1u << (5 - gx)))) continue;
+          for (unsigned sy = 0; sy < scale; ++sy) {
+            volatile uint32_t *row = reinterpret_cast<volatile uint32_t *>(
+                base + (uint64_t)(y0 + gy * scale + sy) * textVideo.v_rowBytes);
+            for (unsigned sx = 0; sx < scale; ++sx) row[cx + gx * scale + sx] = 0xFFFFFFFFu;
+          }
+        }
+      }
+    }
+    cx += cellW;
+  }
+  __asm__ volatile("dsb sy" ::: "memory");
 }
+
+/* Called from other port drivers that want a line on the panel; a no-op when there is no framebuffer. */
+extern "C" void native_boot_progress (unsigned line, const char *text) { native_gop_text(line, text); }
 
 extern "C" void
 native_gop_redraw_ring (void)

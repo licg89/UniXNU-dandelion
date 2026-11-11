@@ -173,6 +173,10 @@ inline void wr (unsigned offset, uint32_t value)
   __asm__ volatile ("dsb sy" ::: "memory");
 }
 
+// Defined further down, next to bootArgument().  Declared here because the read path draws its
+// progress on the panel long before that point in the file.
+static void screen (unsigned line, const char *format, ...);
+
 #if NATIVE_MSDC_VERIFIED
 bool gRootTimingEnabled; // configured once before window publication
 uint64_t rootTimingNow ()
@@ -620,6 +624,11 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
     if ((__atomic_fetch_add (&traceCounter, 1, __ATOMIC_RELAXED) % 400) == 0) {
       IOLog ("NativeMsdc: read trace sector=%llu blocks=%u\n",
              (unsigned long long)sector, blocks);
+      // The panel shows the same counter, so a boot in progress and a boot that stopped can be told
+      // apart without pulling the eMMC log.
+      static volatile uint64_t shown;
+      const uint64_t n = __atomic_add_fetch (&shown, 1, __ATOMIC_RELAXED);
+      screen (22, "reads %llu MB %llu", (unsigned long long)(n / 16), (unsigned long long)sector);
     }
   }
   for (unsigned attempt = 0; attempt < attempts; attempt++) {
@@ -638,6 +647,22 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
   if (result != kIOReturnSuccess) __atomic_fetch_add (&native_msdc_failures, 1, __ATOMIC_RELAXED);
   else __atomic_fetch_add (write ? &native_msdc_writes : &native_msdc_reads, 1, __ATOMIC_RELAXED);
   return result;
+}
+
+// On-screen progress.  The display glue renders native_boot_progress() into the boot framebuffer, so
+// the phone itself can show how far a boot got instead of looking identical to a hang.  Weak, so the
+// storage driver still links when the display component is not selected.
+extern "C" void native_boot_progress (unsigned line, const char *text) __attribute__((weak));
+
+static void screen (unsigned line, const char *format, ...)
+{
+  if (!native_boot_progress) return;
+  char text[48];
+  va_list list;
+  va_start (list, format);
+  vsnprintf (text, sizeof (text), format, list);
+  va_end (list);
+  native_boot_progress (line, text);
 }
 
 unsigned bootArgument (const char *name, unsigned maximum, unsigned fallback)
