@@ -6804,3 +6804,81 @@ owned window / 固件内存 ≈ 764 MB ✗
 | 时钟 | ✓ mode 0 div 2，300 µs/读（340 倍）|
 | 提交 | `fd15e6f` ✓ 工作区干净 |
 | 卡点 | 固件构建（`AsmMacroLib.patch` 的残留引用 ✗）|
+
+---
+
+## 0.126 内存：2 GiB 可以拿到，但高地址破坏早期启动（2026-11-12 00:00–01:40）
+
+### 一、固件终于能重建了（关键前提）
+
+`build_uefi.py -d dandelion -r DEBUG` 之前一直失败在：
+
+```
+Failed to Apply "AsmMacroLib.patch" Git Patch!
+```
+
+原因：补丁的 hunk 指向 `Mu_Basecore/MdePkg/Include/AArch64/AsmMacroLib.h` **第 37 行**，
+而这个子模块版本里同样的内容在**第 43 行** ✗ → 永远应用不上 ✓
+（改名补丁无效 ✗：`handle_git_patch()` 对"文件缺失"和"应用失败"返回同样的错 ✓）
+
+**修法**：用真实文件重新生成补丁 ✓（`git -C Mu_Basecore diff` ✓），构建通过 ✓（`f5609f8`）✓
+
+### 二、`DRAM High Conv` 需要"完整重编"才生效
+
+| 构建方式 | 时间 | 结果 |
+| --- | --- | --- |
+| `build_uefi.py -c`（clean 但 PEI 复用）| 00:03 | 窗口仍被拒 ✗ |
+| **`build_uefi.py` 完整重编** | **01:04** | ★ **1 GiB 窗口成功** ✓ |
+
+→ `MemoryMapLib` 的表编进 **MemoryInitPei** ✓，增量构建不一定重编它 ✗
+
+### 三、1 GiB 窗口成功的证据
+
+```
+DARWINBOOT: window requested 40000000 default 30000000
+DARWINBOOT: ARM64 va=0xFFFFFFF00427C000 pa=0xC007C000 ... owned=0x40000000
+vm_page_bootstrap: 241347 free pages, 20797 wired pages
+```
+
+**241,347 页 × 16 KB ≈ 3.68 GB** ✓（之前 47,759 页 = 764 MB ✗）→ **5 倍** ✓✓
+
+### 四、但高地址窗口破坏早期启动
+
+同一镜像、同一固件：
+
+| 轮次 | 窗口 | 结果 |
+| --- | --- | --- |
+| 1 | 1 GiB | `vm_page_bootstrap: 241347` ✓ 但日志只有 125 行 ✗ |
+| 2 | 1 GiB | 日志只有 84 行 ✗（内核接棒后无输出）|
+
+窗口 `0xC007C000 + 0x40000000 = 0x10007C000` ✗ **越过 4 GiB** ✓
+→ 内核早期的 pmap / bootstrap 表对 ≥4 GiB 物理地址处理不良 ✓
+
+### 五、其它窗口大小反而被拒（规律未明）
+
+| 请求 | 结果 |
+| --- | --- |
+| 0x80000000（2 GiB）| `Out of Resources` ✗ |
+| 0x40000000（1 GiB）| ✓ 成功 |
+| 0x3F000000（1008 MB）| `Out of Resources` ✗ |
+
+→ `AllocateWindow()` 的 `Candidate` 对齐规则（`ALIGN_VALUE(PhysicalStart, BLOCK_SIZE) + KernelBaseOff`）
+使"更小的请求反而找不到位置" ✓ 需要读 `NO WINDOW ... BIG RUN ...` 的实际数值才能定 ✓
+（`DiagDraw` 只画屏幕 ✗ 被 logo 挡住 ✗；已加 `Print` ✓ 但本轮日志里未出现 ✗，需再确认）
+
+### 六、当前可用配置（已刷入）
+
+| 项 | 值 |
+| --- | --- |
+| `owned_memory_size` | `0x30000000`（768 MB）✓ |
+| 镜像 | `boot-final-768m` = `4556c65f` ✓ |
+| 内存 | 764 MB（`vm_page_bootstrap: ~47759`）|
+| 存储 | **29 MB/s**（时钟 mode 0 div 2 ✓）|
+| 启动深度 | launchd 27 个任务 + 108 进程 ✓ |
+
+### 七、下一步（内存）
+
+1. 让 `NO WINDOW ... BIG RUN ...` 真正进日志 ✓（确认 `Print` 是否走 payload 的 log buffer ✓）
+2. 拿到 `BIG RUN` 后决定窗口大小 ✓
+3. 若窗口必须 > 4 GiB：查内核早期 pmap 对高物理地址的假设 ✓
+   （`arm64/start.s`、`pmap_bootstrap`、`PE_state` 的 `memorySize`/`topOfKernelData` ✓）
