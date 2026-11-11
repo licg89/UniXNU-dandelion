@@ -6740,3 +6740,67 @@ DANDELION-KILL: pid=N comm=X flavor=F from=<launchd|kernel|watchdogd> fpid=Z
 ```
 
 `from=kernel`（fpid=0）= jetsam 内存压力 ✓；`from=watchdogd` = 超时 ✓；`from=launchd` = 任务失败 ✓
+
+---
+
+## 0.125 内存：内核参数提不上去，必须换固件（2026-11-11 23:00–00:15）
+
+### 一、实测：1 GiB 窗口被固件拒绝
+
+把 `[payload.adt] owned_memory_size` 从 `0x10000000`（256 MiB）改成 `0x40000000`（1 GiB）后：
+
+```
+DARWINBOOT: window requested 40000000 default 30000000
+DARWINBOOT: boot refused: Out of Resources; firmware retained
+'UniXNU' returned: Out of Resources
+```
+
+屏幕显示 `NO WIN!` + `FREE 4E/4C/5E` ✓ 即**固件自己也没有 1 GiB 可给** ✗
+→ **已回滚**到 `0x10000000` ✓（提交 `fd15e6f`）
+
+### 二、为什么固件给不出：内存映射只有低 2 GiB
+
+`Platforms/Xiaomi/dandelionPkg/Library/MemoryMapLib/MemoryMapLib.c`：
+
+- `DRAM Low Conv A/B` 覆盖到 `0x7FFFFFFF` ✓
+- **`DRAM High Conv`（0xC0000000 + 2 GiB）在源码第 167 行已经存在** ✓
+- 但**当前构建出的固件卷里没有它** ✗（`grep 'DRAM High Conv'` = 0 处 ✓）
+  → 因为固件是 **11-04** 编的 ✗，早于该改动 ✓
+
+### 三、固件重建受阻（明天从这里继续）
+
+`python3 build_uefi.py -d dandelion -r DEBUG -c` 卡在：
+
+```
+Failed to Apply "AsmMacroLib.patch" Git Patch!
+```
+
+已做的处理：
+
+1. 补丁本身**行号错位 6 行**（补丁改第 37 行，实际内容在第 43 行）✗
+   → 已**手动**把 `AsmMacroLib.h` 的两处 `.text. ## Name` 改成 `.text` ✓（clang 不支持分节写法 ✓）
+2. 已把 `Resources/MuPatches/AsmMacroLib.patch` 改名为 `.disabled-stale-lines` ✓
+3. **但构建仍报同一个错** ✗ → 说明还有别处引用该补丁（`Build/` 里的副本，或 `build_uefi.py` 的硬编码列表）
+
+**明天第一步**：`grep -rn 'AsmMacroLib' /root/work/uefi-dandelion --exclude-dir=.git` 找到所有引用点 ✓
+（构建脚本、`Build/` 缓存、`Resources/Scripts`）
+
+### 四、内存与 amfid 的关系（今天的因果链）
+
+```
+owned window / 固件内存 ≈ 764 MB ✗
+  → jetsam 压力（历史记录：366 进程死在 OS_REASON_JETSAM subcode 0x4 @ 1 GiB）
+  → 当前：4,972 次 SIGKILL，amfid 首当其冲 ✗
+  → amfid 死 → 所有 exec 无法通过签名校验 → launchd 循环重启服务 ✗
+```
+
+内存翻倍（2.7 GB ✓）→ jetsam 压力降到 1/3.5 ✓ → amfid 有机会活下来 ✓ → 服务链才能往下走 ✓
+
+### 五、当前状态
+
+| 项 | 值 |
+| --- | --- |
+| 可用镜像 | `boot-memrevert` = `83a9273b` ✓ 已刷入，正常启动 ✓ |
+| 时钟 | ✓ mode 0 div 2，300 µs/读（340 倍）|
+| 提交 | `fd15e6f` ✓ 工作区干净 |
+| 卡点 | 固件构建（`AsmMacroLib.patch` 的残留引用 ✗）|
