@@ -276,7 +276,7 @@ unixnu = "../UniXNU"
 # 1 GiB, and the current run repeats it (4972 SIGKILLs, every one of the services that
 # matters).  vm_compressor=2 is already set; this gives the compressor something to work
 # with.
-owned_memory_size = "0x40000000"
+owned_memory_size = "0x10000000"
 # TODO: the board's identity seed, as the framework requires.
 chip_id = "6765"   # hex; the board identity this port uses
 unique_chip_id = "required"
