@@ -1,0 +1,7 @@
+# Patches are consumed by `git apply` and `patch`, both of which reject CRLF context lines, so they
+# must always be checked out with LF regardless of the platform.  Without this, a Windows checkout
+# writes CRLF and every XNU patch fails with "patch does not apply".
+*.patch text eol=lf
+patches/** text eol=lf
+
+# Everything else keeps whatever the toolchain writes.
