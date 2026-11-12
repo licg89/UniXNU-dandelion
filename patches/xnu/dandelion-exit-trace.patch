@@ -20,12 +20,12 @@
 +	 * reason.  Printable bytes only; the buffer is a binary os_log pack whose format string is
 +	 * usually the readable part.
 +	 */
-+	if (p->p_exit_reason != NULL && p->p_exit_reason->osr_kcd_buf != NULL &&
-+	    p->p_exit_reason->osr_bufsize > 0) {
++	if (exit_reason != OS_REASON_NULL && exit_reason->osr_kcd_buf != NULL &&
++	    exit_reason->osr_bufsize > 0) {
 +		char rtext[200];
 +		size_t rn = 0;
-+		const uint8_t *kb = (const uint8_t *)p->p_exit_reason->osr_kcd_buf;
-+		size_t kn = p->p_exit_reason->osr_bufsize;
++		const uint8_t *kb = (const uint8_t *)exit_reason->osr_kcd_buf;
++		size_t kn = exit_reason->osr_bufsize;
 +		if (kn > 160) {
 +			kn = 160;
 +		}
