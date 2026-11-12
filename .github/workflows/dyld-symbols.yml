@@ -6,10 +6,10 @@ name: dyld cache symbols
 # volume's directory tree: libfsapfs reads the container and the volume metadata but not the tree, and
 # fsapfsmount on this host has no FUSE backend.  A macOS runner mounts it with hdiutil.
 #
-# Two earlier attempts failed for the record: atos refuses these caches ("cannot load symbols for the
-# file ... for architecture arm64"), and dyld_shared_cache_arm64.symbols is a binary table, not text, so
-# grepping it finds nothing.  nm reads the cache itself and lists symbols in address order, so a single
-# pass finds the nearest symbol below each address.
+# Two earlier attempts failed and are recorded here so they are not repeated: atos refuses these caches
+# ("cannot load symbols for the file ... for architecture arm64"), and dyld_shared_cache_arm64.symbols
+# is a binary table, so grepping it as text finds nothing.  nm lists the cache's symbols in address
+# order, and scripts/symbolize-addresses.py turns that stream into the nearest symbol per address.
 
 on:
   workflow_dispatch:
@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 env:
-  IPSW_URL: https://updates.cdn.apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw
+  IPSW_URL: https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw
   SYSTEMOS_MEMBER: 044-76034-038.dmg
   SYSTEMOS_SHA256: b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f
   ADDRESSES: ${{ inputs.addresses }}
@@ -33,6 +33,12 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 120
     steps:
+      - name: Check out this device repository
+        uses: actions/checkout@v4
+        with:
+          path: device
+          persist-credentials: false
+
       - name: Fetch the 21H461 restore image
         run: |
           set -euo pipefail
@@ -75,47 +81,19 @@ jobs:
         run: |
           set -euo pipefail
           CACHE_DIR="$RUNNER_TEMP/systemos/System/Library/Caches/com.apple.dyld"
-          MAIN="$CACHE_DIR/dyld_shared_cache_arm64"
           mkdir -p "$RUNNER_TEMP/out"
-          echo "=== nm over $MAIN (single pass, nearest symbol below each target)"
-          nm -n "$MAIN" 2>"$RUNNER_TEMP/out/nm.err" | \
-            python3 -c '
-import sys, os
-targets = [int(t, 16) for t in os.environ["ADDRESSES"].split() if t]
-pending = {t: None for t in targets}
-prev = {t: None for t in targets}
-for line in sys.stdin:
-    parts = line.split()
-    if len(parts) < 2:
-        continue
-    try:
-        addr = int(parts[0], 16)
-    except ValueError:
-        continue
-    for t in targets:
-        if pending[t] is None:
-            if addr <= t:
-                prev[t] = (addr, parts[-1])
-            else:
-                nxt = "%#x %s" % (addr, parts[-1])
-                if prev[t] is None:
-                    print("%#x -> no symbol below (next %s)" % (t, nxt))
-                else:
-                    print("%#x -> %s + %#x   (next %s)" % (t, prev[t][1], t - prev[t][0], nxt))
-                pending[t] = True
-    if all(pending.values()):
-        break
-for t in targets:
-    if pending[t] is None:
-        print("%#x -> no symbol above it either" % t)
-' | tee "$RUNNER_TEMP/out/symbols.txt"
-          echo "=== nm stderr (first 5 lines)"
-          head -5 "$RUNNER_TEMP/out/nm.err" || true
+          echo "addresses: $ADDRESSES"
+          nm -n "$CACHE_DIR/dyld_shared_cache_arm64" > "$RUNNER_TEMP/nm.txt" 2> "$RUNNER_TEMP/out/nm.err" || true
+          echo "nm output lines: $(wc -l < "$RUNNER_TEMP/nm.txt")"
+          head -3 "$RUNNER_TEMP/out/nm.err" || true
+          python3 device/scripts/symbolize-addresses.py $ADDRESSES < "$RUNNER_TEMP/nm.txt" | tee "$RUNNER_TEMP/out/symbols.txt"
 
       - name: Upload the symbol report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dyld-symbols
-          path: ${{ runner.temp }}/out/symbols.txt
+          path: |
+            ${{ runner.temp }}/out/symbols.txt
+            ${{ runner.temp }}/out/nm.err
           if-no-files-found: warn
