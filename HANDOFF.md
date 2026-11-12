@@ -7152,3 +7152,63 @@ hdiutil attach → 列出 53 个分片（dyld_shared_cache_arm64 .01..52.dylddat
 | **A** | 恢复 `brk` 纯标量追踪 ✓ + CI 加 dump 头部 ✓ → 拿到镜像名 ✓ | runner 可用 ✓ |
 | **B** | 让 runner 直接**上传 `.symbols`**（685 MB ✓ < 2 GB ✓）→ 本地解析 ✓ | 需要符号格式知识 ✗ |
 | **C** | 换一台 Mac ✗ / 或在 Windows 上装能读密封卷 APFS 的工具 ✓ | 工具 ✗ |
+
+---
+
+## 0.131 ★ 崩溃地址归属解出（2026-11-13 05:00）
+
+### 一、方法：从缓存头部文件直接解析镜像表
+
+关键发现（通过 CI dump 头部十六进制 ✓）：
+
+```
+0x0000  "dyld_v1   arm64"          ← 缓存魔数
+0x0010  mappingOffset = 0x200, mappingCount = 1
+0x00E0  sharedRegionStart = 0x180000000
+0x00E8  sharedRegionSize  = 0xcc5f0000
+0x0180  subCacheArrayOffset = 0x348f0, subCacheArrayCount = 0x34 (52) ← 52 个分片
+0x01C0  imagesOffset = 0x270        ← ★ 不是经典的 0x18
+0x01C4  imagesCount  = 0xd1a (3354) ← ★ 不是经典的 0x1C
+0x0270  第一个镜像地址 = 0x1800e8000
+```
+
+**主缓存文件只有 491,520 字节** ✓ —— 头部 + 镜像表 + 路径字符串都在里面 ✓
+→ CI 只需 `cp` 出来上传（491 KB ✓）→ 本地解析 ✓（提交 `7d005a6` ✓）
+
+### 二、解析结果（提交 `scripts/cache-images.py`）
+
+```
+image table: 3354 entries at 0x270
+0x1c39224f8 -> /System/Library/PrivateFrameworks/CoreSuggestionsInternals.framework/CoreSuggestionsInternals + 0x754f8
+0x1a140b2ec -> /System/Library/Frameworks/CoreML.framework/CoreML + 0x4b42ec
+0x100c58b0c -> 不在共享缓存内（SpringBoard 自己二进制的 text ✓）
+0x1011a0b0c -> 同上
+```
+
+### 三、含义
+
+- 三个崩溃服务（`SpringBoard` / `watchdogd` / `liveactivitiesd`）**共同**的 trap 落在
+  **`CoreSuggestionsInternals` + 0x754f8** ✗
+- 另一处落在 **`CoreML` + 0x4b42ec** ✗
+- SpringBoard 还有两处落在**自己的代码**里 ✓
+
+**→ 不是 GPU / 不是显示服务 ✗ 是框架初始化路径上的共享断言** ✓
+（这两个框架 `watchdogd` 与 `liveactivitiesd` 都链接 ✓，所以同一地址对三者都成立 ✓）
+
+### 四、下一步（最直接）
+
+拿 **`CoreSuggestionsInternals` + 0x754f8** 处的函数名 ✓：
+- 该镜像在某个分片里（114 MB 级 ✗）→ CI 可上传对应分片 ✓（< 2 GB ✓）
+- 或者上传 `dyld_shared_cache_arm64.symbols`（685 MB ✓ < 2 GB ✓）→ 本地按地址查 ✓
+
+### 五、CI 基础设施（今晚已打通）
+
+| 项 | 值 |
+| --- | --- |
+| 仓库 | `licg89/UniXNU-dandelion` ✓ 默认 `main` ✓ |
+| 认证 | `gh auth login --with-token` ✓ `licg89` ✓ |
+| workflow | `dyld-symbols.yml`（现名 "dyld cache image table" ✓）|
+| 成功运行 | `43303449111` ✓ 7m28s ✓ 上传 `dyld_shared_cache_arm64` ✓ |
+| 本地文件 | `/root/work/cache-hdr/dyld_shared_cache_arm64` ✓ 491,520 字节 ✓ |
+
+**已知无法用于该缓存**：`atos` ✗ `nm` ✗ `dyld_info` ✗（缓存分片 ✗ 主文件非完整 Mach-O ✗）
