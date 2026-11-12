@@ -6882,3 +6882,61 @@ vm_page_bootstrap: 241347 free pages, 20797 wired pages
 2. 拿到 `BIG RUN` 后决定窗口大小 ✓
 3. 若窗口必须 > 4 GiB：查内核早期 pmap 对高物理地址的假设 ✓
    （`arm64/start.s`、`pmap_bootstrap`、`PE_state` 的 `memorySize`/`topOfKernelData` ✓）
+
+---
+
+## 0.127 ★★★ 第一次跑到 SpringBoard（2026-11-12 01:44–08:20）
+
+### 一、结果
+
+镜像 `boot-freelist` = `6fe6cf68`（`owned_memory_size = 0x40000000`，固件含 `DRAM High Conv`），
+跑 6.5 小时后的日志：
+
+```
+vm_page_bootstrap: 241347 free pages, 20797 wired pages        ← 3.68 GB ✓
+D4K mounted: attempt=0 dev=16777221 path='/dev/disk3s1'        ✓
+Early boot complete. Continuing system boot.                    ✓
+DANDELION-EXIT: pid=27  comm=SpringBoard ppid=1 rv=0x5 sig=5   ← ★★★ SpringBoard 跑起来了
+DANDELION-EXIT: pid=113 comm=SpringBoard ppid=1 rv=0x5 sig=5
+D4K beat 31: procs=84                                          ← 84 个进程
+```
+
+### 二、修复效果对比
+
+| 指标 | 768 MB（旧）| **3.68 GB（新）** |
+| --- | --- | --- |
+| `vm_page_bootstrap` | 47,759 ✗ | **241,347** ✓（5 倍）|
+| 进程退出总数 | **4,972** ✗ | **36** ✓（138 倍改善）|
+| `procs` 峰值 | 46 | **84** ✓ |
+| `Early boot complete` | ✗ | ✓ |
+| **SpringBoard** | 从未出现 ✗ | ★ **启动并运行** ✓ |
+
+退出分布（36 次）：`sig=0`（正常）28 ✓、`sig=1`（SIGHUP）2、`sig=5`（SIGTRAP）6 ✓
+其中 `SpringBoard` 两次都以 **SIGTRAP** 退出 ✗
+
+### 三、SpringBoard 为什么退出：图形栈缺 GPU
+
+`SIGTRAP` = 断言/调试陷阱 ✓ SpringBoard 在**初始化图形**时断言失败 ✗
+
+原因链：
+- 本机 GPU 是 **PowerVR GE8320**（MT6762G）✗
+- 本项目**没有任何 PowerVR 驱动** ✗（框架 catalog 只有 Adreno；参考移植的 MaliG52 也不适用）
+- iOS 的 CoreAnimation / backboardd 依赖 **Metal** ✗ → 无 GPU 则无渲染路径 ✗
+
+→ **"能进 SpringBoard（进程层面）"已达成 ✓；"看到系统界面"需要 GPU 驱动 ✗**
+
+### 四、本次会话完成的两大基础设施
+
+| 项 | 修复前 | 修复后 | 根因 |
+| --- | --- | --- | --- |
+| 存储 | 0.15 MB/s ✗ | **29 MB/s** ✓（200 倍）| `HostSession` 恢复 `MSDC_CFG` 时把 CKDIV/CKMOD 一起恢复 ✗ |
+| 内存 | 47,759 页（764 MB）✗ | **241,347 页（3.68 GB）** ✓ | 固件 PEI 未按 `DRAM High Conv` 映射 ✗ + 窗口被限制在 768 MB ✗ |
+
+### 五、当前状态
+
+| 项 | 值 |
+| --- | --- |
+| 可用镜像 | `boot-freelist` = `6fe6cf68` ✓（3.68 GB + 29 MB/s）|
+| 启动深度 | **SpringBoard** ✓（进程层面）|
+| 卡点 | GPU（PowerVR 无驱动 ✗）|
+| 提交 | `755c70a` ✓ |
