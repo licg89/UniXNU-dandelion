@@ -1,67 +1,87 @@
-# 项目现状总览（更新于 2026-11-07 01:3x）
+# 早上好 —— 2026-11-13 凌晨的工作结果
 
-## 1. 启动链当前到达的位置
+## 一、第一件事：请刷回可用镜像
 
-固件交接（绿/蓝/品红色条 ✓）→ XNU 内核 → eMMC 驱动 → OS/SystemOS 双窗口校验
-→ 真实 APFS 根卷挂载 → 根哈希认证 → `launchd` exec 通过 → **停在缺可写 Data 卷**：
+手机现在跑着**会 panic 的内核** ✗（我凌晨试诊断时引入的），刷回即可：
 
-```
-load_init_program: attempting to load /sbin/launchd
-DANDELION-EXEC: clearing policy answer 0 (pid 1)
-Failed to open swap file 30          ← EROFS（只读文件系统）
-```
+1. **长按电源 10 秒**关机，再**电源 + 音量下**进 fastboot
+2. 运行：
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File D:\aios\_work\flash_ios.ps1 -Image D:\aios\out3\boot-good-0113.img
+   ```
+3. 约 10 分钟后屏幕上会有彩条 + RD 进度（内存 3.68 GB ✓ 存储 29 MB/s ✓）
 
-`30` = EROFS（已核对 errno 表）；`shared_region ... vm_shared_region_start_address() failed`
-是共享区为空时的正常返回，不是故障。
+详见 `D:\aios\_work\FLASH-ME.md` ✓
 
-## 2. 日志与诊断
+## 二、今晚拿到的最重要结论
 
-- 控制台窗口：flashinfo 分区起始，28,672 扇区（14 MB）；
-- `powershell -ExecutionPolicy Bypass -File D:\aios\_work\collect_nowipe.ps1`
-  （刷回 Android、不擦除、拉取并清空日志块）；
-- 控制台在驱动启动后停止写入，**panic 屏 + 固件日志（+30,512）是可靠通道**；
-- 诊断 panic 已退役（`patches/xnu/series` 中注释），避免以后误报。
+### ✅ 你的判断完全正确：没有 GPU 驱动也能看到界面
 
-## 3. GitHub 仓库私有化（已完成 3 个）
+框架自己的设备记录写得很明确（`docs/devices/oneplus13t.md`）：
 
-| 仓库 | 状态 |
-|---|---|
-| `licg89/UniXNU-dandelion` | ✅ **已私有** |
-| `licg89/uefi-dandelion` | ✅ **已私有** |
-| `licg89/UniXNU-mt6765-common` | ✅ **已私有** |
-| `licg89/UniXNU` | ❌ 无法私有：它是 `UniXNU/UniXNU` 的 **fork**，GitHub 不允许 fork 改可见性；内容本来就是公开框架，无敏感信息。要彻底私有只能删掉 fork 或脱离 fork 关系（需 GitHub 支持）|
+> "The resource-only candidate **reached the system UI with normal basic touch**. Its GPU nodes remain
+> disabled and were omitted from ADT, so this test provides no GPU power-up or rendering evidence."
 
-仓库已推送到远程 `main`（`9120aff` 及之后）。macOS Actions 目前被账户账单/额度拦住：
-run 42256955170 的注释为 "recent account payments have failed or your spending limit needs
-to be increased"。需要在 GitHub 的 Billing & plans 里处理，或改用本地 Linux 路径。
+> "board.toml selects no GPU or Metal component; **CPU framebuffer presentation stays active**."
 
-## 4. 环境状态
+**`GopFramebuffer` 就是"CPU 渲染进帧缓冲"那条路** ✓ 我们已经在用它 ✓ → **本机能出界面** ✓
+我之前说"PowerVR 无驱动所以永远看不到"是**错的** ✗ 已收回 ✓
 
-- **C: 66 GB 可用**（WSL 磁盘已迁到 D:）
-- **D: 39 GB 可用**（已清理 11.9 GB 实验产物）
-- 仓库：`76786aa` 及之前的 100+ 次提交，HANDOFF 到 §0.45
+### ✅ SpringBoard 已能运行，死于一条 Swift 断言
 
-## 5. 昨晚确认的技术结论（都已写进 HANDOFF）
+`brk` 追踪（简单版 ✓ 有效 ✓）拿到的地址：
 
-1. 控制台静默的根因：不是地址/分区/ADT/寄存器恢复问题，而是**控制台自己的命令序列**在卡进入过读状态后失效，三次重试后永久放弃（§0.45）；
-2. AMFI 的 CT 判定是**数据判断**（`tst x27, mask` → `cset` → `and` → `cmp` → 分支），改数据比改控制流安全（§0.44）；
-3. 我昨晚两次控制台改动（门控、从驱动调用 flush）都会引入新问题，已全部回退，仓库现在只保留能工作的配置。
+| PC | comment | 含义 |
+| --- | --- | --- |
+| `0x1c39224f8` | `0x1` | ★ **三个服务共同**：`brk #1` = Swift `assertionFailure` |
+| `0x1a140b2ec` | `0x0` | `brk #0` = C 层 `__builtin_trap` |
+| `0x100c58b0c` | `0x1` | SpringBoard **自身 text** 内的断言 |
+| `0x1011a0b0c` | `0x1` | 同上 |
 
+**三个不同服务死在同一个地址** ✓ → 同一条 Swift 前置条件 ✓
 
-## 6. 本机已验证的 Linux 路径（绕开 macOS 的进展）
+## 三、符号化的五次尝试（都记在 HANDOFF §0.130）
 
-`udif.py`（框架自带，Linux 可用）把 IPSW 的 `044-76040-038.dmg` 解成裸磁盘镜像
-（6,077,580,800 字节），GPT 显示 APFS 容器在 0x4400（LBA 34）；切出后
-`fsapfsinfo` 成功读出卷信息，UUID 正是根卷
-`04769D26-2CA0-4825-B443-E2E5F88300F2`，卷名 `DawnUpdate21H461...OS` ✓。
+| 方法 | 结果 |
+| --- | --- |
+| `atos` | ❌ `cannot load symbols ... for architecture arm64` |
+| grep `.symbols` | ❌ 那是**二进制表** ✗ |
+| `nm -n <cache>` | ❌ `not recognized as a valid object file` |
+| 自己解析 `dyld_cache_header` | ❌ `imagesCount = 0`（新版头部布局 ✗）|
+| `dyld_info -segments` | ❌ `non-mach-o in fat file`（缓存分片 ✗）|
+| dump 头部十六进制 | ⏳ 排队 15 分钟后失败 ✗（macOS runner 不稳 ✗）|
 
-**限制**：本机 `fsapfsmount` 编译时没有 FUSE 挂载支持（"No sub system to mount APFS
-format"），且无 Python APFS 读库，所以**读不出 `/private/var` 的文件内容** ——
-Data seed 仍需要 macOS 侧生成，或补一个能读 APFS 文件的工具。
+**唯一成功的是挂载** ✓（`hdiutil attach` → 53 个分片 ✓ `.symbols` 685 MB ✓）
 
-## 7. 真实状态以 porting.toml 为准
+## 四、GitHub Actions 已配置好
 
-`porting.toml` 已从复制的示例模板改为实测状态（14 个 area）：
-configuration/firmware/cpu/memory = verified；storage/userspace/diagnostics =
-in_progress；display/input/gpu/network/audio/power/packaging = planned。
-完整证据链见 HANDOFF §0.1–§0.52。
+| 项 | 状态 |
+| --- | --- |
+| `gh` 认证 | ✅ `licg89` ✓ |
+| 仓库 | `licg89/UniXNU-dandelion` ✓ 默认分支 `main` ✓ |
+| workflow | `dyld-symbols.yml`（现名 "dyld cache header dump" ✓）|
+| 辅助脚本 | `scripts/cache-images.py` ✓ `image-from-segments.py` ✓ `symbolize-addresses.py` ✓ |
+| 最后一次 | `df9aaf1` ✓ 提交好了 ✓ 只是 runner 排队失败 ✗ |
+
+**明天只需重跑一次** ✓：`gh workflow run dyld-symbols.yml` ✓ 它会 dump 缓存头部前 1 KB ✓
+拿到布局后我就能给出正确的镜像表偏移 ✓ → **镜像名** ✓ → 断言位置 ✓
+
+## 五、明天最有效率的一步
+
+**恢复 `brk` 纯标量追踪 + CI dump 头部** ✓：
+
+1. 重新应用 `dandelion-brk-trace.patch`（**只打 PC/LR/comment** ✓ 不读内存 ✓）
+2. CI 重跑 dump ✓
+3. 拿到镜像名 → 定位断言 → 修 → **SpringBoard 活下来 → CPU framebuffer 出界面** ✓
+
+## 六、当前状态总览
+
+| 项 | 值 |
+| --- | --- |
+| 仓库 | `bd93730` ✓ 已推送 ✓ 工作区干净 |
+| HANDOFF | §0.130（约 7,000 行）✓ |
+| porting.toml | 14 区域，memory/storage/display/diagnostics = verified ✓ |
+| 内存 | 3.68 GB ✓ |
+| 存储 | 29 MB/s ✓ |
+| 启动深度 | SpringBoard 运行 ✓，死于 Swift 断言 ✗ |
+| **UI 可行性** | ✅ **已确认可行**（CPU framebuffer ✓）|
