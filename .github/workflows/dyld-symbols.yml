@@ -4,10 +4,11 @@ name: dyld cache symbols
 #
 # The cache lives inside the sealed SystemCryptex volume, and no Linux APFS reader walks a sealed
 # volume's directory tree: libfsapfs reads the container and the volume metadata but not the tree, and
-# fsapfsmount on this host has no FUSE backend.  A macOS runner can mount it, so this workflow takes the
-# addresses the kernel printed and returns their symbols.
+# fsapfsmount on this host has no FUSE backend.  A macOS runner mounts it with hdiutil.
 #
-# Run it from a fork with workflow_dispatch, then download the dyld-symbols artifact.
+# atos refuses these caches ("cannot load symbols for architecture arm64"), so the addresses are looked
+# up in dyld_shared_cache_arm64.symbols instead: that file lists cache VM addresses directly, which is
+# the same address space the kernel prints.
 
 on:
   workflow_dispatch:
@@ -60,7 +61,6 @@ jobs:
               raise SystemExit(f'{member} hashes to {got}, expected {want}')
           PY
           rm -f "$RUNNER_TEMP/ipsw/restore.ipsw"
-          df -h "$RUNNER_TEMP"
 
       - name: Mount the SystemOS volume read-only
         run: |
@@ -68,40 +68,34 @@ jobs:
           mkdir -p "$RUNNER_TEMP/systemos"
           hdiutil attach -readonly -nobrowse -owners off \
             -mountpoint "$RUNNER_TEMP/systemos" "$RUNNER_TEMP/os/$SYSTEMOS_MEMBER"
-          ls "$RUNNER_TEMP/systemos"
-          echo "--- dyld cache directory"
-          ls -l "$RUNNER_TEMP/systemos/System/Library/Caches/com.apple.dyld" || true
+          ls -l "$RUNNER_TEMP/systemos/System/Library/Caches/com.apple.dyld" | tail -8
 
-      - name: Symbolise
+      - name: Look the addresses up in the symbol table
         run: |
           set -euo pipefail
           CACHE_DIR="$RUNNER_TEMP/systemos/System/Library/Caches/com.apple.dyld"
+          SYMS="$CACHE_DIR/dyld_shared_cache_arm64.symbols"
           OUT="$RUNNER_TEMP/out/symbols.txt"
           mkdir -p "$RUNNER_TEMP/out"
           {
             echo "=== addresses: $ADDRESSES"
+            echo "=== symbols file: $(ls -l "$SYMS" | awk '{print $5}') bytes"
             echo
-            echo "=== cache files"
-            ls -l "$CACHE_DIR" 2>&1 || true
-            echo
-            MAIN=$(ls "$CACHE_DIR"/dyld_shared_cache_arm64* 2>/dev/null | grep -v '\.symbols' | head -1 || true)
-            SYMS="${MAIN}.symbols"
-            echo "main cache: ${MAIN:-none}"
-            echo "symbols   : ${SYMS}"
             for ADDR in $ADDRESSES; do
+              HEX=$(echo "$ADDR" | sed 's/^0x//' | tr 'A-Z' 'a-z')
+              echo "=== $ADDR (hex $HEX)"
+              echo "--- exact line"
+              grep -i -m3 -E "^[0-9a-f]{0,8}0*${HEX}[[:space:]]" "$SYMS" 2>/dev/null || echo "  none"
+              echo "--- prefix (first 12 hex digits)"
+              PRE=$(echo "$HEX" | cut -c1-12)
+              grep -i -m5 "$PRE" "$SYMS" 2>/dev/null || echo "  none"
+              echo "--- prefix (first 9 hex digits)"
+              PRE9=$(echo "$HEX" | cut -c1-9)
+              grep -i -m8 "$PRE9" "$SYMS" 2>/dev/null || echo "  none"
               echo
-              echo "=== $ADDR"
-              if [ -n "${MAIN:-}" ]; then
-                for BASE in 0x180000000 0x1c0000000 0x100000000; do
-                  echo "--- atos -l $BASE"
-                  atos -o "$MAIN" -l "$BASE" "$ADDR" 2>&1 | head -3 || true
-                done
-              fi
-              if [ -f "${SYMS}" ]; then
-                echo "--- symbols table grep"
-                grep -i -m3 "$(echo "$ADDR" | sed 's/^0x//')" "$SYMS" 2>/dev/null || echo "  no direct hit"
-              fi
             done
+            echo "=== a sample of the symbols file format"
+            head -5 "$SYMS"
           } > "$OUT" 2>&1
           cat "$OUT"
 
