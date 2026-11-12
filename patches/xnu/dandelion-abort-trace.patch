@@ -1,0 +1,29 @@
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -1362,9 +1362,26 @@
+ abort_with_payload_internal(proc_t p,
+     uint32_t reason_namespace, uint64_t reason_code,
+     user_addr_t payload, uint32_t payload_size,
+     user_addr_t reason_string, uint64_t reason_flags,
+     uint32_t internal_flags)
+ {
++	/*
++	 * Board diagnostic: a userland service that aborts leaves only "sig=5" in the exit trace.
++	 * The namespace and code name the class; the reason string, when libsystem passes one, is
++	 * the assertion itself -- and that is the thing worth reading.
++	 */
++	{
++		char why[72];
++		if (reason_string != USER_ADDR_NULL &&
++		    copyinstr(reason_string, why, sizeof(why), NULL) == 0) {
++			printf("DANDELION-ABORT: pid=%d comm=%s ns=%u code=%llu str=%s\n",
++			    proc_getpid(p), p->p_comm, reason_namespace, reason_code, why);
++		} else {
++			printf("DANDELION-ABORT: pid=%d comm=%s ns=%u code=%llu payload=%u\n",
++			    proc_getpid(p), p->p_comm, reason_namespace, reason_code, payload_size);
++		}
++	}
++
+ 	os_reason_t exit_reason = OS_REASON_NULL;
+ 	kern_return_t kr = KERN_SUCCESS;
+ 

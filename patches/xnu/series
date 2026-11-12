@@ -74,3 +74,4 @@ dandelion-owner-retry.patch
 # raw code and whether it was signalled (crash, or jetsam's SIGKILL) or exited normally.
 #
 dandelion-exit-trace.patch
+dandelion-abort-trace.patch
