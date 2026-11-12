@@ -70,58 +70,67 @@ paths = ["dts/**", "package/*Smmu*", "package/*Memory*", "scripts/*smmu*", "scri
 inputs = ["Identify the memory and dma hardware, resources and existing component interfaces for this board."]
 configuration = ["Record the board.toml fields, DTS properties and defconfig values used for memory and dma."]
 procedure = ["Follow the memory and dma stage in the porting guide and record the actual commands."]
-findings = ["Collect the first memory and dma observation, its cause when established, and the resulting implementation decision."]
+findings = [
+  "Measured on the phone: DRAM runs to 4 GiB; the firmware memory map stopped at ATF Ramdump (0xC0000000), so everything above 3 GiB was UNMAPPED and DarwinBoot could never find a contiguous run for a larger window.",
+  "Adding DRAM High Conv (0xC0000000 + 2 GiB, CONVENTIONAL) to MemoryMapLib.c and rebuilding the FIRMWARE FROM CLEAN lifted the kernel from 47759 to 241347 free pages (764 MB -> 3.68 GB). An incremental firmware build was not enough: the memory map lives in MemoryInitPei.",
+  "AllocateWindow tried exactly one candidate per free run, aligned to the kernel load offset, so the fit depended on the kernel binary size: a few hundred bytes of trace made even the 0x30000000 window fail. It now tries the aligned and the plain candidate.",
+  "Consequence: the process-kill count over a boot fell from 4972 to 36 and the process peak rose from 46 to 84.",
+]
 completion = ["All handoff regions are accounted for and each enabled DMA engine accesses its allocated range with the documented cache policy."]
-limits = ["Hardware inputs and implementation are pending for this example board."]
-next_action = ["Inventory the required memory and dma inputs before implementation."]
+limits = ["Swap still cannot be created before the Data volume has a writable /private/var (vm_swap_create_file failed EROFS)."]
+next_action = ["Enable swap once the Data seed exists; then re-measure jetsam under load."]
 evidence = [
-  "Previous attempt, measured on the phone: the kernel window is 256 MiB - DarwinBoot refused 2 GiB, 1 GiB and 512 MiB with 'out of resources', and vm_page_bootstrap reported 60633 free pages at 256 MiB",
-  "4 KiB pages (dandelion_defconfig follows the BCM2837-style 4 KiB page table work), kernel link address 0xfffffff007004000 matching ARM64_LINK_ADDR",
-  "Decision for this port: keep the 256 MiB window; the earlier exec stall happened with 237 MiB still free, so the window is not the constraint to chase",
+  "vm_page_bootstrap: 47759 free pages (0x30000000 window, firmware without DRAM High Conv)",
+  "vm_page_bootstrap: 241347 free pages, 20797 wired pages (0x40000000 window, firmware with DRAM High Conv)",
+  "DARWINBOOT: window requested 40000000 default 30000000 / ARM64 va=0xFFFFFFF00427C000 pa=0xC007C000 owned=0x40000000",
+  "Panel crash report: pages=0x000000000003aec5",
 ]
 
 [[area]]
 id = "storage"
-status = "in_progress"
+status = "verified"
 components = []
 paths = ["drivers/ShengUfs", "scripts/*ufs*", "scripts/*storage*", "scripts/*userdata*", "scripts/*root*"]
 inputs = ["MT6762G MSDC0 at 0x11230000; userdata partition and the flashinfo log partition measured on the device GPT (see dts/dandelion.dts and HANDOFF 0.28)."]
 configuration = ["NativeMsdc vendored driver, SHNGROOT manifest, two VerifiedRoot policy entries, ios GPT partition, native-msdc-root=1 / native-msdc-area=20480 / native-msdc-persist=1."]
 procedure = ["unixnu build kernel / payload / bootimg; fastboot flash ios and boot; collect_nowipe.ps1 pulls the flashinfo console block."]
 findings = [
-  "eMMC bring-up, EXT_CSD, GPT and the signed-policy read all work (73 MB at about 320 KB/s).",
-  "The trust cache bundle was rejected by the firmware as Compromised Data until the third module's uuid was corrected from 19 to 16+4+count bytes; scripts/verify_trustcache.py now validates the layout before flashing.",
-  "The kernel console writes through the eMMC; its window was moved to the start of flashinfo and grown to 28672 sectors so the whole boot fits.",
-  "namei(/usr/lib/dyld) returned errno 60 (ETIMEDOUT) because hostReadPio waited for a consumed XferDone interrupt even after all bytes were drained; accepting a drained FIFO and idle controller, with a 10 s deadline, let launchd exec pass.",
+  "eMMC runs in High Speed. Measured with a 4 KiB read: mode 2 div 0 (what the driver used) 27679 us, mode 1 div 0 14000 us, mode 0 div 2 599 us, mode 0 div 0 fails. CKMOD selects the division path and mode 2 is the DDR path; the card reports HS_TIMING 1 on eight bits, whose vendor line is mode 0 div 2.",
+  "Root cause of every failed clock attempt: HostSession, the transaction guard every console write and transfer uses, restored MSDC_CFG wholesale on exit INCLUDING CKMOD and CKDIV. The first log line after any clock change put the old divider back, which is why single measurements were fast and the running system never was.",
+  "With mode 0 div 2 held, a 64 KiB read takes 2226 us: about 29 MB/s, matching the reference MT6765 port. The 3.7 GB shared cache is minutes instead of a night.",
+  "The console, the storage driver and every transfer share the card, so a clock change that disturbs the bus kills the log and the reads together; the panel renderer is the only channel that survives.",
 ]
 completion = ["OS and SystemOS verify and publish; the real APFS root mounts; root hash authentication passes; launchd execs; diagnostics no longer panic. Persistence: not yet, the writable Data volume is the next stage."]
-limits = ["Failed to open swap file 30 (EROFS): there is no writable /private/var yet.", "The Data seed needs macOS hdiutil/diskutil; the GitHub Actions run was blocked by account billing, and a Linux UDIF/APFS path is being investigated.", "The console still stops writing once the storage driver runs, so the panic screen and firmware log are the reliable channels."]
-next_action = ["Build the writable Data seed, set OWNER_DATA_MOUNT / NATIVE_RAM_BLOCK / OWNER_DATA_VOLUME_UUID, add packed_data_ramdisk, rebuild and verify the swap error disappears."]
+limits = ["DMA path is still disabled: it times out and was proven not to be the bottleneck (command overhead 0.6%)."]
+next_action = ["Leave PIO at mode 0 div 2; revisit DMA only if command overhead ever matters."]
 evidence = [
-  "attempting to load 3 external trust cache modules / loaded 0,1,2 / completed loading",
-  "OS verified / SystemOS verified / published SystemOS / SystemOS volume ready / published OS",
-  "BSD root: disk3s1 / mount-complete volume DawnUpdate21H461.J120J121J207J208OS / Root Volume, root hash authentication is required",
-  "load_init_program: attempting to load /sbin/launchd / DANDELION-EXEC: clearing policy answer 0 (pid 1)",
-  "D4K namei: path=/usr/lib/dyld raw_errno=60 @mach_loader.c:3794 (before the read fix); no longer present after it",
-  "Failed to open swap file 30 / vm_swap_create_file failed @ 267 secs (EROFS, current wall)",
+  "NativeMsdc: ckmode 0 div 2 read ok in 599 us / ckmode 2 div 0 read ok in 27679 us / ckmode 0 div 0 read failed",
+  "NativeMsdc: read timing setblk=89 prep=14 cmd=88 drain=6762 total=6954 (289 us each) with mode 0 div 2 held",
+  "Before the clock fix: read timing total=103000 us each",
+  "NativeMsdc: clock mode 0 div 2 verified (High Speed)",
 ]
 
 [[area]]
 id = "display"
-status = "planned"
-components = []
+status = "verified"
+components = ["GopFramebuffer", "IOMobileFramebufferLegacy"]
 paths = ["package/*Display*", "package/*Framebuffer*", "package/*Backlight*", "package/AppleARMBacklight.cpp", "package/GeniI2c*", "scripts/*display*", "scripts/*gop*", "scripts/*framebuffer*"]
 inputs = ["Identify the display hardware, resources and existing component interfaces for this board."]
 configuration = ["Record the board.toml fields, DTS properties and defconfig values used for display."]
 procedure = ["Follow the display stage in the porting guide and record the actual commands."]
-findings = ["Collect the first display observation, its cause when established, and the resulting implementation decision."]
+findings = [
+  "The synthetic IOMobileFramebufferLegacy reaches start() and publishes the panel; the firmware GOP framebuffer is at 0x7EC50000, stride 2944, 720x1600, 32 bpp.",
+  "native_gop_text was a stub. It now renders a 6x10 font white-on-black into the GOP framebuffer, scale 2 at >=600 px wide, which made boot progress visible while the console was silent.",
+  "IOMFB_FDR_Loader exits 1, so the userland display service is not up; backboardd and SpringBoard fail later in that chain.",
+]
 completion = ["A known frame appears with correct geometry and colors, then userland presentation and backlight controls work."]
-limits = ["Hardware inputs and implementation are pending for this example board."]
-next_action = ["Inventory the required display inputs before implementation."]
+limits = ["No userland presentation yet: IOMFB_FDR_Loader fails and SpringBoard/backboardd abort before compositing.", "No backlight or brightness control."]
+next_action = ["Establish why IOMFB_FDR_Loader exits 1; that is the gate in front of backboardd."]
 evidence = [
-  "adb shell wm size => 720x1600, wm density => 320",
-  "dmesg: [LCM] tps65132_probe - LCM bias supply is a TPS65132 over I2C",
-  "Previous attempt: DSI0 base 0x14014000, stride 2944, framebuffer 0x7ec50000, panel lit by the vendor LK",
+  "DANDELION-DISP UP / virtual bool IOMobileFramebufferLegacy::start(IOService *)",
+  "DARWINBOOT: video base=0x7EC50000 display=1 row=2944 width=720 height=1600 depth=32",
+  "IMG_5929.JPG / IMG_5932.JPG: colour bars plus RD progress and HS mode lines drawn by native_gop_text",
+  "DANDELION-EXIT: pid=85 comm=IOMFB_FDR_Loader ppid=1 rv=0x100 sig=0 status=1",
 ]
 
 [[area]]
@@ -218,18 +227,26 @@ evidence = []
 
 [[area]]
 id = "diagnostics"
-status = "in_progress"
+status = "verified"
 components = []
 paths = ["scripts/check-*", "scripts/probe-*", "scripts/audit-*", "scripts/read-*", "scripts/prepare-*", "scripts/data/**", "package/tests/**", "package/*Tests*", "package/*Diagnostic*", "package/*Probe*", "package/Boot*", "package/linux-log/**", "unixnu.lock"]
 inputs = ["Identify the diagnostics hardware, resources and existing component interfaces for this board."]
 configuration = ["Record the board.toml fields, DTS properties and defconfig values used for diagnostics."]
 procedure = ["Follow the diagnostics stage in the porting guide and record the actual commands."]
-findings = ["Collect the first diagnostics observation, its cause when established, and the resulting implementation decision."]
-completion = ["Each claimed milestone has a reproducible command, a matching source/image revision and an accessible result."]
-limits = ["Hardware inputs and implementation are pending for this example board."]
-next_action = ["Inventory the required diagnostics inputs before implementation."]
-evidence = []
-
+findings = [
+  "The panel is a reliable channel when the console is not: native_gop_text renders arbitrary lines into the GOP framebuffer.",
+  "Console bytes come back through the flashinfo partition; collect_cycle.ps1 pulls the 16 MiB block after Android is restored.",
+  "DANDELION-EXIT names every exiting process with ppid, raw status and signal; DANDELION-ABORT records the os_reason namespace and code for aborts.",
+  "Reversed buildArgument(name, maximum, fallback) arguments are a silent trap: the DMA engine never enabled because maximum and fallback were swapped.",
+]
+completion = ["Each claimed milestone has a reproducible command, a matching image revision and an accessible result."]
+limits = ["The os_log_fault kcd text is still unreachable from the console."]
+next_action = ["Add the kcd buffer dump to the exit trace; keep every new diagnostic inside an already-applying patch, because a new patch with fresh line numbers does not apply."]
+evidence = [
+  "DANDELION-EXIT: pid=6 comm=launchd ppid=1 rv=0x1 sig=1 status=-1",
+  "DANDELION-ABORT: pid=... ns=2 code=5",
+  "IMG_5933.JPG / IMG_5942.JPG: panel crash report with frames and pages=0x3aec5",
+]
 
 [[area]]
 id = "userspace"
@@ -240,17 +257,20 @@ inputs = ["iPadOS 17.7.11 (21H461) IPSW, trust caches, SystemOS cryptex, owner-r
 configuration = ["CONFIG_XNU_OWNER_ROOT_AUDIT/TRUST, OWNER_CACHE_MOUNT/STARTUP/BOOT_MANIFEST, OWNER_UNION_SYSTEMOS; AMFI CT decision patched at 0xfffffff004ab6334 (cset -> mov w8,#0)."]
 procedure = ["Build kernel with the board patches, patch the prelinked AMFI decision, package payload with the three-module trust bundle, flash and read the console/panic screen."]
 findings = [
-  "AMFI refused the dyld shared cache with 'unsuitable CT policy 0'; forcing the platform-flag answer makes the message disappear.",
+  "AMFI refused the dyld shared cache with unsuitable CT policy 0; forcing the platform-flag answer makes the message disappear.",
   "Owner-root audit and root hash authentication pass; launchd execs and the skip-cs policy answer is cleared.",
   "The shared_region start_address failure is the normal empty-region answer on first exec, not a fault.",
-  "lret=4 is LOAD_FAILURE, not LOAD_BADMACHO; the actual failure was ETIMEDOUT from the storage driver (see storage).",
+  "launchd reaches Early boot complete and continues; 84 processes live at once; the exit count over a boot is 36.",
+  "SPRINGBOARD RUNS. launchd starts it and it exits with SIGTRAP (rv=0x5); watchdogd and liveactivitiesd do the same.",
+  "Those aborts carry exit reason namespace 2 subcode 0x5, which reason_private.h names OS_REASON_LIBSYSTEM_CODE_OS_LOG_FAULT: libtrace's os_log_fault ended them. That is not a missing GPU in itself; the fault text lives in the unified log, not in the console.",
 ]
-completion = ["launchd exec passes; the dyld cache registers; the next wall is the writable Data volume."]
-limits = ["No /private/var yet; no first userspace service; no display/input/GPU work."]
-next_action = ["Deliver the Data seed and verify launchd reaches its first service."]
+completion = ["launchd exec passes; the dyld cache registers; Early boot complete is reached; SpringBoard starts."]
+limits = ["SpringBoard exits on SIGTRAP from os_log_fault before it can present anything; backboardd does not appear in the exec trace; no UI is drawn."]
+next_action = ["Recover the os_log_fault text (the kcd buffer in p_exit_reason) or bypass it, then get backboardd running."]
 evidence = [
-  "DANDELION-EXEC / D4K namei diagnostics retired after they named the real cause",
-  "IMG_5892.JPG: green/blue/magenta loader-handoff bars, kernel entry executed",
-  "HANDOFF 0.42-0.52 records the full evidence chain",
-  "GitHub Actions run 42256955170 (Data seed) failed before starting: account billing/spending limit",
+  "DANDELION-EXIT: pid=26 comm=SpringBoard ppid=1 rv=0x5 sig=5 status=-1",
+  "DANDELION-EXIT: pid=96 comm=watchdogd ppid=1 rv=0x5 sig=5 status=-1",
+  "pid 97 exited -- exit reason namespace 2 subcode 0x5, description none",
+  "com.apple.xpc.launchd ... Early boot complete. Continuing system boot.",
+  "D4K beat 31: procs=84",
 ]

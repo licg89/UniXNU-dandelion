@@ -13,8 +13,8 @@
 +	{
 +		uint32_t skip_cs = 0;
 +		if (PE_parse_boot_argn("sheng-skip-cs", &skip_cs, sizeof(skip_cs)) && skip_cs != 0) {
-+			printf("DANDELION-EXEC: clearing policy answer %d (pid %d)\n",
-+			    imgp->ip_mac_return, proc_getpid(p));
++			printf("DANDELION-EXEC: pid %d exec %s (policy answer %d)\n",
++			    proc_getpid(p), imgp->ip_ndp->ni_cnd.cn_nameptr, imgp->ip_mac_return);
 +			imgp->ip_mac_return = 0;
 +		}
 +	}

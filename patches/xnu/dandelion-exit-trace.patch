@@ -1,6 +1,6 @@
 --- a/bsd/kern/kern_exit.c
 +++ b/bsd/kern/kern_exit.c
-@@ -1515,6 +1515,17 @@
+@@ -1515,6 +1515,40 @@
  #endif
  
  	/*
@@ -13,6 +13,29 @@
 +	    proc_getpid(p), p->p_comm, p->p_ppid, rv,
 +	    WIFSIGNALED(rv) ? WTERMSIG(rv) : 0,
 +	    WIFEXITED(rv) ? WEXITSTATUS(rv) : -1);
++
++	/*
++	 * Namespace 2 subcode 0x5 is OS_LOG_FAULT, which records only that libtrace ended the
++	 * process.  The kcd buffer carries the message it was called with, and that message is the
++	 * reason.  Printable bytes only; the buffer is a binary os_log pack whose format string is
++	 * usually the readable part.
++	 */
++	if (p->p_exit_reason != NULL && p->p_exit_reason->osr_kcd_buf != NULL &&
++	    p->p_exit_reason->osr_bufsize > 0) {
++		char rtext[200];
++		size_t rn = 0;
++		const uint8_t *kb = (const uint8_t *)p->p_exit_reason->osr_kcd_buf;
++		size_t kn = p->p_exit_reason->osr_bufsize;
++		if (kn > 160) {
++			kn = 160;
++		}
++		for (size_t i = 0; i < kn && rn < sizeof(rtext) - 1; i++) {
++			char c = (char)kb[i];
++			rtext[rn++] = (c >= 0x20 && c < 0x7f) ? c : '.';
++		}
++		rtext[rn] = 0;
++		printf("DANDELION-REASON: pid=%d comm=%s text=%s\n", proc_getpid(p), p->p_comm, rtext);
++	}
 +
 +	/*
  	 * If a thread in this task has already
