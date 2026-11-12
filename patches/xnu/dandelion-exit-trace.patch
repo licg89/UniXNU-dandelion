@@ -22,15 +22,15 @@
 + */
 +if (exit_reason != OS_REASON_NULL && exit_reason->osr_kcd_buf != NULL &&
 +    exit_reason->osr_bufsize > 0) {
-+static char rtext[420];
-+static char rhex[420];
++static char rtext[560];
++static char rhex[1060];
 +size_t rn = 0;
 +size_t hn = 0;
 +const uint8_t *kb = (const uint8_t *)exit_reason->osr_kcd_buf;
 +size_t kn = exit_reason->osr_bufsize;
 +static const char hexd[] = "0123456789abcdef";
-+if (kn > 192) {
-+kn = 192;
++if (kn > 512) {
++kn = 512;
 +}
 +for (size_t i = 0; i < kn; i++) {
 +char c = (char)kb[i];
