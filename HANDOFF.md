@@ -7072,3 +7072,83 @@ if (set_exitreason && ((p->p_lflag & P_LTRACED) ||
 | 内存 / 存储 | 3.68 GB ✓ / 29 MB/s ✓ |
 | 启动深度 | SpringBoard 运行 ✓，`brk` 断言退出 ✗ |
 | 结论 | 需要 **fwlog 或 dyld 缓存** 两种新观测手段之一 ✓ |
+
+---
+
+## 0.130 2026-11-13 凌晨：CI 符号化尝试与结论
+
+### 一、路线确认（重要）
+
+用户指出并已由框架记录证实：**没有 GPU 驱动也能看到系统 UI** ✓
+`docs/devices/oneplus13t.md:992` 原文：
+
+> "The resource-only candidate **reached the system UI with normal basic touch**. Its GPU nodes remain
+>  disabled and were omitted from ADT, so this test provides no GPU power-up or rendering evidence."
+
+`docs/devices/oneplus13t.md:862`：
+> "board.toml selects no GPU or Metal component; **CPU framebuffer presentation stays active**."
+
+→ `GopFramebuffer` 就是这条"CPU 渲染进帧缓冲"的路 ✓ 我们已在用 ✓
+→ **本机看到 UII 是可能的** ✓ 唯一障碍是 SpringBoard 的断言 ✗
+
+### 二、`brk` 追踪拿到的事实（简单版有效 ✓）
+
+```
+DANDELION-BRK: pc=0x1c39224f8 lr=0x1c39224cc comment=0x1  ← 三服务共同，brk #1 = Swift 断言
+DANDELION-BRK: pc=0x1a140b2ec lr=0x1a140b2ec comment=0x0  ← brk #0 = C 层 trap
+DANDELION-BRK: pc=0x100c58b0c lr=0x100c58b0c comment=0x1  ← SpringBoard 自身 text
+DANDELION-BRK: pc=0x1011a0b0c lr=0x1011a0b0c comment=0x1
+```
+
+**⚠ 该补丁已从 series 移除** ✗ —— 因为后续想加"读 Mach-O 头"时在 `handle_breakpoint` 里用了
+`copyin` ✗ → **异常投递上下文不允许 copyin** ✗ → 内核 data abort（`copyinstr` ✓ 已符号化确认）
+要恢复这个追踪，重新应用 `dandelion-brk-trace.patch` 的**纯标量版本**即可 ✓
+
+### 三、CI 符号化：五次尝试的完整记录
+
+| 轮次 | 方法 | 结果 |
+| --- | --- | --- |
+| 1 | 挂载 SystemOS + `atos -l <base>` | ❌ `atos cannot load symbols ... for architecture arm64` |
+| 2 | grep `dyld_shared_cache_arm64.symbols` | ❌ 该文件是**二进制表** ✗ 不是文本 |
+| 3 | `nm -n <cache>` | ❌ `not recognized as a valid object file` |
+| 4 | 自己解析 `dyld_cache_header` 镜像表 | ❌ `imagesCount = 0`（该缓存用**新版头部布局** ✗）|
+| 5 | `dyld_info -segments` | ❌ `non-mach-o in fat file`（缓存是**分片**的 ✗ 主文件只有头+前几段）|
+| 6 | dump 头部十六进制 | ⏳ 排队 15 分钟后失败 ✗（macOS runner 不稳 ✗）|
+
+**唯一成功的是"挂载"这一步** ✓：
+```
+044-76034-038.dmg  sha256 b4908cde... ✓ 校验通过 ✓
+hdiutil attach → 列出 53 个分片（dyld_shared_cache_arm64 .01..52.dylddata/.dyldlinkedit + .symbols 685 MB）
+```
+
+**下一步建议**（明天）：同一 workflow 只需**多一步** `head -c 1024 | xxd` 就能拿到真实头部布局 ✓
+（这个改动已写好 ✓ 提交 `df9aaf1` ✓ 只是 runner 排队失败 ✗）
+
+### 四、CI 基础设施状态
+
+- 认证：`gh auth login --with-token` ✓ 已登录 `licg89` ✓（token 由用户提供 ✓）
+- 仓库：`licg89/UniXNU-dandelion` ✓ 默认分支 **`main`** ✓
+- 已推送：`dyld-symbols.yml`（现名 "dyld cache header dump" ✓）+ `scripts/cache-images.py` ✓ +
+  `scripts/image-from-segments.py` ✓ + `scripts/symbolize-addresses.py` ✓
+- 已知无关失败：push 触发的 "Device documentation" workflow 会在 10 秒内失败 ✗（与本次工作无关 ✓）
+
+### 五、当前镜像状态（明早要做的事）
+
+**手机现在跑的是会 panic 的内核** ✗（`boot-brkimage` = `4c1f1df4` ✓ 的 copyin 崩溃 ✓）
+**需要刷回** ✓：`D:\aios\out3\boot-good-0113.img`（sha `d2b57878` ✓）
+步骤见 `D:\aios\_work\FLASH-ME.md` ✓
+
+| 镜像 | sha | 状态 |
+| --- | --- | --- |
+| `boot-good-0113.img` | `d2b57878` | ✅ **刷这个** |
+| `boot-freelist.img` | `6fe6cf68` | ✅ 可用（3.68 GB ✓）|
+| `boot-hex512.img` | `3a6970ec` | ✅ 可用（reason hex ✓）|
+| `boot-brkimage.img` | `4c1f1df4` | ❌ panic |
+
+### 六、明天的三条路
+
+| 路线 | 内容 | 前提 |
+| --- | --- | --- |
+| **A** | 恢复 `brk` 纯标量追踪 ✓ + CI 加 dump 头部 ✓ → 拿到镜像名 ✓ | runner 可用 ✓ |
+| **B** | 让 runner 直接**上传 `.symbols`**（685 MB ✓ < 2 GB ✓）→ 本地解析 ✓ | 需要符号格式知识 ✗ |
+| **C** | 换一台 Mac ✗ / 或在 Windows 上装能读密封卷 APFS 的工具 ✓ | 工具 ✗ |
