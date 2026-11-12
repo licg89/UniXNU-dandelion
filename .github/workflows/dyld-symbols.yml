@@ -1,12 +1,14 @@
-name: dyld cache header dump
+name: dyld cache image table
 
-# Dump the shared cache header so its layout can be read directly.
+# Upload the shared cache header file so the image table can be parsed locally.
 #
-# Every tool tried so far rejects this cache.  atos: "cannot load symbols for the file ... for
-# architecture arm64".  nm: "not recognized as a valid object file".  dyld_info: "non-mach-o in fat file"
-# -- the cache is split into subcaches, and the main file is the header plus the first mappings.  Reading
-# the header by hand with the classic offsets gave imagesCount 0, so this cache uses a newer layout.
-# A hexdump of the first kilobyte settles it, and the image table can then be read where it really is.
+# The main cache file is only 491 KB: it holds the header, the image table (3354 entries) and the path
+# strings, with the bulk in 52 subcaches.  Uploading it once ends the round trips through the runner.
+#
+# Tools that do not work on this cache, recorded so they are not retried: atos ("cannot load symbols for
+# the file ... for architecture arm64"), nm ("not recognized as a valid object file"), dyld_info
+# ("non-mach-o in fat file"), and the classic header offsets, which give imagesCount 0 because this
+# cache keeps the image table fields at 0x1C0/0x1C4 instead of 0x18/0x1C.
 
 on:
   workflow_dispatch:
@@ -20,7 +22,7 @@ env:
   SYSTEMOS_SHA256: b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f
 
 jobs:
-  dump:
+  upload:
     runs-on: macos-26
     timeout-minutes: 120
     steps:
@@ -53,47 +55,20 @@ jobs:
           PY
           rm -f "$RUNNER_TEMP/ipsw/restore.ipsw"
 
-      - name: Mount the SystemOS volume read-only
+      - name: Mount and copy the cache header file
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/systemos"
+          mkdir -p "$RUNNER_TEMP/systemos" "$RUNNER_TEMP/out"
           hdiutil attach -readonly -nobrowse -owners off \
             -mountpoint "$RUNNER_TEMP/systemos" "$RUNNER_TEMP/os/$SYSTEMOS_MEMBER"
-
-      - name: Dump the cache header
-        run: |
-          set -euo pipefail
           CACHE_DIR="$RUNNER_TEMP/systemos/System/Library/Caches/com.apple.dyld"
-          CACHE="$CACHE_DIR/dyld_shared_cache_arm64"
-          mkdir -p "$RUNNER_TEMP/out"
-          {
-            echo "=== cache directory"
-            ls -l "$CACHE_DIR"
-            echo
-            echo "=== first 0x400 bytes of the main cache"
-            xxd -l 0x400 "$CACHE"
-            echo
-            echo "=== nonzero 4- and 8-byte fields in the first 0x100 bytes"
-            python3 - "$CACHE" <<'PY'
-          import struct, sys
-          with open(sys.argv[1], 'rb') as fh:
-              head = fh.read(0x100)
-          print('magic:', head[:16])
-          for off in range(0x10, 0x100, 4):
-              (v,) = struct.unpack_from('<I', head, off)
-              if v:
-                  print('  %#04x  u32 %#x (%d)' % (off, v, v))
-          for off in range(0x10, 0x100, 8):
-              (v,) = struct.unpack_from('<Q', head, off)
-              if v:
-                  print('  %#04x  u64 %#x (%d)' % (off, v, v))
-          PY
-          } 2>&1 | tee "$RUNNER_TEMP/out/header.txt"
+          cp "$CACHE_DIR/dyld_shared_cache_arm64" "$RUNNER_TEMP/out/"
+          ls -l "$RUNNER_TEMP/out"
+          sha256sum "$RUNNER_TEMP/out/dyld_shared_cache_arm64"
 
-      - name: Upload the report
-        if: always()
+      - name: Upload the cache header file
         uses: actions/upload-artifact@v4
         with:
-          name: dyld-header
-          path: ${{ runner.temp }}/out/header.txt
-          if-no-files-found: warn
+          name: dyld-cache-header
+          path: ${{ runner.temp }}/out/dyld_shared_cache_arm64
+          if-no-files-found: error
