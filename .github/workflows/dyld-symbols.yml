@@ -1,25 +1,15 @@
-name: dyld cache symbols
+name: dyld cache header dump
 
-# Name the image behind userland addresses in the target's dyld shared cache.
+# Dump the shared cache header so its layout can be read directly.
 #
-# The cache lives inside the sealed SystemCryptex volume, and no Linux APFS reader walks a sealed
-# volume's directory tree, so a macOS runner mounts it with hdiutil.
-#
-# Three approaches have been tried and two of them do not work, which is why this one reads the header
-# directly:
-#   * atos refuses these caches: "cannot load symbols for the file ... for architecture arm64".
-#   * nm does not recognise the cache as an object file.
-#   * dyld_shared_cache_arm64.symbols is a binary table, so grepping it as text finds nothing.
-# scripts/cache-images.py reads dyld_cache_header's image table (addresses plus path strings) and names
-# the image containing each address, with the offset inside it.
+# Every tool tried so far rejects this cache.  atos: "cannot load symbols for the file ... for
+# architecture arm64".  nm: "not recognized as a valid object file".  dyld_info: "non-mach-o in fat file"
+# -- the cache is split into subcaches, and the main file is the header plus the first mappings.  Reading
+# the header by hand with the classic offsets gave imagesCount 0, so this cache uses a newer layout.
+# A hexdump of the first kilobyte settles it, and the image table can then be read where it really is.
 
 on:
   workflow_dispatch:
-    inputs:
-      addresses:
-        description: Space-separated user addresses to resolve
-        required: true
-        default: "0x1c39224f8 0x1a140b2ec 0x100c58b0c 0x1011a0b0c"
 
 permissions:
   contents: read
@@ -28,27 +18,19 @@ env:
   IPSW_URL: https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw
   SYSTEMOS_MEMBER: 044-76034-038.dmg
   SYSTEMOS_SHA256: b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f
-  ADDRESSES: ${{ inputs.addresses }}
 
 jobs:
-  images:
+  dump:
     runs-on: macos-26
     timeout-minutes: 120
     steps:
-      - name: Check out this device repository
-        uses: actions/checkout@v4
-        with:
-          path: device
-          persist-credentials: false
-
       - name: Fetch the 21H461 restore image
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/ipsw"
           curl -fSL --retry 3 --retry-delay 5 -o "$RUNNER_TEMP/ipsw/restore.ipsw" "$IPSW_URL"
-          ls -lh "$RUNNER_TEMP/ipsw/restore.ipsw"
 
-      - name: Extract and verify the SystemOS member
+      - name: Extract the SystemOS member
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -77,32 +59,41 @@ jobs:
           mkdir -p "$RUNNER_TEMP/systemos"
           hdiutil attach -readonly -nobrowse -owners off \
             -mountpoint "$RUNNER_TEMP/systemos" "$RUNNER_TEMP/os/$SYSTEMOS_MEMBER"
-          ls -l "$RUNNER_TEMP/systemos/System/Library/Caches/com.apple.dyld" | tail -6
 
-      - name: Name the images
+      - name: Dump the cache header
         run: |
           set -euo pipefail
           CACHE_DIR="$RUNNER_TEMP/systemos/System/Library/Caches/com.apple.dyld"
           CACHE="$CACHE_DIR/dyld_shared_cache_arm64"
           mkdir -p "$RUNNER_TEMP/out"
           {
-            echo "=== cache-images.py (header image table)"
-            python3 device/scripts/cache-images.py "$CACHE" $ADDRESSES || true
+            echo "=== cache directory"
+            ls -l "$CACHE_DIR"
             echo
-            echo "=== dyld_info presence"
-            command -v dyld_info || echo "  dyld_info not on PATH"
+            echo "=== first 0x400 bytes of the main cache"
+            xxd -l 0x400 "$CACHE"
             echo
-            echo "=== dyld_info -segments -> image per address"
-            xcrun dyld_info -segments "$CACHE" > "$RUNNER_TEMP/segs.txt" 2>"$RUNNER_TEMP/out/segs.err" || true
-            echo "segments lines: $(wc -l < "$RUNNER_TEMP/segs.txt")"
-            head -3 "$RUNNER_TEMP/out/segs.err" || true
-            python3 device/scripts/image-from-segments.py "$RUNNER_TEMP/segs.txt" $ADDRESSES || true
-          } 2>&1 | tee "$RUNNER_TEMP/out/images.txt"
+            echo "=== nonzero 4- and 8-byte fields in the first 0x100 bytes"
+            python3 - "$CACHE" <<'PY'
+          import struct, sys
+          with open(sys.argv[1], 'rb') as fh:
+              head = fh.read(0x100)
+          print('magic:', head[:16])
+          for off in range(0x10, 0x100, 4):
+              (v,) = struct.unpack_from('<I', head, off)
+              if v:
+                  print('  %#04x  u32 %#x (%d)' % (off, v, v))
+          for off in range(0x10, 0x100, 8):
+              (v,) = struct.unpack_from('<Q', head, off)
+              if v:
+                  print('  %#04x  u64 %#x (%d)' % (off, v, v))
+          PY
+          } 2>&1 | tee "$RUNNER_TEMP/out/header.txt"
 
       - name: Upload the report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dyld-images
-          path: ${{ runner.temp }}/out/images.txt
+          name: dyld-header
+          path: ${{ runner.temp }}/out/header.txt
           if-no-files-found: warn
