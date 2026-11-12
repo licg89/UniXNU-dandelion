@@ -6,9 +6,10 @@ name: dyld cache symbols
 # volume's directory tree: libfsapfs reads the container and the volume metadata but not the tree, and
 # fsapfsmount on this host has no FUSE backend.  A macOS runner mounts it with hdiutil.
 #
-# atos refuses these caches ("cannot load symbols for architecture arm64"), so the addresses are looked
-# up in dyld_shared_cache_arm64.symbols instead: that file lists cache VM addresses directly, which is
-# the same address space the kernel prints.
+# Two earlier attempts failed for the record: atos refuses these caches ("cannot load symbols for the
+# file ... for architecture arm64"), and dyld_shared_cache_arm64.symbols is a binary table, not text, so
+# grepping it finds nothing.  nm reads the cache itself and lists symbols in address order, so a single
+# pass finds the nearest symbol below each address.
 
 on:
   workflow_dispatch:
@@ -22,7 +23,7 @@ permissions:
   contents: read
 
 env:
-  IPSW_URL: https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw
+  IPSW_URL: https://updates.cdn.apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw
   SYSTEMOS_MEMBER: 044-76034-038.dmg
   SYSTEMOS_SHA256: b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f
   ADDRESSES: ${{ inputs.addresses }}
@@ -70,34 +71,46 @@ jobs:
             -mountpoint "$RUNNER_TEMP/systemos" "$RUNNER_TEMP/os/$SYSTEMOS_MEMBER"
           ls -l "$RUNNER_TEMP/systemos/System/Library/Caches/com.apple.dyld" | tail -8
 
-      - name: Look the addresses up in the symbol table
+      - name: Resolve the addresses with nm
         run: |
           set -euo pipefail
           CACHE_DIR="$RUNNER_TEMP/systemos/System/Library/Caches/com.apple.dyld"
-          SYMS="$CACHE_DIR/dyld_shared_cache_arm64.symbols"
-          OUT="$RUNNER_TEMP/out/symbols.txt"
+          MAIN="$CACHE_DIR/dyld_shared_cache_arm64"
           mkdir -p "$RUNNER_TEMP/out"
-          {
-            echo "=== addresses: $ADDRESSES"
-            echo "=== symbols file: $(ls -l "$SYMS" | awk '{print $5}') bytes"
-            echo
-            for ADDR in $ADDRESSES; do
-              HEX=$(echo "$ADDR" | sed 's/^0x//' | tr 'A-Z' 'a-z')
-              echo "=== $ADDR (hex $HEX)"
-              echo "--- exact line"
-              grep -i -m3 -E "^[0-9a-f]{0,8}0*${HEX}[[:space:]]" "$SYMS" 2>/dev/null || echo "  none"
-              echo "--- prefix (first 12 hex digits)"
-              PRE=$(echo "$HEX" | cut -c1-12)
-              grep -i -m5 "$PRE" "$SYMS" 2>/dev/null || echo "  none"
-              echo "--- prefix (first 9 hex digits)"
-              PRE9=$(echo "$HEX" | cut -c1-9)
-              grep -i -m8 "$PRE9" "$SYMS" 2>/dev/null || echo "  none"
-              echo
-            done
-            echo "=== a sample of the symbols file format"
-            head -5 "$SYMS"
-          } > "$OUT" 2>&1
-          cat "$OUT"
+          echo "=== nm over $MAIN (single pass, nearest symbol below each target)"
+          nm -n "$MAIN" 2>"$RUNNER_TEMP/out/nm.err" | \
+            python3 -c '
+import sys, os
+targets = [int(t, 16) for t in os.environ["ADDRESSES"].split() if t]
+pending = {t: None for t in targets}
+prev = {t: None for t in targets}
+for line in sys.stdin:
+    parts = line.split()
+    if len(parts) < 2:
+        continue
+    try:
+        addr = int(parts[0], 16)
+    except ValueError:
+        continue
+    for t in targets:
+        if pending[t] is None:
+            if addr <= t:
+                prev[t] = (addr, parts[-1])
+            else:
+                nxt = "%#x %s" % (addr, parts[-1])
+                if prev[t] is None:
+                    print("%#x -> no symbol below (next %s)" % (t, nxt))
+                else:
+                    print("%#x -> %s + %#x   (next %s)" % (t, prev[t][1], t - prev[t][0], nxt))
+                pending[t] = True
+    if all(pending.values()):
+        break
+for t in targets:
+    if pending[t] is None:
+        print("%#x -> no symbol above it either" % t)
+' | tee "$RUNNER_TEMP/out/symbols.txt"
+          echo "=== nm stderr (first 5 lines)"
+          head -5 "$RUNNER_TEMP/out/nm.err" || true
 
       - name: Upload the symbol report
         if: always()
