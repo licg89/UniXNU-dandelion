@@ -261,16 +261,18 @@ findings = [
   "Owner-root audit and root hash authentication pass; launchd execs and the skip-cs policy answer is cleared.",
   "The shared_region start_address failure is the normal empty-region answer on first exec, not a fault.",
   "launchd reaches Early boot complete and continues; 84 processes live at once; the exit count over a boot is 36.",
-  "SPRINGBOARD RUNS. launchd starts it and it exits with SIGTRAP (rv=0x5); watchdogd and liveactivitiesd do the same.",
-  "Those aborts carry exit reason namespace 2 subcode 0x5, which reason_private.h names OS_REASON_LIBSYSTEM_CODE_OS_LOG_FAULT: libtrace's os_log_fault ended them. That is not a missing GPU in itself; the fault text lives in the unified log, not in the console.",
+  "SPRINGBOARD RUNS. launchd starts it (pid 26/113/126) and it exits with SIGTRAP (rv=0x5); watchdogd and liveactivitiesd do the same.",
+  "Every one of those aborts carries namespace 2 subcode 0x5, which reason_private.h names OS_REASON_LIBSYSTEM_CODE_OS_LOG_FAULT, and the kcd buffer holds 116 bytes whose only string is 'exc handler'. launchd then reports 'Process[N] crashed: <name>. Too many corpses being created.'",
+  "The split is clean: services that register a Mach exception port (watchdogd, SpringBoard, liveactivitiesd) abort, and services that do not (fsck, keybagd, fairplayd, usermanagerd, DumpPanic) all run to completion.",
+  "Symbolised from kernel.macho, the abort path is handle_breakpoint -> sleh_synchronous -> postsig_locked -> exit_with_reason: the process executed a brk trap, it did not fault.",
 ]
 completion = ["launchd exec passes; the dyld cache registers; Early boot complete is reached; SpringBoard starts."]
-limits = ["SpringBoard exits on SIGTRAP from os_log_fault before it can present anything; backboardd does not appear in the exec trace; no UI is drawn."]
-next_action = ["Recover the os_log_fault text (the kcd buffer in p_exit_reason) or bypass it, then get backboardd running."]
+limits = ["SpringBoard and the watchdog daemon abort on an exception-handler failure before anything is presented; backboardd does not appear in the exec trace; no UI is drawn.", "The full fault format string is not in the exit reason (the buffer is 116 bytes), so the firehose has to be tapped to read it."]
+next_action = ["Tap FAULT-type os_log entries in libkern/os/log_queue.c, or compare task_set_exception_ports against a working port, to decide whether the handler fails to register or fails to be used."]
 evidence = [
   "DANDELION-EXIT: pid=26 comm=SpringBoard ppid=1 rv=0x5 sig=5 status=-1",
-  "DANDELION-EXIT: pid=96 comm=watchdogd ppid=1 rv=0x5 sig=5 status=-1",
-  "pid 97 exited -- exit reason namespace 2 subcode 0x5, description none",
-  "com.apple.xpc.launchd ... Early boot complete. Continuing system boot.",
-  "D4K beat 31: procs=84",
+  "DANDELION-REASON: pid=52 comm=watchdogd text=...exc handler......",
+  "DANDELION-HEX: pid=52 0009a253...6578632068616e646c6572... (kcdata, 116 bytes, one string)",
+  "Process[119] crashed: liveactivitiesd. Too many corpses being created.",
+  "vm_page_bootstrap: 241347 free pages / D4K beat 31: procs=84",
 ]
