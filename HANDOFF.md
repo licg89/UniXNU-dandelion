@@ -6940,3 +6940,78 @@ D4K beat 31: procs=84                                          ← 84 个进程
 | 启动深度 | **SpringBoard** ✓（进程层面）|
 | 卡点 | GPU（PowerVR 无驱动 ✗）|
 | 提交 | `755c70a` ✓ |
+
+---
+
+## 0.128 2026-11-12 全天：内存 5 倍、SpringBoard 首跑、卡点收缩到一处
+
+### 一、内存：47759 → 241347 free pages（764 MB → 3.68 GB）
+
+1. `DRAM High Conv`（`0xC0000000` + 2 GiB，CONVENTIONAL）在源码里早已存在（`MemoryMapLib.c:167`），
+   但构建出的固件卷是 **11-04** 的，`grep` 该串为 0 ✗
+2. **必须"干净重编"固件**：`python3 build_uefi.py -d dandelion -r DEBUG`（不带 `-c` 也行，但要确保
+   MemoryInitPei 重编）；增量构建不会更新内存映射 ✗
+3. `AllocateWindow()` 只用"块对齐 + 内核加载偏移"一个候选 ✗ → 内核二进制变大几百字节，
+   连 `0x30000000` 都分配失败 ✗ → 改为**两种对齐都试** ✓（`drivers/DarwinBoot`，提交 `66d029d`）
+4. 结果：`vm_page_bootstrap: 241347 free pages` ✓ 进程退出数 4972 → 36 ✓
+
+### 二、存储：29 MB/s（校准后的真实数字）
+
+`HostSession` 恢复 `MSDC_CFG` 时连 CKDIV/CKMOD 一起恢复 ✗ → 控制台每写一行就把时钟打回慢档 ✓
+→ 只恢复非时钟字段 ✓ + `mode 0 div 2` ✓ → 64 KiB 读 2226 µs ✓
+
+### 三、SpringBoard 首次运行 ✓
+
+```
+DANDELION-EXIT: pid=26/113/126 comm=SpringBoard ppid=1 rv=0x5 sig=5
+```
+
+### 四、卡点收缩到一处：异常处理端口
+
+```
+ns=2 code=5 = OS_REASON_LIBSYSTEM_CODE_OS_LOG_FAULT
+payload（116 字节 kcdata）里唯一的字符串: "exc handler"
+launchd: Process[N] crashed: liveactivitiesd. Too many corpses being created.
+```
+
+- 崩溃的：`watchdogd`、`SpringBoard`、`liveactivitiesd` —— **都是要注册 Mach 异常端口的**
+- 正常的：`fsck`、`keybagd`、`fairplayd`、`usermanagerd`、`DumpPanic` —— **都不依赖它**
+- 栈（符号化自 `kernel.macho`）：`handle_breakpoint → sleh_synchronous → postsig_locked → exit_with_reason`
+
+### 五、今天犯并修正掉的错误（记录以免重犯）
+
+| 错误 | 表现 | 修正 |
+| --- | --- | --- |
+| 用 `imgp->ip_ndp->ni_cnd.cn_nameptr` 打进程名 | **内核 data abort**（`process_signature+0xcc`）| 改回只打 pid ✓ |
+| 用 `p->p_exit_reason` 取 reason | 一直是 NULL → dump 从不触发 ✗ | 改用 `exit_with_reason` 的**参数** `exit_reason` ✓ |
+| 补丁写成 CRLF | `git apply` 全部失败 ✗ | 加 `.gitattributes`（`*.patch text eol=lf`）✓ |
+| 误判"没有 Data 卷" | `/private/var/cores` ENOENT 被当成卷缺失 ✗ | seed 本就是 256 MiB APFS OwnerData ✓，`cores` 目录缺失是正常的 ✓ |
+| 断言"没 GPU 就看不到界面" | 无依据 ✗ | 收回 ✓ 改为按证据定位 ✓ |
+
+### 六、工具能力（今天打通的）
+
+```
+符号化内核栈：
+  llvm-addr2line -f -C -e .../kernel/kernel.macho 0xfffffff00774ab1c
+  → process_signature + 0xcc
+反汇编定位指令：
+  llvm-objdump -d --start-address=... --stop-address=...
+读回格式字符串（Mach-O VM→file offset 换算）：
+  → "DANDELION-EXEC: pid %d exec %s (policy answer %d)"
+```
+
+### 七、下一步
+
+1. 判断 `exc handler` 是"注册失败"还是"使用失败" —— 需要 firehose 里的完整格式字符串 ✗
+   （`osr_kcd_buf` 只有 116 字节且不含格式串 ✓ 已证明）
+2. 备选：patch `libkern/os/log_queue.c`，把 FAULT 类型的条目同时 `printf` 到控制台 ✓
+3. 或者：对比一个能跑通用户态的移植（evb10）在 `task_set_exception_ports` 上是否有差异 ✓
+
+### 八、当前状态
+
+| 项 | 值 |
+| --- | --- |
+| 镜像 | `boot-hex512` = `3a6970ec` ✓ |
+| 内存 / 存储 | 3.68 GB ✓ / 29 MB/s ✓ |
+| 启动深度 | SpringBoard 运行 ✓ 断言退出 ✗ |
+| 提交 | `ac2d446` ✓ |
