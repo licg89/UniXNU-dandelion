@@ -7015,3 +7015,60 @@ launchd: Process[N] crashed: liveactivitiesd. Too many corpses being created.
 | 内存 / 存储 | 3.68 GB ✓ / 29 MB/s ✓ |
 | 启动深度 | SpringBoard 运行 ✓ 断言退出 ✗ |
 | 提交 | `ac2d446` ✓ |
+
+---
+
+## 0.129 2026-11-12 深夜续：`exc handler` 的真身，以及 dyld 缓存提取受阻
+
+### 一、`exc handler` 不是根因（重要更正）
+
+全内核搜到唯一出处：
+
+```c
+// bsd/kern/kern_sig.c:1813  —— "Mach 异常转 BSD 信号"路径
+if (set_exitreason && ((p->p_lflag & P_LTRACED) ||
+    (!(uth->uu_sigwait & mask) && !(uth->uu_sigmask & mask) && !(p->p_sigcatch & mask))) &&
+    !(mask & stopsigmask) && !(mask & contsigmask)) {
+        os_reason_t signal_reason = build_signal_reason(signum, "exc handler");
+        set_thread_exit_reason(sig_actthread, signal_reason, TRUE);
+}
+```
+
+即：**进程触发 Mach 异常（`brk` → `EXC_BREAKPOINT`）→ 无人捕获 → 内核转成信号 → 用固定串
+`"exc handler"` 记录** ✓ 这是 XNU 的通用措辞 ✗ **不携带任何具体信息** ✗
+
+→ 之前"异常端口注册失败"的推断 **作废** ✗
+→ `reason payload` 只有 116 字节且只含这一个串 ✓（已用 512 字节 dump 证实 ✗ 无格式串 ✓）
+
+### 二、真正的断言内容在哪：用户态 fwlog（拿不到）
+
+| 通道 | 状态 |
+| --- | --- |
+| `osr_kcd_buf`（内核 reason）| ✅ 116 字节，只有 `exc handler` ✗ |
+| 内核控制台 | ✗ 用户态 os_log 不进这里 ✗ |
+| fwlog 共享内存环 | ✗ 只有 `logd` 能读 ✗ |
+| Data 卷上的日志文件 | ✗ RAM 盘，掉电即失 ✗ |
+| crash report | ✗ `/private/var/cores` 不存在 ✗ |
+
+### 三、想符号化用户态 PC，需要 dyld 共享缓存 —— 卡在工具链
+
+| 步骤 | 结果 |
+| --- | --- |
+| IPSW dmg 已在本地 | ✅ `out/ipsw/21H461/044-76034-038.dmg`（3.3 GB）+ `044-76040-038.dmg`（5.2 GB）|
+| `76034` 格式 | ✅ 原始 APFS（0x20 处 `NXSB` ✓），`fsapfsinfo` 读出卷名 `...SystemCryptex` ✓ |
+| `76040` 格式 | ✗ 仍是 UDIF 压缩（`bvxn` ✓），需 `scripts/unixnu/udif.py` 转换 |
+| 挂载 / 提取 | ❌ `fsapfsmount` 报 "No sub system to mount APFS format" ✗ —— **该 libfsapfs 构建没有 FUSE 后端** ✗ |
+
+**明天第一步**：装一个能"提取文件"的 APFS 读工具（`apfs-fuse` 源码编译 ✓ / `pyfsapfs` ✓ / 或先用
+`udif.py` 把 `76040` 转 raw 再看 ✓）→ 从 SystemCryptex 里取出
+`System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e(.symbols)` ✓
+→ 之后任何用户态 PC 都能符号化 ✓
+
+### 四、当前状态（本轮结束时）
+
+| 项 | 值 |
+| --- | --- |
+| 镜像 | `boot-hex512` = `3a6970ec` ✓ |
+| 内存 / 存储 | 3.68 GB ✓ / 29 MB/s ✓ |
+| 启动深度 | SpringBoard 运行 ✓，`brk` 断言退出 ✗ |
+| 结论 | 需要 **fwlog 或 dyld 缓存** 两种新观测手段之一 ✓ |
