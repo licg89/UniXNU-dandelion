@@ -7212,3 +7212,61 @@ image table: 3354 entries at 0x270
 | 本地文件 | `/root/work/cache-hdr/dyld_shared_cache_arm64` ✓ 491,520 字节 ✓ |
 
 **已知无法用于该缓存**：`atos` ✗ `nm` ✗ `dyld_info` ✗（缓存分片 ✗ 主文件非完整 Mach-O ✗）
+
+---
+
+## 0.132 2026-11-13 下午：找到滑动量，符号化链条闭合
+
+### 关键来源：`UniXNU/UniXNU-sheng` 的 `BootFaultProbe.c`
+
+`docs/guide/debugging.md` 的 "User fault evidence" 一节记录了 EL0 陷阱采样表（含 `slide` 字段），
+克隆 `UniXNU/UniXNU-sheng` 后找到实现 `package/BootFaultProbe.c`（9 KB）。其关键是：
+
+```c
+f->slide = current_task()->task_shared_region_slide;   // 每个进程不同
+extern int proc_selfpid(void);
+extern void proc_selfname(char *, int);               // osfmk 里用 extern 直接调 BSD 符号
+```
+
+### 由此修正本端口的诊断（补丁 `dandelion-brk-trace.patch` + `dandelion-brk-report.patch`）
+
+- 陷阱点（`osfmk/arm64/sleh.c` handle_breakpoint）：只存标量（pc/lr/slide/comment），
+  **不 copyin**（异常上下文会 data abort，已两次实测）。
+- 退出点（`bsd/kern/kern_exit.c` exit_with_reason，BSD 上下文可看 struct proc）：打印
+
+```
+DANDELION-BRK: pid=%d comm=%s pc=%#llx slide=%#llx unslid=%#llx lr=%#llx comment=%#x
+```
+
+其中 `unslid = pc - slide` 是 dyld 缓存镜像表里的真实地址，可直接喂给
+`scripts/local-symbols.py`/`scripts/cache-images.py` 定镜像+函数。
+
+### 为什么之前对不上号
+
+| 轮次 | 地址 | 问题 |
+| --- | --- | --- |
+| 无 pid 版 | `0x1c39224f8` 等 | 无 slide，按 slide=0 猜，结果落在 CoreSuggestions/CoreML（可信度低）|
+| pid 版 | `0x1e15624f8` 等 | 每次启动都变（ASLR），16MB 步进枚举有 63–65 个候选 ✗ |
+
+**根因：slide 是 per-task 且不是 16MB 对齐**，必须从内核取。
+
+### 已验证的符号化管线（本地，无需 macOS）
+
+```
+/root/work/symtab/dyld_shared_cache_arm64            (491 KB 缓存头，CI 上传 43303449111)
+/root/work/symtab/dyld_shared_cache_arm64.symbols    (685 MB 符号表，CI 上传 43336935101)
+scripts/local-symbols.py  ->  镜像表@0x1C0/0x1C4 + 16字节符号条目@0x4000
+```
+
+### 当前镜像
+
+| 项 | 值 |
+| --- | --- |
+| `boot-slide.img` | `7b7eefa0`（13:14:15 刷入 ✓）|
+| 内含 | `DANDELION-BRK` 带 slide/unslid ✓ |
+| 内存/存储 | 3.68 GB ✓ / 29 MB/s ✓ |
+
+### 下一步
+
+拿 `flashinfo-slide` 日志里的 `unslid=` 值 → 直接调用 `local-symbols.py` 得函数名 →
+判断是"缺 GPU/Metal 导致的 CoreML 断言"还是"别的系统能力缺失"→ 决定修法。

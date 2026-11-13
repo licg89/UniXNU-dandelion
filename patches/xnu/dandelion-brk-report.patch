@@ -1,19 +1,24 @@
 --- a/bsd/kern/kern_exit.c
 +++ b/bsd/kern/kern_exit.c
-@@ -1500,1 +1500,18 @@
+@@ -1500,1 +1500,23 @@
 +	/*
-+	 * Board diagnostic: report the trap that ended this process, with the pid and comm that this
-+	 * file can see.  Cleared after use so a later exit cannot report a stale trap.
++	 * Board diagnostic: the trap that ended this process, with the slide that makes the address
++	 * resolvable on the host.  Cleared after use so a later exit cannot report a stale trap.
 +	 */
 +	{
 +		extern uint64_t dandelion_brk_pc;
 +		extern uint64_t dandelion_brk_lr;
++		extern uint64_t dandelion_brk_slide;
 +		extern unsigned dandelion_brk_comment;
 +		if (WIFSIGNALED(rv) && WTERMSIG(rv) == SIGTRAP && dandelion_brk_pc != 0) {
-+			printf("DANDELION-BRK: pid=%d comm=%s pc=%#llx lr=%#llx comment=%#x\n",
++			uint64_t unslid = dandelion_brk_pc - dandelion_brk_slide;
++			printf("DANDELION-BRK: pid=%d comm=%s pc=%#llx slide=%#llx unslid=%#llx lr=%#llx comment=%#x\n",
 +			    proc_getpid(p), p->p_comm,
 +			    (unsigned long long)dandelion_brk_pc,
-+			    (unsigned long long)dandelion_brk_lr, dandelion_brk_comment);
++			    (unsigned long long)dandelion_brk_slide,
++			    (unsigned long long)unslid,
++			    (unsigned long long)(dandelion_brk_lr - dandelion_brk_slide),
++			    dandelion_brk_comment);
 +			dandelion_brk_pc = 0;
 +		}
 +	}

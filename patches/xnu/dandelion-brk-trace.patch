@@ -1,22 +1,27 @@
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
-@@ -163,1 +163,9 @@
+@@ -163,1 +163,12 @@
 +/*
 + * Filled by handle_breakpoint() and printed by exit_with_reason() in bsd/kern/kern_exit.c, which
-+ * can see struct proc; this file cannot, because osfmk never includes sys/proc.h.
++ * can see struct proc.  The slide is the point: every process slides the dyld shared cache by its
++ * own amount, so a user address cannot be attributed to an image without it.  Field and approach
++ * follow UniXNU-sheng BootFaultProbe.c.
 + */
 +uint64_t dandelion_brk_pc;
 +uint64_t dandelion_brk_lr;
++uint64_t dandelion_brk_slide;
 +unsigned dandelion_brk_comment;
 +
  static void handle_breakpoint(arm_saved_state_t *, uint32_t) __dead2;
-@@ -1247,1 +1247,9 @@
+@@ -1250,1 +1250,11 @@
 +	/*
-+	 * Board diagnostic: record the trap.  Only scalars: copyin faults in this exception-delivery
-+	 * context (measured as a kernel data abort in copyinstr), so the image header is read later.
++	 * Board diagnostic: scalars only.  copyin faults in this exception-delivery context (measured:
++	 * a kernel data abort in copyinstr from this function), so the image is resolved from the slide
++	 * later, on the host.
 +	 */
 +	dandelion_brk_pc = (uint64_t)get_saved_state_pc(state);
 +	dandelion_brk_lr = (uint64_t)get_saved_state_lr(state);
++	dandelion_brk_slide = (uint64_t)current_task()->task_shared_region_slide;
 +	dandelion_brk_comment = (unsigned)(ISS_BRK_COMMENT(esr));
 +
  	codes[1] = get_saved_state_pc(state);
