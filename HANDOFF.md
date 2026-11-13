@@ -7931,3 +7931,44 @@ pages=0x000000000003aec3  free=0x0000000000000661
 3. 内核 panic 栈帧可符号化（`kernel.macho`），值得单独看一次
 
 ---
+
+## 0.140 2026-11-13 17:02–17:20：`Compromised Data` 排查进展（未完成）
+
+### 一、已排除的假设
+
+| 假设 | 检查 | 结论 |
+| --- | --- | --- |
+| 信任缓存格式错 | `scripts/verify_trustcache.py` 对 `/root/work/dandelion-launchd.trustcache`（56 B，11-04，1 模块 1 条目）| **PASS** ✓，且 boot-slide 用的就是同一份 ✗ 不是它 |
+| 内核缺 ad-hoc 签名 | 两份 payload 的 `kernel.macho` 都没有 `LC_CODE_SIGNATURE`（`ncmds 25`、`sizeofcmds 5776` 完全相同）| **两枚都一样** ✗ 不是它 |
+| 内核 cdhash 与信任缓存不匹配 | `cdhash_trustcache.py` 对两份内核都直接报 `no LC_CODE_SIGNATURE` | 该工具不适用于本内核；缓存里那条条目不是内核的 ✗ |
+
+### 二、实际不同的东西（都已量到）
+
+| 位置 | boot-slide（能启动） | boot-sr3（被拒） |
+| --- | --- | --- |
+| boot 镜像 kernel 段（gzip 头，实为 shim+FD 压缩体）| 771,371 B, sha `f42021ba…` | **770,794 B**, sha `2a50a1d7…` |
+| payload 内 `kernel.macho` | 51,695,616 B | 51,695,616 B（内容不同，预期）|
+| payload 内 `kernel.macho.adt` | 14,124 B | 不同 |
+| payload 内 `kernel.macho.trustcache` | 不同 | 不同（随内核生成）|
+| **payload 内 `scratch-data.img`** | **1,060,960 B** | **4,194,304 B** ← 差 4 倍 |
+| payload 内 `UniXNU.efi` / `UniXNUDxe.efi` / `UniXNURamDiskDxe.efi` | 102,400 / 14,336 / 15,360 B | 大小相同，**内容都不同** |
+
+payload 是 FAT 卷（卷标 `DANDELION`），可用 mtools 直接读：`mdir -i payload.img ::`、`mcopy -s -i … ::/ out/` ✓
+
+### 三、目前最可能的解释（下一步验证）
+
+`scratch-data.img` 从 1 MB 跳到 4 MB、连同三个 EFI 驱动与 FD 都变了 —— 这不像"只改了内核补丁"能造成的结果，
+更像是 **13:05 那枚镜像用的构建参数/配置与我 14:54、15:55 跑的 `package.sh` 不同** ✗
+（`unixnu bootimg` 的帮助里就提到 `seed-data-grow` 这类 macOS 专属步骤）
+
+→ 下一步：找出 13:05 那枚镜像真正的构建命令（`D:\aios\_work\*.sh` 里找 13:00 前后调用 `package.sh` 的脚本），
+按其参数重跑，再看 FD / scratch-data 是否回到 771,371 / 1,060,960 ✓
+
+### 四、watchdogd 的状态（本轮仍未解）
+
+三条 pc（`0x100560b0c` / `0x1003b7b0c` / `0x100095b0c`，同一轮启动）落在 app 区。
+`resolve-app-text.py --pcs` 的相对差值约束只给出一个假阳性（slide 为负、落在连续 trap 表）→
+说明**三次启动的 main-executable slide 各不相同**，因此只能靠内核打印 `DANDELION-TEXT`（base/off/path），
+也就是必须先让带该探针的镜像能启动 ✓ 与第三节是同一个前置条件。
+
+---
