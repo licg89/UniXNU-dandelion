@@ -1,22 +1,12 @@
-name: dyld symbols upload
+name: userspace binaries
 
-# Upload dyld_shared_cache_arm64.symbols so the local symbol table can be read offline.
+# Copy the binaries that trap, so their own __TEXT can be disassembled locally.
 #
-# The .symbols file is a binary table (its header starts with the cache magic), so grepping it as text
-# finds nothing; but it is small enough to upload.  Format, from dyld's own sources:
+# watchdogd traps at 0x1005f8b0c and 0x100eefb0c, which is outside the shared cache: those are its own
+# code.  SpringBoard and liveactivitiesd trap inside the cache, where the per-process slide makes the
+# image ambiguous, so their own binaries settle what the cache cannot.
 #
-#   struct dyld_cache_local_symbols_info {      // at offset 0
-#       uint32_t nlistOffset, nlistCount;       // 0, 4
-#       uint32_t stringsOffset, stringsSize;    // 8, 12
-#       uint32_t entriesOffset, entriesCount;   // 16, 20
-#   };
-#   struct dyld_cache_local_symbols_entry {     // 12 bytes each
-#       uint32_t dylibOffset;                   // VM offset of the image from the cache base
-#       uint32_t nlistStartIndex, nlistCount;
-#   };
-#
-# Together with the image table in dyld_shared_cache_arm64 (3354 images at 0x270), that maps an address
-# to image, function and offset.
+# The sealed SystemCryptex volume cannot be read on Linux, but a macOS runner mounts it with hdiutil.
 
 on:
   workflow_dispatch:
@@ -30,7 +20,7 @@ env:
   SYSTEMOS_SHA256: b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f
 
 jobs:
-  upload:
+  copy:
     runs-on: macos-26
     timeout-minutes: 120
     steps:
@@ -63,32 +53,37 @@ jobs:
           PY
           rm -f "$RUNNER_TEMP/ipsw/restore.ipsw"
 
-      - name: Mount and copy the symbols table
+      - name: Mount and copy the trapping binaries
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/systemos" "$RUNNER_TEMP/out"
           hdiutil attach -readonly -nobrowse -owners off \
             -mountpoint "$RUNNER_TEMP/systemos" "$RUNNER_TEMP/os/$SYSTEMOS_MEMBER"
-          CACHE_DIR="$RUNNER_TEMP/systemos/System/Library/Caches/com.apple.dyld"
-          cp "$CACHE_DIR/dyld_shared_cache_arm64.symbols" "$RUNNER_TEMP/out/"
-          cp "$CACHE_DIR/dyld_shared_cache_arm64" "$RUNNER_TEMP/out/"
+          ROOT="$RUNNER_TEMP/systemos"
+          set +e
+          for path in \
+            System/Library/CoreServices/SpringBoard.app/SpringBoard \
+            usr/libexec/watchdogd \
+            usr/libexec/liveactivitiesd \
+            System/Library/CoreServices/backboardd \
+            usr/libexec/backboardd
+          do
+            if [ -f "$ROOT/$path" ]; then
+              cp "$ROOT/$path" "$RUNNER_TEMP/out/$(basename "$path")"
+              echo "copied $path"
+            else
+              echo "missing $path"
+            fi
+          done
+          set -e
+          echo "--- also list the likely directories"
+          ls "$ROOT/System/Library/CoreServices" 2>/dev/null | head -10 || true
+          ls "$ROOT/usr/libexec" 2>/dev/null | grep -iE 'watchdog|activity|backboard' | head -10 || true
           ls -l "$RUNNER_TEMP/out"
-          echo "--- first 64 bytes of the symbols table"
-          xxd -l 64 "$RUNNER_TEMP/out/dyld_shared_cache_arm64.symbols"
 
-      - name: Split into two uploadable parts
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/out"
-          # Stay under the per-artifact size that the runner uploads comfortably.
-          split -b 300m -d dyld_shared_cache_arm64.symbols symbols.part.
-          ls -l symbols.part.* dyld_shared_cache_arm64
-
-      - name: Upload the symbols table
+      - name: Upload the binaries
         uses: actions/upload-artifact@v4
         with:
-          name: dyld-symbols-table
-          path: |
-            ${{ runner.temp }}/out/symbols.part.*
-            ${{ runner.temp }}/out/dyld_shared_cache_arm64
+          name: userspace-binaries
+          path: ${{ runner.temp }}/out/*
           if-no-files-found: error
