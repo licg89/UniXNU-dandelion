@@ -7724,4 +7724,18 @@ void *QuartzCoreLibrary(void)          ← QuartzCoreSoftLinking.m
   → 与"backboard/显示相关服务没起来"同源的可能性很高 ✓
 - **watchdogd** 仍无法定位（pc 不在共享缓存，见 §0.135 第十节）
 
+### 七、porting 记录已同步（顺带发现一处陈旧的 schema 漂移）
+
+`porting.toml` 的 `display` 区已补上本轮的结论：新 finding（SpringBoard 断言原文）、
+两条 evidence（`unslid 0x19f3df2ec` 与 CFString 解码结果）、`limits` 与 `next_action` 一起改到点 ✓
+TOML 可解析 ✓（`findings` 4 条 / `evidence` 6 条）
+
+⚠ **但官方校验器跑不过（不是本轮引入的）**：
+`python3 UniXNU/scripts/porting-record.py check --device .` 直接报
+`porting record: ./configuration: invalid status`
+原因：校验器的 `STATES = {planned, implemented, host-verified, device-verified, not-applicable}`，
+而本仓库的记录用的是**旧词表**（`verified` / `in_progress`）→ 每个区都过不了 ✗
+**已验证 git stash 回滚后报同样的错** ✓ 属于既有问题，需要单独决定映射（`verified` → `device-verified`?）
+不要顺手改 ✗ —— 那是关于"证据到什么程度"的判断
+
 ---

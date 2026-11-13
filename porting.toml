@@ -122,15 +122,18 @@ findings = [
   "The synthetic IOMobileFramebufferLegacy reaches start() and publishes the panel; the firmware GOP framebuffer is at 0x7EC50000, stride 2944, 720x1600, 32 bpp.",
   "native_gop_text was a stub. It now renders a 6x10 font white-on-black into the GOP framebuffer, scale 2 at >=600 px wide, which made boot progress visible while the console was silent.",
   "IOMFB_FDR_Loader exits 1, so the userland display service is not up; backboardd and SpringBoard fail later in that chain.",
+  "SpringBoard dies in FrontBoardServices -[FBSDisplayMonitor _initWithBookendObserver:transformer:] + 0x47c with the assertion text 'failed to find the main CADisplay': QuartzCore has no main display to hand back, because the userland display service never came up.",
 ]
 completion = ["A known frame appears with correct geometry and colors, then userland presentation and backlight controls work."]
-limits = ["No userland presentation yet: IOMFB_FDR_Loader fails and SpringBoard/backboardd abort before compositing.", "No backlight or brightness control."]
-next_action = ["Establish why IOMFB_FDR_Loader exits 1; that is the gate in front of backboardd."]
+limits = ["No userland presentation yet: IOMFB_FDR_Loader fails, QuartzCore has no CADisplay, and SpringBoard aborts in FBSDisplayMonitor before compositing.", "No backlight or brightness control."]
+next_action = ["Establish why IOMFB_FDR_Loader exits 1; that is the gate in front of backboardd and the reason FrontBoardServices cannot find a main CADisplay."]
 evidence = [
   "DANDELION-DISP UP / virtual bool IOMobileFramebufferLegacy::start(IOService *)",
   "DARWINBOOT: video base=0x7EC50000 display=1 row=2944 width=720 height=1600 depth=32",
   "IMG_5929.JPG / IMG_5932.JPG: colour bars plus RD progress and HS mode lines drawn by native_gop_text",
   "DANDELION-EXIT: pid=85 comm=IOMFB_FDR_Loader ppid=1 rv=0x100 sig=0 status=1",
+  "DANDELION-BRK: pid=113 comm=SpringBoard pc=0x1bf04b2ec lr=0x1bf04b2ec comment=0x0 fits slide 0x1fc6c000, unslid 0x19f3df2ec = FrontBoardServices + 0x1e2ec",
+  "The trap block's format CFString decodes to 'failed to find the main CADisplay' (33 characters, flags 0x7C8), next to 'failed to find the symbol for CADisplay' and the QuartzCore soft-link paths",
 ]
 
 [[area]]
