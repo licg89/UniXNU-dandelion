@@ -1,0 +1,85 @@
+diff --git a/bsd/kern/kern_exit.c b/bsd/kern/kern_exit.c
+index 4710208..467af8a 100644
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -1551,6 +1551,80 @@ exit_with_reason(proc_t p, int rv, int *retval, boolean_t thread_can_terminate,
+ 			    (unsigned long long)dandelion_brk_sr_slide,
+ 			    (unsigned long long)dandelion_brk_sr_base,
+ 			    (unsigned long long)dandelion_brk_slide);
++			/*
++			 * Board diagnostic: an address only becomes an image offset once the base of the
++			 * mapping holding it is known, and a trap below the shared region lives in the
++			 * process's own Mach-O rather than in the cache.  dyld publishes both in
++			 * dyld_all_image_infos: sharedCacheSlide/BaseAddress for the cache, and the image
++			 * array, whose entries give every loaded image a base and a path.  Scanning the
++			 * array for the highest base at or below the trap pc names the containing image,
++			 * which is what makes the pc an offset.  This is the same copyin the crash-report
++			 * path above already performs, and it is safe here: the process is down to its last
++			 * thread and its map is quiescent.
++			 */
++			{
++				struct user64_dyld_all_image_infos ai = {};
++
++				if (copyin((user_addr_t)task_get_all_image_info_addr(proc_task(p)),
++				    &ai, sizeof(ai)) == 0) {
++					printf("DANDELION-IMG: pid=%d comm=%s cache_slide=%#llx cache_base=%#llx images=%u\n",
++					    proc_getpid(p), p->p_comm,
++					    (unsigned long long)ai.sharedCacheSlide,
++					    (unsigned long long)ai.sharedCacheBaseAddress,
++					    (unsigned)ai.infoArrayCount);
++
++					if (ai.infoArray != 0) {
++						struct user64_dyld_image_info entry = {};
++						uint64_t hit_base = 0;
++						uint64_t hit_path = 0;
++						uint32_t i;
++						uint32_t count = ai.infoArrayCount;
++
++						if (count > 256) {
++							count = 256;
++						}
++						if (copyin((user_addr_t)ai.infoArray, &entry,
++						    sizeof(entry)) == 0) {
++							printf("DANDELION-EXE: pid=%d comm=%s base=%#llx\n",
++							    proc_getpid(p), p->p_comm,
++							    (unsigned long long)entry.imageLoadAddress);
++						}
++						for (i = 0; i < count; i++) {
++							uint64_t slot = ai.infoArray +
++							    (uint64_t)i * sizeof(entry);
++
++							if (copyin((user_addr_t)slot, &entry,
++							    sizeof(entry)) != 0) {
++								break;
++							}
++							if (entry.imageLoadAddress == 0) {
++								continue;
++							}
++							if (entry.imageLoadAddress <= dandelion_brk_pc &&
++							    entry.imageLoadAddress >= hit_base) {
++								hit_base = entry.imageLoadAddress;
++								hit_path = entry.imageFilePath;
++							}
++						}
++						if (hit_base != 0) {
++							char path[80];
++
++							path[0] = 0;
++							if (hit_path != 0) {
++								(void)copyinstr((user_addr_t)hit_path,
++								    path, sizeof(path) - 1, NULL);
++							}
++							path[sizeof(path) - 1] = 0;
++							printf("DANDELION-TEXT: pid=%d comm=%s pc=%#llx base=%#llx off=%#llx path=%s\n",
++							    proc_getpid(p), p->p_comm,
++							    (unsigned long long)dandelion_brk_pc,
++							    (unsigned long long)hit_base,
++							    (unsigned long long)(dandelion_brk_pc - hit_base),
++							    path);
++						}
++					}
++				}
++			}
+ 			dandelion_brk_pc = 0;
+ 		}
+ 	}
