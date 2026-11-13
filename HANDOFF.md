@@ -7851,3 +7851,83 @@ RESULT: PASS
 | `scripts/collect-slide.ps1` | 唯一需要按键的那一步：刷镜像 → 等 → 采集 → 解码 → 符号化 |
 
 ---
+
+## 0.139 ★★★ 2026-11-13 16:52：硬件数据到手，离线结论被逐字节印证
+
+### 一、这次真的从设备上采到了（`boot-slide.img`，16:34:35 启动）
+
+抓取产物：`D:\aios\flashinfo-slide2-20261113-165225.bin`（16 MiB）、
+`out\console-slide2-20261113-165225.txt`（5,804 行；正文 367,209 字节；无换行覆盖风险，窗口 14.68 MB 远未写满）
+
+日志里 **15 条** `DANDELION-BRK`，本轮 **`slide=0x939c000`**（每轮启动随机，与离线拟合的 `0x1fc6c000` 本来就不同）：
+
+| 进程 | pc | unslid | 离线预测 | 结论 |
+| --- | --- | --- | --- | --- |
+| **SpringBoard**（pid 27/105/117/119/122/126，共 6 次）| `0x1a877b2ec` | **`0x19f3df2ec`** | `0x19f3df2ec` | ✅ **逐字节相同** |
+| **liveactivitiesd**（pid 107/113/115/118/120/124，共 6 次）| `0x1cac924f8` | **`0x1c18f64f8`** | `0x1c18f64f8` | ✅ **逐字节相同** |
+| **watchdogd**（pid 52 / 93 / 100）| `0x100560b0c` / `0x1003b7b0c` / `0x100095b0c` | `0xf71c4b0c` / `0xf701bb0c` / `0xf6cf9b0c` | — | ⏳ 见第五节 |
+
+→ §0.135 的"用 `brk` 操作码反解 slide、再把 pc 减去 slide"这套方法，**在真机上成立** ✓
+→ 崩溃点就是 **FrontBoardServices `-[FBSDisplayMonitor _initWithBookendObserver:transformer:] + 0x47c`**
+  （断言原文 `failed to find the main CADisplay`，§0.136）✓
+
+### 二、本次的旁观信息
+
+- 6 个 SpringBoard 实例全都撞在**同一个** unslid 地址 ✓（与 §0.133 的观察一致）
+- 6 个 liveactivitiesd 也全同，且 `lr` 都比 pc 小 `0x2C` ✓（对应 §0.135 反汇编里那条 `cbz`）
+- 每次 watchdogd 退出的 `DANDELION-EXIT` 都是 `rv=0x5 sig=5`（SIGTRAP）✓，`DANDELION-REASON` 文本里带 `exc handler`
+- 日志尾部：`coredump (watchdogd, pid 100): failed to open core dump file /private/var/cores/watchdogd.core: error 2`
+  → `/private/var/cores/` 不存在或不可写（与 §NEXT-SESSION 提过的 `/private/var/vm` 同类问题）
+
+### 三、屏幕上的 panic（拍照抄录）
+
+```
+watchdogd[100] exited -- exit reason namespace 2 subcode 0x5 description: none
+frames fffffff007a4e9b8 fffffff007756134 fffffff0077bb614 fffffff007771990
+       fffffff007771ce4 fffffff00727cba8 fffffff0074339fc fffffff007433bf0
+       fffffff00728ece8 fffffff007435018 fffffff007434834 fffffff0074335dB
+       fffffff0074335a0
+pages=0x000000000003aec3  free=0x0000000000000661
+```
+
+→ 这一次不是"静默挂住"，而是 **watchdogd 退出后内核走了 panic 屏** ✓（内核栈帧都是 `fffffff007…`，
+可用 `kernel.macho` 符号化，本轮未做）
+
+### 四、⚠ `boot-sr3.img` 被固件拒启动（`Compromised Data`）
+
+16:14 刷 `boot-sr3.img` 后，屏幕停在 LK 引导菜单，底行：
+`Up/Down: select 'UniXNU' returned: Compromised Data` —— **payload 没跑起来**（所以那一次没有日志）。
+
+已查清的部分：
+
+| 检查 | 结果 |
+| --- | --- |
+| 信任缓存结构 | `/root/work/dandelion-launchd.trustcache`（56 B，11-04 生成，1 模块 1 条目）→ 用 `scripts/verify_trustcache.py` 校验 **PASS** ✓ 且 boot-slide 用的是同一份 ✓ |
+| boot 镜像组成 | 两枚都是 `ANDROID!` v0、page 2048、ramdisk（payload）62,914,560 B ✓ |
+| **固件 FD（boot 镜像的 kernel 段）** | boot-slide **771,371 B**（sha `f42021ba…`）vs boot-sr3 **770,794 B**（`2a50a1d7…`）→ **不同** ✗ |
+| payload | boot-sr3 的 ramdisk sha `78b62143…` 与 `payload.json.payload_sha256` 一致 ✓ |
+
+**头号嫌疑**：13:05 那次用的是**缓存的旧 FD**（屏幕上 `PayloadBoot: build Nov 11 2026 16:20:11`），
+而 14:54/15:55 的重建重新生成了 FD（小了 577 B）→ 新 FD 的 DarwinBoot 拒了 payload ✗
+（用旧 FD 重打包的尝试因 `--fd` 需要完整固件卷尺寸而中止：`firmware volume is 0xbc52b bytes, the device config says 0x300000`）
+
+### 五、watchdogd 仍然缺一步
+
+三条 pc 都在 app 区（< 共享区起点 `0x1893c000`），要变成"镜像+偏移"必须有**每进程的装载基址**。
+本轮试过并排除的离线办法 ✗：
+- `resolve-app-text.py --log`：要求"某 Mach-O 的 `__TEXT.vmaddr` 正好等于运行基址"，主可执行文件运行时还有独立 slide → 找不到 ✓（符合预期）
+- 新增 `--pcs` 相对差值约束（同一二进制、三条 pc 两两之差固定）：只命中一个**假阳性**
+  （slide 为负、命中处是连续的 trap 表）→ 说明三次启动的 **main-executable slide 各自不同**，
+  该约束不成立 ✗
+
+→ 结论不变：需要 `DANDELION-TEXT`（内核打印的 base/off/path），而那需要 **能让 sr3 启动** ✗
+
+### 六、下一步
+
+1. **修 FD 拒启动**：查清 13:05 那份 FD 与重建版差在哪（`PayloadBoot: build` 串 → 旧版是 Nov 11 16:20），
+   优先让带 `DANDELION-TEXT` 的镜像能启动 → 一次按键就能把 watchdogd 解掉
+2. 顺带：`/private/var/cores` 不存在导致 watchdogd 的 core 写不出来（`error 2`），
+   在 `scripts/build-data-seed.py` 的 `SEED_FILES` 里补该目录即可（与 `/private/var/vm` 同类修复）
+3. 内核 panic 栈帧可符号化（`kernel.macho`），值得单独看一次
+
+---

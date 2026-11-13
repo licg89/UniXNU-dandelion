@@ -170,6 +170,77 @@ def report(image, pc, comment, base_hint, path_hint):
             print('     %s%s' % (line, '   <<< trap' if 'brk' in line else ''))
 
 
+def find_offsets_by_constraint(image, pcs, comment, limit=6):
+    """Place several trap pcs from one process in the same Mach-O without knowing its base.
+
+    Several records from the same process and boot share one binary and one load slide, so their
+    differences are differences of offsets inside it.  Searching each candidate's __TEXT for a brk
+    at o, o + d1, o + d2 ... therefore pins both the binary and the slide: the offsets need no base,
+    and the slide follows as pc0 - __TEXT.vmaddr - o.
+    """
+    pcs = sorted(pcs)
+    deltas = [p - pcs[0] for p in pcs]
+    need = deltas[-1]
+    size = pathlib.Path(image).stat().st_size
+    hits = []
+    with open(image, 'rb') as fh:
+        for file_off in scan_machos(image):
+            if file_off + 32 > size:
+                continue
+            info = parse_macho(fh, file_off, size)
+            if info is None or info['cputype'] != 0x0100000c:
+                continue
+            vmaddr, _vmsize, text_fileoff, filesize = info['text']
+            if filesize < need + 8:
+                continue
+            fh.seek(file_off + text_fileoff)
+            text = fh.read(filesize)
+            if len(text) < need + 8:
+                continue
+            sites = set()
+            needle = brk_word(comment)
+            at = text.find(needle)
+            while at >= 0:
+                if at % 4 == 0:
+                    sites.add(at)
+                at = text.find(needle, at + 1)
+            for o in sorted(sites):
+                if all((o + d) in sites for d in deltas):
+                    info = dict(info)
+                    info['offsets'] = [o + d for d in deltas]
+                    info['vmaddr'] = vmaddr
+                    info['imm'] = comment
+                    info['slide'] = pcs[0] - vmaddr - o
+                    hits.append(info)
+                    break
+            if len(hits) >= limit:
+                break
+    return hits
+
+
+def report_by_constraint(image, pcs, comment):
+    print('\n=== %d pcs, comment %d: %s' % (len(pcs), comment, [hex(p) for p in sorted(pcs)]))
+    hits = find_offsets_by_constraint(image, pcs, comment)
+    if not hits:
+        print('  no Mach-O carries brk #%d at all of those relative offsets' % comment)
+        return
+    for info in hits:
+        vmaddr = info['vmaddr']
+        print('  file offset %#x  filetype %d  __TEXT vmaddr %#x  slide %#x'
+              % (info['file_off'], info['filetype'], vmaddr, info['slide'] & 0xffffffffffffffff))
+        print('     uuid %s' % info['uuid'])
+        if info['dylibs']:
+            print('     links: %s' % ', '.join(d.split('/')[-1] for d in info['dylibs'][:6]))
+        for off in info['offsets']:
+            print('     brk #%d at __TEXT + %#x  (runtime pc %#x)'
+                  % (info['imm'], off, vmaddr + off + (info['slide'] & 0xffffffffffffffff)))
+        for off in info['offsets'][:1]:
+            first = dict(info)
+            first['delta'] = off
+            for line in disasm(image, first):
+                print('     %s%s' % (line, '   <<< trap' if 'brk' in line else ''))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--image', required=True)
@@ -178,7 +249,14 @@ def main():
     ap.add_argument('--base', default=None)
     ap.add_argument('--path', default=None)
     ap.add_argument('--log', default=None)
+    ap.add_argument('--pcs', default=None,
+                    help='comma separated pcs from one process, placed together without a base')
     args = ap.parse_args()
+
+    if args.pcs:
+        pcs = [int(x, 16) for x in args.pcs.replace(' ', '').split(',') if x]
+        report_by_constraint(args.image, pcs, int(args.comment, 16) if args.comment else 1)
+        return 0
 
     if args.log:
         text = pathlib.Path(args.log).read_bytes().decode('latin-1', 'replace')
