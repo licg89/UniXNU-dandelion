@@ -5,11 +5,19 @@
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\collect-slide.ps1 -Tag slide
 #
-# It flashes the Android boot image back (no wipe, adb keys survive), waits for Android, pulls the
-# 16 MiB flashinfo partition, decodes the console text, clears the block for the next round and
-# runs scripts/brk-symbolize.py over the DANDELION-BRK lines.
+# Pass -FlashImage to make it the whole round: with the phone in fastboot it flashes the payload,
+# reboots into it and waits for you to power-cycle back once the panel stops changing.  The boot
+# needs about 17 minutes to reach the SpringBoard assertion.
+#
+#   powershell -ExecutionPolicy Bypass -File scripts\collect-slide.ps1 -Tag sr2 `
+#       -FlashImage D:\aios\out3\boot-sr2.img
+#
+# It then flashes the Android boot image back (no wipe, adb keys survive), waits for Android, pulls
+# the 16 MiB flashinfo partition, decodes the console text, clears the block for the next round and
+# runs scripts/brk-symbolize.py over the records.
 param(
     [string]$Tag = 'slide',
+    [string]$FlashImage = '',
     [string]$AndroidBoot = 'D:\aios\artifacts\boot_backup.img',
     [string]$Serial = 'QS55XCPRCA9LDA5T',
     [int]$WaitFastbootMinutes = 20,
@@ -20,15 +28,29 @@ $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $raw = "D:\aios\flashinfo-$Tag-$stamp.bin"
 
-if (@(fastboot devices 2>$null).Count -eq 0) {
+function Wait-Fastboot([int]$minutes) {
+    if (@(fastboot devices 2>$null).Count -gt 0) { return $true }
     Write-Host 'not in fastboot: hold power ~10 s, then Power + Volume Down' -ForegroundColor Yellow
-    $deadline = (Get-Date).AddMinutes($WaitFastbootMinutes)
+    $deadline = (Get-Date).AddMinutes($minutes)
     while ((Get-Date) -lt $deadline) {
-        if (@(fastboot devices 2>$null).Count -gt 0) { break }
+        if (@(fastboot devices 2>$null).Count -gt 0) { return $true }
         Start-Sleep -Seconds 5
     }
+    return $false
 }
-if (@(fastboot devices 2>$null).Count -eq 0) { Write-Host 'no fastboot; giving up' -ForegroundColor Red; exit 1 }
+
+if ($FlashImage) {
+    if (-not (Test-Path $FlashImage)) { Write-Host "no such image: $FlashImage" -ForegroundColor Red; exit 1 }
+    if (-not (Wait-Fastboot $WaitFastbootMinutes)) { Write-Host 'no fastboot; giving up' -ForegroundColor Red; exit 1 }
+    Write-Host "flashing payload: $FlashImage" -ForegroundColor Yellow
+    fastboot flash boot $FlashImage 2>&1 | Select-String 'Sending|Writing|Finished'
+    fastboot reboot 2>&1 | Out-Null
+    Write-Host 'booting the payload. It needs about 17 minutes to reach the assertion; when the panel' -ForegroundColor Yellow
+    Write-Host 'stops changing, hold power ~10 s and then Power + Volume Down to get back to fastboot.' -ForegroundColor Yellow
+    $WaitFastbootMinutes = 60
+}
+
+if (-not (Wait-Fastboot $WaitFastbootMinutes)) { Write-Host 'no fastboot; giving up' -ForegroundColor Red; exit 1 }
 
 Write-Host "flashing Android boot back: $AndroidBoot" -ForegroundColor Yellow
 fastboot flash boot $AndroidBoot 2>&1 | Select-String 'Sending|Writing|Finished'

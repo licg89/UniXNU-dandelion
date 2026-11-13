@@ -7419,3 +7419,84 @@ DANDELION-REASON: pid=113 comm=SpringBoard   … 37 00 00 00 30 00 00 00 8f 00 0
 **5,371 行 / 9 条 BRK 记录** ✓（不换行、正文连续写，第一个 NUL 之后就是上一轮的残留 ✓）
 
 ---
+
+## 0.134 2026-11-13 14:35–14:55：先堵住"slide 可能是 -1"的坑，再重建镜像
+
+### 一、为什么原来的探针可能白跑一轮
+
+`dandelion-brk-trace.patch` 打印的是 `current_task()->task_shared_region_slide`，而它是
+`uint32_t`（`osfmk/kern/task.h:554`），**只有**在下面这条路径里才会被赋值：
+
+```
+vm_shared_region_start_address()                       osfmk/vm/vm_shared_region.c:1047
+    if (kr == KERN_SUCCESS && task->task_shared_region_slide == -1)
+        copyin(缓存头 uuid) 成功才写 slide
+```
+
+`kr != KERN_SUCCESS`（`sr_first_mapping == -1`，即"共享区还是空的"）时**不写**，字段保持 **`0xffffffff`**。
+而 12:02 那份日志里恰好有两条：
+
+```
+shared_region: 0x2d1c… [1(launchd)] check_np(0x16f00dbb0) vm_shared_region_start_address() failed
+```
+
+→ 说明这条路径在本机**确实会失败** ✓ 若 BRK 行里 `slide=0xffffffff`，`unslid = pc - slide` 就是废的 ✗
+
+### 二、新探针 `dandelion-sr-probe.patch`（提交 `998afaf` / `71c0d6a`）
+
+| 文件 | 改动 |
+| --- | --- |
+| `osfmk/vm/vm_shared_region.c` | 新增 `dandelion_shared_region_slide()` / `_base()`：直接读 `task->shared_region` 的 `sr_slide` / `sr_base_address`（不加锁：映射后只读）|
+| `osfmk/arm64/sleh.c` | 陷阱处另存 `dandelion_brk_sr_slide` / `dandelion_brk_sr_base` |
+| `bsd/kern/kern_exit.c` | 另打一行 `DANDELION-SR: pid=%d comm=%s sr_slide=%#llx sr_base=%#llx task_slide=%#llx` |
+
+验证：在**完整 70 个补丁序列**之上 `git apply` 干净（71/71 ✓），新镜像里三个串都在 ✓
+
+### 三、新镜像
+
+| 项 | 值 |
+| --- | --- |
+| 文件 | `D:\aios\out3\boot-sr2.img` |
+| sha256 前缀 | **`4254e1d2`** |
+| 大小 | 63,688,704 ✓ |
+| 内核 | `kernel.macho` sha `0e6dad06` |
+| 构建 | 418 s ✓ 退出码 0 ✓ |
+| 内含 | `DANDELION-BRK: pid=%d` ✓、`DANDELION-SR: pid=%d` ✓、两个访问器符号 ✓ |
+
+### 四、顺手查清的四件事（全都不用手机）
+
+1. **slide=0 已被排除** ✗ —— 用 0 去解 12:02 的 4 条记录：`liveactivitiesd` 落在 **libwebrtc** 的
+   `_rd_check_segment + 0x230`，`SpringBoard` 落在 CoreHandwriting（无符号）→ 明显不对
+2. **缓存头字段修正**：子缓存表在 **0x188/0x18C**（不是 §0.131 记的 0x180/0x184），条目 **0x38 字节**、
+   52 个、`0x74000 … 0xb4494000`；`maxSlide` 在 **0xF0 = 0x20000000**
+3. **"unnest of range 0x205e00000->0x20b400000"不能反推 slide** ✗ —— 这些边界既不对齐镜像起点、
+   也不对齐子缓存起点（32,768 个候选里"命中"12 个 = 纯概率噪声）
+4. **每任务的 slide 一旦成功就稳定** ✓ 同一启动内同二进制多实例 pc 全同（SpringBoard×4 / liveactivitiesd×3）
+
+### 五、⚠ 本轮最重要的操作事实：构建用的是另一个检出
+
+| 用途 | 路径 |
+| --- | --- |
+| **构建** | **`/root/work/UniXNU-dandelion`**（WSL）——`scripts/package.sh --os 17 --uefi ../uefi-dandelion`，`UNIXNU_UNIQUE_CHIP_ID=00002621` |
+| 文档/工具 | `D:\aios\_work\UniXNU-dandelion`（=`/mnt/d/aios/_work/UniXNU-dandelion`）|
+
+两者同 origin（`licg89/UniXNU-dandelion`）、`board.toml` 完全相同，但**历史与工作区不同**：
+构建侧有 `dandelion.dts`、`package/DandelionFaultProbe.c`，文档侧有 `HANDOFF.md`/`MORNING.md`/新脚本。
+→ **补丁只改 D: 那份不会进内核** ✗ 必须同时写进构建侧的 `patches/xnu/series` ✓（本轮已两边同步并各自提交）
+
+### 六、下次（一条命令，只需一次按键）
+
+手机在 fastboot（或先按 电源10 s → 电源+音量下）后：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\aios\_work\UniXNU-dandelion\scripts\collect-slide.ps1 `
+    -Tag sr2 -FlashImage D:\aios\out3\boot-sr2.img
+```
+
+它把整轮串起来：刷 `boot-sr2.img` → 重启进 payload → 等你按键回 fastboot（约 17 分钟后面板不再变化）
+→ 刷回 Android、拉 `flashinfo`、解码、清块、符号化。
+
+`scripts/brk-symbolize.py` 已升级：有 `DANDELION-SR` 行时**优先用 `sr_slide`**（并标注 per-task 值不是 region slide 的情况），
+`0xffffffff` 视为未知而不是当成真实 slide ✓
+
+---

@@ -149,9 +149,13 @@ image table: 3354 entries at 0x270
 5. 符号化资产在 `/root/work/symtab/`（缓存头 + 685 MB 符号表），**不必重下**
 6. 下一步：跑一轮取 `unslid=`，然后
    `cd /root/work/symtab && python3 <repo>/scripts/local-symbols.py dyld_shared_cache_arm64 dyld_shared_cache_arm64.symbols <unslid>`
-7. **已更新（见 `HANDOFF.md` §0.133）**：`boot-slide.img`（`7b7eefa0`）已于 14:09 刷入、14:10:03 启动，断言后挂住 ✓
-   日志还差一次按键才能取：长按电源 ~10 s → 电源+音量下 → 跑
-   `scripts\collect-slide.ps1 -Tag slide`（刷回 Android → 拉 `flashinfo` → 解码 → 符号化，一条命令）
+7. **已更新（见 `HANDOFF.md` §0.134）**：先查清 `task_shared_region_slide` 可能是 `0xffffffff`（copyin 失败时不写），
+   所以重建了带**共享区自身 slide**的新镜像 `D:\aios\out3\boot-sr2.img`（`4254e1d2`）✓
+   一次按键即出结果：
+   `scripts\collect-slide.ps1 -Tag sr2 -FlashImage D:\aios\out3\boot-sr2.img`
+   （刷 payload → 约 17 分钟到断言 → 你按键回 fastboot → 自动刷回 Android、拉日志、符号化）
    可用镜像：`boot-good-0113.img`（`d2b57878`）
+8. ⚠ **构建用的是另一个检出** `/root/work/UniXNU-dandelion`，不是 `D:\aios\_work\UniXNU-dandelion`；
+   内核补丁必须写进构建侧的 `patches/xnu/series` 才会被编译（详见 §0.134 第五节）
 
 注意事项：内核异常上下文**不能 copyin**（两次实测 data abort）；补丁必须 LF 换行并有 `.gitattributes` 保护。

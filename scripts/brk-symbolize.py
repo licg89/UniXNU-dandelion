@@ -29,6 +29,13 @@ BRK = re.compile(
     r'DANDELION-BRK: pid=(-?\d+) comm=(\S+) pc=(0x[0-9a-fA-F]+) slide=(0x[0-9a-fA-F]+)'
     r' unslid=(0x[0-9a-fA-F]+) lr=(0x[0-9a-fA-F]+) comment=(0x[0-9a-fA-F]+)')
 
+# Newer images print the shared region's own slide alongside the per-task one.
+SR = re.compile(
+    r'DANDELION-SR: pid=(-?\d+) comm=(\S+) sr_slide=(0x[0-9a-fA-F]+) sr_base=(0x[0-9a-fA-F]+)'
+    r' task_slide=(0x[0-9a-fA-F]+)')
+
+UNKNOWN = (0xffffffffffffffff, 0xffffffff)
+
 
 def read_images(path):
     with open(path, 'rb') as fh:
@@ -116,6 +123,13 @@ def main():
         print('no DANDELION-BRK records with slide/unslid in', args.log)
         return 1
 
+    # The kernel also prints the shared region's own slide (DANDELION-SR).  That one is always set
+    # once the cache is mapped, while task_shared_region_slide stays -1 unless a copyin succeeded
+    # during initial task setup, so the region value wins whenever the two disagree.
+    sr_by_pid = {}
+    for pid, comm, sr_slide, sr_base, task_slide in SR.findall(text):
+        sr_by_pid[pid] = (int(sr_slide, 16), int(sr_base, 16))
+
     images, region_start = read_images(args.cache_header)
     try:
         syms = Symbols(args.symbols, region_start)
@@ -126,19 +140,33 @@ def main():
     rows = []
     seen = set()
     for pid, comm, pc, slide, unslid, lr, comment in hits:
-        if (comm, unslid) in seen:
+        if (comm, pc) in seen:
             continue
-        seen.add((comm, unslid))
-        addr = int(unslid, 16)
-        row = ('%s  pid=%s  pc=%s  slide=%s  unslid=%s  lr=%s  comment=%s'
-               % (comm, pid, pc, slide, unslid, lr, comment))
+        seen.add((comm, pc))
+        region_slide, region_base = sr_by_pid.get(pid, (None, None))
+        chosen = int(slide, 16)
+        source = 'task'
+        if region_slide is not None and region_slide not in UNKNOWN:
+            chosen = region_slide
+            source = 'region'
+        note = ''
+        if chosen in UNKNOWN:
+            note = '  (no usable slide was recorded for this task)'
+        addr = (int(pc, 16) - chosen) & 0xffffffffffffffff
+        row = ('%s  pid=%s  pc=%s  slide=%s  unslid=%s  lr=%s  comment=%s\n'
+               '    slide source: %s%s'
+               % (comm, pid, pc, slide, unslid, lr, comment, source, note))
+        if region_base is not None:
+            row += '  sr_base=%#x' % region_base
+        if source == 'region' and chosen != int(slide, 16):
+            row += '\n    note: the per-task value %s is not the region slide; using %#x' % (slide, chosen)
         name, offset = image_of(images, addr)
         if name is None:
-            row += '\n    image: below the shared region (the process own Mach-O text)'
+            row += '\n    image: outside the shared region (the process own Mach-O text)'
         else:
             row += '\n    image: %s + 0x%x' % (name, offset)
             if syms:
-                fn = syms.name_at(int(unslid, 16) - offset, addr)
+                fn = syms.name_at(addr - offset, addr)
                 row += '\n    symbol: %s' % (fn if fn else '(no local symbol at or below)')
         rows.append(row)
 
