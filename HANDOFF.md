@@ -7561,7 +7561,7 @@ SpringBoard：
 ### 五、所以要修什么
 
 - **不是**"缺 GPU/Metal 导致的 CoreML 断言" ✗（§0.131 的猜测正式作废，那是按 slide=0 算的）
-- SpringBoard 死在 **FrontBoardServices 的 display monitor 初始化** → 显示栈仍是唯一缺口 ✓
+- SpringBoard 死在 **FrontBoardServices 的 display monitor 初始化** → 显示栈仍是唯一缺口 ✓　（断言原文见 §0.136：`failed to find the main CADisplay`）
   `§0.101` 记录的 `IOMobileFramebufferLegacy::start(): provider was not AppleARMIODevice` 正是同一条链
 - liveactivitiesd 死在"某次调用返回 nil" → 说明有**系统对象/服务没起来**（很可能与 display/backboard 同源）
 - 下一步优先级：
@@ -7638,5 +7638,84 @@ SB 是"消息发完直接 `brk #0` 兜底" ✓
   ② 该进程 main-executable 的 slide（内核目前没打印）
 → 可选改进：在 `exit_with_reason` 里补一行 `p->p_textvp` 的可执行文件路径（BSD 上下文允许），
   至少能坐实"死在哪个二进制"；地址偏移仍需要 main slide ✗
+
+---
+
+## 0.136 ★★★ 2026-11-13 15:33–15:45：SpringBoard 的断言原文拿到了
+
+### 一、结论
+
+**SpringBoard 的致命断言原文是：**
+
+```
+failed to find the main CADisplay
+```
+
+位置：`FrontBoardServices` → `-[FBSDisplayMonitor _initWithBookendObserver:transformer:]` →
+cold 块 `0x19f3df2ec`（`unslid` = `0x19f3df2ec`，slide `0x1fc6c000`）
+
+→ FrontBoardServices **软链接 QuartzCore** 后拿不到 `[CADisplay mainDisplay]` → 断言 → `brk #0` ✗
+
+### 二、这个函数里其实有五条断言，原文都取到了
+
+同一个函数里是一串"取 CFString → `os_log_type_enabled` → 打日志 → `brk #0`"的 cold 块，按代码顺序：
+
+| brk 位置（unslid） | 断言原文 | 长度 |
+| --- | --- | --- |
+| `0x19f3df1e0` | `two CADisplays had the same displayID(%u) -> $@` | 47 |
+| `0x19f3df238` | `failed to initialize display source -> display=%@` | 49 |
+| `0x19f3df294` | `failed to find the symbol for CADisplay` | 39 |
+| **`0x19f3df2ec`** | **`failed to find the main CADisplay`** ← **SpringBoard** | **33** |
+| `0x19f3df34c` | `failed to initialize mainDisplay source -> mainDisplay=%@` | 57 |
+
+⚠ **修正 §0.135**：那里把 trap 归到"`failed to initialize mainDisplay source`"是**差了一块** ✗ ——
+那段代码的 `add x2, x2, #0xf88` 属于**下一个**块；trap 块自己的是 `#0xf68` ✗→✓ 以本节为准 ✓
+
+### 三、怎么把 CFString 原文解出来的（可复用）
+
+`x2` 指向的是 **CFString 常量**（`__DATA` 里 0x20 字节一条）：
+
+```
++00  isa 指针（带 fixup 位）
++08  flags = 0x7C8   ← 8 位 UTF-8
++10  数据指针，低 36 位 = **unslid vmaddr**
++18  长度（字符数）
+```
+
+取 `data & 0xFFFFFFFFF` 得到 vmaddr，减 `0x180000000` 就是缓存内偏移，直接读字符串 ✓
+（例：`0x4019F453EEE & 0xFFFFFFFFF = 0x19F453EEE` → 偏移 `0x1F453EEE` → 读到
+`failed to initialize mainDisplay source -> mainDisplay=%@`，且长度 57 与记录里的 57 完全一致 ✓）
+
+### 四、上下文：这一段代码在跟 QuartzCore 打交道
+
+`FBSDisplayMonitor.m` 旁边的字符串（同一 image）还给出了软链接清单：
+
+```
+/System/Library/Frameworks/QuartzCore.framework/QuartzCore
+/System/Library/PrivateFrameworks/QuartzCore.framework/QuartzCore
+/AppleInternal/Library/Frameworks/QuartzCore.framework/QuartzCore
+void *QuartzCoreLibrary(void)          ← QuartzCoreSoftLinking.m
+```
+
+→ 也就是说 FBS 在启动时**必须**通过 QuartzCore 拿到主显示器对象 ✗
+
+### 五、下一步修法（具体到点）
+
+1. **让 CoreAnimation 有一个 CADisplay** ✓ 这是根因：
+   iOS 上 `CADisplay` 由 CoreAnimation 的显示管理从 **IOMobileFramebuffer** 后端生成；
+   本端口现在是 `GopFramebuffer`（CPU 渲染进 GOP framebuffer）+ 失败的
+   `IOMobileFramebufferLegacy::start(): provider was not AppleARMIODevice`（§0.101）
+   → 没有真正的 IOMobileFramebuffer → CA 里没有 CADisplay → FBS 断言 ✗
+2. 最小可行路径：把显示 nub 的 provider 类型做成 **`AppleARMIODevice` 子类**，让
+   `IOMobileFramebufferLegacy::start()` 走通，并发布 CA 需要的 display 属性（`IOFramebufferOpen` 的
+   display attributes / refresh rate / 分辨率）
+3. 次选：先让 CA 能看到**任意**一个 display（哪怕参数是硬编码的），验证 `CADisplay mainDisplay != nil`
+   之后 SpringBoard 能否继续 —— 这一步能立刻区分"只缺显示"还是"还缺别的"
+
+### 六、顺带解释另外两个进程
+
+- **liveactivitiesd** 的 trap 是 `cbz x20 → brk #1`（某次调用返回 nil 的强制解包，§0.135 第四节）
+  → 与"backboard/显示相关服务没起来"同源的可能性很高 ✓
+- **watchdogd** 仍无法定位（pc 不在共享缓存，见 §0.135 第十节）
 
 ---
