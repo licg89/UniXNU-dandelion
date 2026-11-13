@@ -143,10 +143,11 @@ image table: 3354 entries at 0x270
 本会话上下文已超网关 16 MiB 上限，新开会话请按此接手：
 
 1. 读 `HANDOFF.md` 的 **§0.135**（最后一段）和本节
-2. **★★ 崩溃函数已经解出来了（不用手机）**：SpringBoard 死在 FrontBoardServices
-   `-[FBSDisplayMonitor _initWithBookendObserver:transformer:] + 0x47c`（`brk #0`）；
+2. **★★ 崩溃函数 + 断言原文都拿到了（不用手机）**：SpringBoard 死在 FrontBoardServices
+   `-[FBSDisplayMonitor _initWithBookendObserver:transformer:] + 0x47c`，断言原文
+   **`failed to find the main CADisplay`**（QuartzCore 里没有主显示器 → 显示栈仍是唯一缺口）；
    liveactivitiesd 死在 SessionSyncEngine 的一个 Swift 强制解包（`cbz → brk #1`）；
-   watchdogd 的 pc 不在共享缓存里，需要它自己的二进制。详见 §0.135 第一、四节
+   watchdogd 的 pc 不在共享缓存里，需要它自己的二进制。详见 §0.136（原文）与 §0.135（定位/反汇编）
 3. **修法方向**：显示栈。让 display monitor 拿到合法显示配置（provider 做成 `AppleARMIODevice`、
    补齐 BackBoardServices 读的属性）；§0.101 的 `provider was not AppleARMIODevice` 是同一条链
 4. 符号化资产在 `/root/work/symtab/`（缓存头 + 685 MB 符号表），**不必重下**
