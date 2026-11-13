@@ -1,0 +1,21 @@
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -1500,1 +1500,18 @@
++	/*
++	 * Board diagnostic: report the trap that ended this process, with the pid and comm that this
++	 * file can see.  Cleared after use so a later exit cannot report a stale trap.
++	 */
++	{
++		extern uint64_t dandelion_brk_pc;
++		extern uint64_t dandelion_brk_lr;
++		extern unsigned dandelion_brk_comment;
++		if (WIFSIGNALED(rv) && WTERMSIG(rv) == SIGTRAP && dandelion_brk_pc != 0) {
++			printf("DANDELION-BRK: pid=%d comm=%s pc=%#llx lr=%#llx comment=%#x\n",
++			    proc_getpid(p), p->p_comm,
++			    (unsigned long long)dandelion_brk_pc,
++			    (unsigned long long)dandelion_brk_lr, dandelion_brk_comment);
++			dandelion_brk_pc = 0;
++		}
++	}
++
+ 	thread_t self = current_thread();

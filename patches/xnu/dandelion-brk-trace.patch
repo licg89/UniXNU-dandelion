@@ -1,0 +1,22 @@
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -163,1 +163,9 @@
++/*
++ * Filled by handle_breakpoint() and printed by exit_with_reason() in bsd/kern/kern_exit.c, which
++ * can see struct proc; this file cannot, because osfmk never includes sys/proc.h.
++ */
++uint64_t dandelion_brk_pc;
++uint64_t dandelion_brk_lr;
++unsigned dandelion_brk_comment;
++
+ static void handle_breakpoint(arm_saved_state_t *, uint32_t) __dead2;
+@@ -1247,1 +1247,9 @@
++	/*
++	 * Board diagnostic: record the trap.  Only scalars: copyin faults in this exception-delivery
++	 * context (measured as a kernel data abort in copyinstr), so the image header is read later.
++	 */
++	dandelion_brk_pc = (uint64_t)get_saved_state_pc(state);
++	dandelion_brk_lr = (uint64_t)get_saved_state_lr(state);
++	dandelion_brk_comment = (unsigned)(ISS_BRK_COMMENT(esr));
++
+ 	codes[1] = get_saved_state_pc(state);
