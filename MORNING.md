@@ -149,6 +149,9 @@ image table: 3354 entries at 0x270
 5. 符号化资产在 `/root/work/symtab/`（缓存头 + 685 MB 符号表），**不必重下**
 6. 下一步：跑一轮取 `unslid=`，然后
    `cd /root/work/symtab && python3 <repo>/scripts/local-symbols.py dyld_shared_cache_arm64 dyld_shared_cache_arm64.symbols <unslid>`
-7. 待刷镜像：`D:\aios\out3\boot-slide.img`（`7b7eefa0`）；可用镜像：`boot-good-0113.img`（`d2b57878`）
+7. **已更新（见 `HANDOFF.md` §0.133）**：`boot-slide.img`（`7b7eefa0`）已于 14:09 刷入、14:10:03 启动，断言后挂住 ✓
+   日志还差一次按键才能取：长按电源 ~10 s → 电源+音量下 → 跑
+   `scripts\collect-slide.ps1 -Tag slide`（刷回 Android → 拉 `flashinfo` → 解码 → 符号化，一条命令）
+   可用镜像：`boot-good-0113.img`（`d2b57878`）
 
 注意事项：内核异常上下文**不能 copyin**（两次实测 data abort）；补丁必须 LF 换行并有 `.gitattributes` 保护。
