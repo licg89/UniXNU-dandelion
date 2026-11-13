@@ -7590,4 +7590,18 @@ python3 scripts/fit-cache-slide.py --log out/console-xxx.txt \
 | `brk` 立即数算错成 `0xD4200000 \| imm` | 全库只找到 2 个 `brk#1`，拟合必然失败 ✗；正确是 `imm << 5`（改后 `brk#1` 有 573 万个候选位点）|
 | 用 `unnest` 区间反推 slide | 无效（不对齐镜像/子缓存起点）✗ 见 §0.134 |
 
+### 八、trap 前那两次调用（符号化出来的）
+
+| 崩溃点 | 前一条 `bl` 的目标 | 符号表里的名字 |
+| --- | --- | --- |
+| liveactivitiesd `1c18f64c8` | `0x1c798bc74` | AudioSessionServer + 0x77c74 → `_objc_msgSend$volumeCategoryAndMode:mode:outCategoryCopy:outModeCopy:` |
+| liveactivitiesd `1c18f64c0` | `0x1c798bc44` | 同上 + 0xbc64 |
+| SpringBoard `19f3df2e8` | `0x19fcd7f04` | AssistantServices + 0x27df04 → `_objc_msgSend$year` |
+| SpringBoard `19f3df2e4` | `0x19f46e740` | **FrontBoardServices + 0xad740** → `_objc_msgSend$UTF8String + 0x0` |
+
+→ 两处 trap 都**紧跟一次 `objc_msgSend`**：LAD 是"消息发给返回 nil 的对象/返回 nil 直接 `cbz` 跳 trap"，
+SB 是"消息发完直接 `brk #0` 兜底" ✓
+⚠ 注意：`_objc_msgSend$<selector>` 是符号表对 **selector stub** 的命名，具体 selector 名只能说"最近符号"，
+不要当成确证的调用语义 ✗
+
 ---
