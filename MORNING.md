@@ -142,20 +142,20 @@ image table: 3354 entries at 0x270
 
 本会话上下文已超网关 16 MiB 上限，新开会话请按此接手：
 
-1. 读 `HANDOFF.md` 的 **§0.132**（最后一段）和本节
-2. 关键结论：存储 29 MB/s ✓ 内存 3.68 GB ✓ SpringBoard 能跑但初始化即断言 ✗
-3. 已从 `UniXNU/UniXNU-sheng` 的 `package/BootFaultProbe.c` 拿到 `current_task()->task_shared_region_slide`
-4. 内核已打印 `DANDELION-BRK: ... pc= slide= unslid= lr= comment=` —— **`unslid` 可直接查符号**
-5. 符号化资产在 `/root/work/symtab/`（缓存头 + 685 MB 符号表），**不必重下**
-6. 下一步：跑一轮取 `unslid=`，然后
-   `cd /root/work/symtab && python3 <repo>/scripts/local-symbols.py dyld_shared_cache_arm64 dyld_shared_cache_arm64.symbols <unslid>`
-7. **已更新（见 `HANDOFF.md` §0.134）**：先查清 `task_shared_region_slide` 可能是 `0xffffffff`（copyin 失败时不写），
-   所以重建了带**共享区自身 slide**的新镜像 `D:\aios\out3\boot-sr2.img`（`4254e1d2`）✓
-   一次按键即出结果：
-   `scripts\collect-slide.ps1 -Tag sr2 -FlashImage D:\aios\out3\boot-sr2.img`
-   （刷 payload → 约 17 分钟到断言 → 你按键回 fastboot → 自动刷回 Android、拉日志、符号化）
-   可用镜像：`boot-good-0113.img`（`d2b57878`）
-8. ⚠ **构建用的是另一个检出** `/root/work/UniXNU-dandelion`，不是 `D:\aios\_work\UniXNU-dandelion`；
+1. 读 `HANDOFF.md` 的 **§0.135**（最后一段）和本节
+2. **★★ 崩溃函数已经解出来了（不用手机）**：SpringBoard 死在 FrontBoardServices
+   `-[FBSDisplayMonitor _initWithBookendObserver:transformer:] + 0x47c`（`brk #0`）；
+   liveactivitiesd 死在 SessionSyncEngine 的一个 Swift 强制解包（`cbz → brk #1`）；
+   watchdogd 的 pc 不在共享缓存里，需要它自己的二进制。详见 §0.135 第一、四节
+3. **修法方向**：显示栈。让 display monitor 拿到合法显示配置（provider 做成 `AppleARMIODevice`、
+   补齐 BackBoardServices 读的属性）；§0.101 的 `provider was not AppleARMIODevice` 是同一条链
+4. 符号化资产在 `/root/work/symtab/`（缓存头 + 685 MB 符号表），**不必重下**
+5. 没有 slide 的日志也能解：`python3 scripts/fit-cache-slide.py --log <console.txt> --image <userdata-root.img>`
+   （原理：pc 必落在 `brk #comment` 指令上、一次启动只有一个 slide；见 §0.135 第二节）
+6. 想用硬件侧印证：`D:\aios\out3\boot-sr2.img`（`4254e1d2`）会打印 `DANDELION-SR ... sr_slide=`，
+   一条命令：`scripts\collect-slide.ps1 -Tag sr2 -FlashImage D:\aios\out3\boot-sr2.img`
+   （刷 payload → 约 17 分钟 → 你按键回 fastboot → 自动拉日志+符号化）；可用镜像 `boot-good-0113.img`（`d2b57878`）
+7. ⚠ **构建用的是另一个检出** `/root/work/UniXNU-dandelion`，不是 `D:\aios\_work\UniXNU-dandelion`；
    内核补丁必须写进构建侧的 `patches/xnu/series` 才会被编译（详见 §0.134 第五节）
 
 注意事项：内核异常上下文**不能 copyin**（两次实测 data abort）；补丁必须 LF 换行并有 `.gitattributes` 保护。

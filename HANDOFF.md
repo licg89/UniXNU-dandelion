@@ -7500,3 +7500,94 @@ powershell -ExecutionPolicy Bypass -File D:\aios\_work\UniXNU-dandelion\scripts\
 `0xffffffff` 视为未知而不是当成真实 slide ✓
 
 ---
+
+## 0.135 ★★★ 2026-11-13 15:00–15:30：不用手机就把崩溃函数解出来了
+
+### 一、结论（先看这个）
+
+| 进程 | 崩溃点 | 类型 |
+| --- | --- | --- |
+| **SpringBoard** | `/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices` **+ 0x1e2ec**<br>`-[FBSDisplayMonitor _initWithBookendObserver:transformer:] + 0x47c` | `brk #0`（C/ObjC 兜底 trap）|
+| **liveactivitiesd** | `/System/Library/PrivateFrameworks/SessionSyncEngine.framework/SessionSyncEngine` **+ 0x1d4f8**<br>（`___swift_memcpy17_8 + 0x15c4` 之后的匿名函数，Swift）| `brk #1`（Swift 断言）|
+| **watchdogd** | **不在共享缓存里**（pc `0x1005f8b0c` < `0x180000000`）→ 需要它自己的二进制 ✗ | — |
+
+对应位址：`unslid` = **`0x19f3df2ec`**（SpringBoard）/ **`0x1c18f64f8`**（liveactivitiesd）
+
+### 二、方法：用缓存里的 `brk` 操作码反解 slide
+
+1. `pc` 指向 `brk` 指令**本身**；`brk #imm` 的编码是 **`0xD4200000 | (imm << 5)`**，而 `comment` 就是 `imm`
+2. 共享缓存是**系统级**映射 —— 一次启动只有一个 slide（`sr_slide`），所以同一轮里不同进程的 trap 必须共用同一个 slide
+3. 于是：`slide = pc - 0x180000000 - O`，`O` 是缓存里某个 `brk #comment` 的偏移，并要求 `slide % 0x1000 == 0`
+   （`PAGE_SIZE_FOR_SR_SLIDE = 4096`：本端口 4K 页，slide 网格是 **4 KB** 不是 16 KB）
+4. SpringBoard 得 **7** 个候选 ∩ liveactivitiesd 得 **3015** 个候选 → **唯一 1 个**：`slide 0x1fc6c000`
+
+### 三、交叉验证（关键，别跳过）
+
+拿**另一轮启动**的 pc 对（§0.130 记录的 `0x1a140b2ec` comment=0 / `0x1c39224f8` comment=1）同样反解：
+
+```
+slide 0x202c000  ->  unslid 0x19f3df2ec   和   0x1c18f64f8
+```
+
+**与第一轮完全相同的两个 unslid 地址** ✓✓ 两次独立启动、两个不同 slide、同一对崩溃点 —— 巧合概率可忽略，
+拟合方法成立，且这两个 trap 站点是**同一处代码**。
+
+### 四、反汇编证据（从本地缓存取指，`aarch64-linux-gnu-objdump`）
+
+liveactivitiesd：
+
+```
+1c18f64c8:  bl  0x1c798bc74
+1c18f64cc:  cbz x20, 0x1c18f64f8     ← 上一步的返回值是 NULL 就跳去崩
+1c18f64d0:  str x20, [x19, #40]      ← 正常路径：把对象存进 ivar
+...
+1c18f64f8:  brk #0x1
+```
+
+→ 教科书式的**强制解包 / 非空断言**：某个调用返回 `nil`，代码直接 trap ✗
+（日志里 `lr=0x1e15624cc` 减 slide 正好 = `0x1c18f64cc`，就是那条 `cbz` ✓ 自洽）
+
+SpringBoard：
+
+```
+19f3df2e4:  bl  0x19f46e740
+19f3df2e8:  bl  0x19fcd7f04
+19f3df2ec:  brk #0x0
+19f3df2f0:  brk #0x1
+```
+
+→ `brk #0` 紧跟一次调用，是 C 层 `__builtin_trap()`/`os_crash` 的兜底路径（pc == lr ✓）
+
+### 五、所以要修什么
+
+- **不是**"缺 GPU/Metal 导致的 CoreML 断言" ✗（§0.131 的猜测正式作废，那是按 slide=0 算的）
+- SpringBoard 死在 **FrontBoardServices 的 display monitor 初始化** → 显示栈仍是唯一缺口 ✓
+  `§0.101` 记录的 `IOMobileFramebufferLegacy::start(): provider was not AppleARMIODevice` 正是同一条链
+- liveactivitiesd 死在"某次调用返回 nil" → 说明有**系统对象/服务没起来**（很可能与 display/backboard 同源）
+- 下一步优先级：
+  1. 让 display monitor 拿到**合法显示配置**（provider 类型做成 `AppleARMIODevice` / 补齐 BackBoardServices 读的属性）
+  2. 用新镜像确认 `sr_slide` 是否等于 `0x1fc6c000`（若是，本轮拟合得到硬件侧印证 ✓）
+
+### 六、新工具 `scripts/fit-cache-slide.py`
+
+**没有 slide 的日志也能解**：扫描缓存里的 `brk` 站点 → 拟合 slide → 直接打印镜像+函数名。
+
+```bash
+python3 scripts/fit-cache-slide.py --log out/console-xxx.txt \
+    --image /root/work/UniXNU/out/dandelion/ipados-17.7.11-21H461/dandelion/userdata/userdata-root.img
+```
+
+缓存来源就在本地：**`userdata-root.img` 里带着整套 dyld 缓存文件**（57 个 `dyld_v1` 起点；
+主缓存头与本机 `/root/work/symtab/dyld_shared_cache_arm64` 的 491,520 字节**逐字节相同** ✓；
+52 个子缓存按表里的 UUID **一一对上** ✓）
+
+### 七、踩过的坑（免得重走）
+
+| 坑 | 结果 |
+| --- | --- |
+| `libfsapfs` 20240429 与 20261030 都打不开这个 **sealed cryptex 卷**的文件树 | 挂载/遍历全失败 ✗ → 改为**不解析 APFS**，直接在 raw 镜像里按 `dyld_v1   arm64` 找文件起点 + 按 UUID 配对子缓存 ✓ |
+| `fsapfsmount` | "No sub system to mount APFS format" ✗（FUSE 正常，是卷不支持）|
+| `brk` 立即数算错成 `0xD4200000 \| imm` | 全库只找到 2 个 `brk#1`，拟合必然失败 ✗；正确是 `imm << 5`（改后 `brk#1` 有 573 万个候选位点）|
+| 用 `unnest` 区间反推 slide | 无效（不对齐镜像/子缓存起点）✗ 见 §0.134 |
+
+---
