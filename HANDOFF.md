@@ -7739,3 +7739,69 @@ TOML 可解析 ✓（`findings` 4 条 / `evidence` 6 条）
 不要顺手改 ✗ —— 那是关于"证据到什么程度"的判断
 
 ---
+
+## 0.137 2026-11-13 15:44–15:56：新探针把"这个 pc 属于哪个镜像、偏移多少"直接打出来
+
+### 一、为什么还要加探针
+
+watchdogd 的两条 pc（`0x1005f8b0c` / `0x100eefb0c`）都在 app 区（< `0x180000000`），共享缓存里查不到 ✓
+要把它们变成"镜像 + 偏移"，必须先知道**装载基址**。而 dyld 的 `dyld_all_image_infos` 里本来就有：
+
+- `sharedCacheSlide` / `sharedCacheBaseAddress` —— 缓存 slide 的**独立第二来源**（可与内核 `sr_slide` 互校 ✓）
+- `infoArray[]` —— 每个已装载镜像的 `imageLoadAddress` + `imageFilePath`
+
+### 二、新补丁 `dandelion-image-probe.patch`
+
+在 `kern_exit.c` 的 trap 报告块里（**BSD 上下文**，与同文件 crash-report 路径的 `copyin` 同一手法，
+结构体定义在 `osfmk/kdp/kdp_dyld.h`）：
+
+| 新行 | 内容 |
+| --- | --- |
+| `DANDELION-IMG` | `pid comm cache_slide cache_base images=N` |
+| `DANDELION-EXE` | `pid comm base=`（`infoArray[0]` = 主可执行文件）|
+| `DANDELION-TEXT` | `pid comm pc base off path` —— 扫 `infoArray` 取"≤ pc 的最大基址"= **真正包含该 pc 的镜像** |
+
+`off = pc - base` 就是该 pc 在**它自己 Mach-O 里的偏移**，`path` 告诉我们是哪个二进制
+→ watchdogd 从此可定位 ✓
+
+安全性：只在 `WIFSIGNALED && SIGTERM==SIGTRAP && dandelion_brk_pc != 0` 时执行；`copyin` 失败即跳过；
+最多扫 256 条；不 `task_suspend`（进程已到最后一个线程，映射静止）✓
+
+### 三、验证
+
+| 项 | 结果 |
+| --- | --- |
+| 补丁序列 | **72** 个，末尾 `dandelion-sr-probe.patch` → `dandelion-image-probe.patch` ✓ |
+| 干净 clone 重放 | 71 + 新补丁全部 `git apply` 干净 ✓ |
+| 构建 | 426 s，退出码 0 ✓ |
+| 构建树 | 三个探针源码都在 ✓ |
+| `kernel.macho` | `DANDELION-BRK/SR/IMG/EXE/TEXT` 五个格式串全在 ✓ |
+
+### 四、新镜像
+
+| 项 | 值 |
+| --- | --- |
+| 文件 | `D:\aios\out3\boot-sr3.img` |
+| sha256 前缀 | **`bdeaadc5`** |
+| 大小 | 63,688,704 ✓ |
+| 内核 | `kernel.macho` sha `910b748d` |
+| 内含 | BRK ✓ SR ✓ IMG ✓ EXE ✓ TEXT ✓ |
+
+### 五、拿到 base+off 之后怎么解 watchdogd
+
+1. `DANDELION-TEXT` 的 `path` 先坐实"是哪个二进制"
+2. 在本机 raw 镜像里找它的 Mach-O：扫 `0xfeedfacf` 头 + 要求 `off` 处字节正好是 `brk #1`
+   且落在 `__TEXT` 段内（与缓存那套"必须落在 brk 指令上"的判据同源 ✓）
+3. 用该二进制的符号/反汇编看断言点
+
+### 六、下一次只需要一次按键
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\aios\_work\UniXNU-dandelion\scripts\collect-slide.ps1 `
+    -Tag sr3 -FlashImage D:\aios\out3\boot-sr3.img
+```
+
+预期日志里会有：`DANDELION-BRK`（含 slide/unslid）、`DANDELION-SR`（`sr_slide`，
+应等于本轮拟合的 `0x1fc6c000`）、`DANDELION-IMG/EXE/TEXT`（含 watchdogd 的镜像与偏移）✓
+
+---

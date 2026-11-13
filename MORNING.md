@@ -153,8 +153,9 @@ image table: 3354 entries at 0x270
 4. 符号化资产在 `/root/work/symtab/`（缓存头 + 685 MB 符号表），**不必重下**
 5. 没有 slide 的日志也能解：`python3 scripts/fit-cache-slide.py --log <console.txt> --image <userdata-root.img>`
    （原理：pc 必落在 `brk #comment` 指令上、一次启动只有一个 slide；见 §0.135 第二节）
-6. 想用硬件侧印证：`D:\aios\out3\boot-sr2.img`（`4254e1d2`）会打印 `DANDELION-SR ... sr_slide=`，
-   一条命令：`scripts\collect-slide.ps1 -Tag sr2 -FlashImage D:\aios\out3\boot-sr2.img`
+6. 想用硬件侧印证：`D:\aios\out3\boot-sr3.img`（`bdeaadc5`）会打印 `DANDELION-SR ... sr_slide=`、
+   `DANDELION-IMG/EXE/TEXT`（后者给出 trap pc 所在镜像的 base/off/path，watchdogd 就靠这个），
+   一条命令：`scripts\collect-slide.ps1 -Tag sr3 -FlashImage D:\aios\out3\boot-sr3.img`
    （刷 payload → 约 17 分钟 → 你按键回 fastboot → 自动拉日志+符号化）；可用镜像 `boot-good-0113.img`（`d2b57878`）
 7. ⚠ **构建用的是另一个检出** `/root/work/UniXNU-dandelion`，不是 `D:\aios\_work\UniXNU-dandelion`；
    内核补丁必须写进构建侧的 `patches/xnu/series` 才会被编译（详见 §0.134 第五节）
