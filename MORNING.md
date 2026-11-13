@@ -135,3 +135,20 @@ image table: 3354 entries at 0x270
 | 成功运行 | `43303449111` ✓ 7m28s ✓ |
 | 本地缓存头 | `/root/work/cache-hdr/dyld_shared_cache_arm64` ✓ |
 | 解析脚本 | `scripts/cache-images.py` ✓ 提交 `a787f9d` ✓ |
+
+---
+
+## 八、新会话交接指引（应对 413）
+
+本会话上下文已超网关 16 MiB 上限，新开会话请按此接手：
+
+1. 读 `HANDOFF.md` 的 **§0.132**（最后一段）和本节
+2. 关键结论：存储 29 MB/s ✓ 内存 3.68 GB ✓ SpringBoard 能跑但初始化即断言 ✗
+3. 已从 `UniXNU/UniXNU-sheng` 的 `package/BootFaultProbe.c` 拿到 `current_task()->task_shared_region_slide`
+4. 内核已打印 `DANDELION-BRK: ... pc= slide= unslid= lr= comment=` —— **`unslid` 可直接查符号**
+5. 符号化资产在 `/root/work/symtab/`（缓存头 + 685 MB 符号表），**不必重下**
+6. 下一步：跑一轮取 `unslid=`，然后
+   `cd /root/work/symtab && python3 <repo>/scripts/local-symbols.py dyld_shared_cache_arm64 dyld_shared_cache_arm64.symbols <unslid>`
+7. 待刷镜像：`D:\aios\out3\boot-slide.img`（`7b7eefa0`）；可用镜像：`boot-good-0113.img`（`d2b57878`）
+
+注意事项：内核异常上下文**不能 copyin**（两次实测 data abort）；补丁必须 LF 换行并有 `.gitattributes` 保护。
