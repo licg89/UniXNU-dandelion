@@ -7972,3 +7972,70 @@ payload 是 FAT 卷（卷标 `DANDELION`），可用 mtools 直接读：`mdir -i
 也就是必须先让带该探针的镜像能启动 ✓ 与第三节是同一个前置条件。
 
 ---
+
+## 0.141 ★★★ 2026-11-13 17:05–17:20：`Compromised Data` 的根因找到了——payload 丢了 OS 信任缓存
+
+### 一、根因（有量化证据）
+
+payload 里的 `kernel.macho.trustcache`（DarwinBoot 校验的那份 bundle）：
+
+| 镜像 | 大小 | 模块 | 条目 |
+| --- | --- | --- | --- |
+| `boot-slide.img`（**能启动**）| **62,680 B** | 3 | **2,608** |
+| `boot-sr3.img`（被拒）| **56 B** | 1 | 1 ← 只剩 owner 那份 |
+| `boot-sr4.img`（owner 关掉后重编）| **不存在** | — | — |
+
+**为什么**：`scripts/unixnu/payload.py:105-112`
+
+```python
+owner_trust = getattr(args, 'owner_trust_cache', None)
+trust = expand(owner_trust or args.trust_cache) if (owner_trust or ...) else None
+...
+if allowed and not owner_trust and sha256_file(trust) not in allowed:   # ← owner 时连 sha 校验都跳过
+```
+
+而 `unixnu.local.toml` 里恰好设了 `owner_trust_cache = /root/work/dandelion-launchd.trustcache`（56 B）
+→ **owner 顶掉了 `--trust-cache`**，payload 只带 1 条 entry → DarwinBoot 判定 `Compromised Data` ✗
+（`--trust-cache` 本身也没人传：关掉 owner 后就变成"没有 trustcache 文件"了 ✗）
+
+顺带：payload 里 `scratch-data.img` 从 1,060,960 变 4,194,304，是因为它是 `data_ramdisk`
+（`/root/work/dandelion-data-seed.dbr`）的**拷贝**，而那个种子文件长大了 —— 与拒启动无关 ✓
+
+### 二、修法（已验证）
+
+那份 62,680 B 的 bundle 里的条目是**系统二进制的 cdhash**，与我们的内核无关（内核没有
+`LC_CODE_SIGNATURE`），所以可以直接复用能启动镜像里的那一份：
+
+```bash
+# 1) 从能启动的镜像里取出 bundle
+python3 - <<'PY'   # 取 boot.img 的 payload 段
+import pathlib, struct
+d = pathlib.Path('/mnt/d/aios/out3/boot-slide.img').read_bytes()
+ks, _ka, rs, _ra, _ss, _sa, _ta, page, _hv, _ov = struct.unpack_from('<10I', d, 8)
+page = page or 2048
+roff = page + (ks + page - 1) // page * page
+pathlib.Path('/root/work/slide.payload').write_bytes(d[roff:roff + rs])
+PY
+mcopy -s -n -i /root/work/slide.payload ::/EFI/UniXNU/Payloads/kernel.macho.trustcache /root/work/tcx/
+cp /root/work/tcx/kernel.macho.trustcache /root/work/dandelion-merged.trustcache
+# 2) 只把 unixnu.local.toml 的 owner_trust_cache 指向它，重跑 package.sh，然后还原配置
+```
+
+结果 `boot-sr5.img`（sha `0e5d92d1`）：payload 的 trustcache = **62,680 B / 3 模块 / 2,608 条，
+sha `3c3f2a6f9f886085` —— 与能启动那枚逐字节相同** ✓
+且五个探针都在（`DANDELION-BRK/SR/IMG/EXE/TEXT`）✓
+**待真机验证**（还没刷过）。
+
+### 三、复现说明（给以后）
+
+`merge_trustcache.py` 用 IPSW 那两份只能合成 61,356 B / 2 模块 / 2,554 条
+（OS 2,478 + SystemOS 76），**不等于** 62,680 / 3 / 2,608 —— 第三模块 54 条是我们自己的
+fixture 的 cdhash（`--extra=<cdhash>` 累积而来），不在 IPSW 里 ✗
+→ **日常重建请直接复用 `boot-slide.img` 里那份 bundle**（或把它存成 `/root/work/dandelion-merged.trustcache`）✓
+
+### 四、watchdogd 的最后一步
+
+`boot-sr5.img` 若能在真机启动，日志里会有 `DANDELION-TEXT: … base= off= path=`，
+配合 `scripts/resolve-app-text.py --log` 就能把 watchdogd 的镜像与偏移解出来 ✓
+
+---
