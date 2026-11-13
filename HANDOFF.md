@@ -7604,4 +7604,38 @@ SB 是"消息发完直接 `brk #0` 兜底" ✓
 ⚠ 注意：`_objc_msgSend$<selector>` 是符号表对 **selector stub** 的命名，具体 selector 名只能说"最近符号"，
 不要当成确证的调用语义 ✗
 
+### 九、trap 在函数里的位置（结构，不是猜测）
+
+`-[FBSDisplayMonitor _initWithBookendObserver:transformer:]` 里有一串**同形状的断言块**，每块都是
+"取格式串 → 打日志 → `brk`"，SpringBoard 撞的是其中一块：
+
+```
+19f3df2b0:  bl   0x19fcd815c            ; 取一个对象
+19f3df2b8:  adrp x0, 0x1eb62c000 / ldr x0,[x0,#768]   ; 日志句柄
+19f3df2c4:  bl   0x19fcd8474            ; 判断要不要打
+19f3df2c8:  cbz  w0, 0x19f3df2dc
+19f3df2cc:  bl   0x19f441520            ; 打日志（x2 = 格式串）
+19f3df2e4:  bl   0x19f46e740
+19f3df2e8:  bl   0x19fcd7f04
+19f3df2ec:  brk  #0x0                   ; ← 断言兜底
+```
+
+同一函数里 `0x19f3df1e0`、`0x19f3df238` 也是同样的块（各用不同格式串）→ 这是
+**NSAssert / os_crash 风格的多条件断言**，不是单点检查 ✓
+
+函数主体还是一个**遍历**（`ldr x26,[x8,x20,lsl#3]`、`x20` 自增、与 `x25` 比较），
+和"逐个处理显示/场景对象"的形状一致 ✓
+
+**没能取到断言原文** ✗：`x2` 指向的格式串是 **chained fixup 编码的指针**，直接读出来是二进制；
+要取原文得先做 dyld chained-fixup 解码（本轮未做，留给下一步）。
+
+### 十、watchdogd 的定论
+
+`0x1005f8b0c` / `0x100eefb0c` 都远低于本轮算出的共享区起点（`0x180000000 + 0x1fc6c000 = 0x19fc6c000`），
+所以**它们不是缓存地址** ✓。两条相差 `0x8f7000`，不是 16 KB 的整数倍 → 也不是"同一处代码、不同 slide" ✓
+→ 要解它需要：① watchdogd 自己的 Mach-O（在 SystemOS 卷里，本机 libfsapfs 打不开 sealed 卷 ✗）
+  ② 该进程 main-executable 的 slide（内核目前没打印）
+→ 可选改进：在 `exit_with_reason` 里补一行 `p->p_textvp` 的可执行文件路径（BSD 上下文允许），
+  至少能坐实"死在哪个二进制"；地址偏移仍需要 main slide ✗
+
 ---
