@@ -1,14 +1,22 @@
-name: dyld cache image table
+name: dyld symbols upload
 
-# Upload the shared cache header file so the image table can be parsed locally.
+# Upload dyld_shared_cache_arm64.symbols so the local symbol table can be read offline.
 #
-# The main cache file is only 491 KB: it holds the header, the image table (3354 entries) and the path
-# strings, with the bulk in 52 subcaches.  Uploading it once ends the round trips through the runner.
+# The .symbols file is a binary table (its header starts with the cache magic), so grepping it as text
+# finds nothing; but it is small enough to upload.  Format, from dyld's own sources:
 #
-# Tools that do not work on this cache, recorded so they are not retried: atos ("cannot load symbols for
-# the file ... for architecture arm64"), nm ("not recognized as a valid object file"), dyld_info
-# ("non-mach-o in fat file"), and the classic header offsets, which give imagesCount 0 because this
-# cache keeps the image table fields at 0x1C0/0x1C4 instead of 0x18/0x1C.
+#   struct dyld_cache_local_symbols_info {      // at offset 0
+#       uint32_t nlistOffset, nlistCount;       // 0, 4
+#       uint32_t stringsOffset, stringsSize;    // 8, 12
+#       uint32_t entriesOffset, entriesCount;   // 16, 20
+#   };
+#   struct dyld_cache_local_symbols_entry {     // 12 bytes each
+#       uint32_t dylibOffset;                   // VM offset of the image from the cache base
+#       uint32_t nlistStartIndex, nlistCount;
+#   };
+#
+# Together with the image table in dyld_shared_cache_arm64 (3354 images at 0x270), that maps an address
+# to image, function and offset.
 
 on:
   workflow_dispatch:
@@ -55,20 +63,32 @@ jobs:
           PY
           rm -f "$RUNNER_TEMP/ipsw/restore.ipsw"
 
-      - name: Mount and copy the cache header file
+      - name: Mount and copy the symbols table
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/systemos" "$RUNNER_TEMP/out"
           hdiutil attach -readonly -nobrowse -owners off \
             -mountpoint "$RUNNER_TEMP/systemos" "$RUNNER_TEMP/os/$SYSTEMOS_MEMBER"
           CACHE_DIR="$RUNNER_TEMP/systemos/System/Library/Caches/com.apple.dyld"
+          cp "$CACHE_DIR/dyld_shared_cache_arm64.symbols" "$RUNNER_TEMP/out/"
           cp "$CACHE_DIR/dyld_shared_cache_arm64" "$RUNNER_TEMP/out/"
           ls -l "$RUNNER_TEMP/out"
-          sha256sum "$RUNNER_TEMP/out/dyld_shared_cache_arm64"
+          echo "--- first 64 bytes of the symbols table"
+          xxd -l 64 "$RUNNER_TEMP/out/dyld_shared_cache_arm64.symbols"
 
-      - name: Upload the cache header file
+      - name: Split into two uploadable parts
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/out"
+          # Stay under the per-artifact size that the runner uploads comfortably.
+          split -b 300m -d dyld_shared_cache_arm64.symbols symbols.part.
+          ls -l symbols.part.* dyld_shared_cache_arm64
+
+      - name: Upload the symbols table
         uses: actions/upload-artifact@v4
         with:
-          name: dyld-cache-header
-          path: ${{ runner.temp }}/out/dyld_shared_cache_arm64
+          name: dyld-symbols-table
+          path: |
+            ${{ runner.temp }}/out/symbols.part.*
+            ${{ runner.temp }}/out/dyld_shared_cache_arm64
           if-no-files-found: error
