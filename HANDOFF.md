@@ -7712,6 +7712,12 @@ void *QuartzCoreLibrary(void)          ← QuartzCoreSoftLinking.m
 3. 次选：先让 CA 能看到**任意**一个 display（哪怕参数是硬编码的），验证 `CADisplay mainDisplay != nil`
    之后 SpringBoard 能否继续 —— 这一步能立刻区分"只缺显示"还是"还缺别的"
 
+**关于"谁负责给 CA 显示器"的一点克制说明**：iOS 上客户进程的 `CADisplay` 来自 WindowServer
+（`backboardd`）的 IPC。12:02 那份日志里**没有** `backboardd` 的记录，但这**不能**当作"它没跑"的证据 ✗ ——
+`DANDELION-EXEC` 只打 pid 不打名字，只有**退出**时才打 `comm`，所以仍在运行的进程在本日志里是隐形的。
+能确定的只有一条：**`FBSDisplayMonitor` 初始化时 `CADisplay` 主显示器是 nil** ✓
+（这正是那句断言的字面意思）
+
 ### 六、顺带解释另外两个进程
 
 - **liveactivitiesd** 的 trap 是 `cbz x20 → brk #1`（某次调用返回 nil 的强制解包，§0.135 第四节）
