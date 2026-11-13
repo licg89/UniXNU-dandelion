@@ -55,9 +55,14 @@ wsl -d Ubuntu -e bash -lc "python3 - '$Tag' <<'PY'
 import pathlib, sys
 tag = sys.argv[1]
 data = pathlib.Path('/mnt/d/aios/flashinfo-%s-%s.bin' % (tag, '$stamp')).read_bytes()
-nz = [i for i, b in enumerate(data) if b]
-print('non-zero bytes:', len(nz), 'last at', max(nz) if nz else -1)
-body = data
+cap = 28672 * 512                     # emmc_log_sectors: the console stops here, it never wraps
+win = data[:cap]
+nz = [i for i, b in enumerate(win) if b]
+print('non-zero bytes in the window:', len(nz), 'last at', max(nz) if nz else -1,
+      'of', cap)
+# sector 0 is the binary header (DLXLOG01 + counters), the text starts at sector 1 and is written
+# once, front to back: past the first NUL everything is a leftover from an older boot.
+body = win[512:]
 end = body.find(b'\x00')
 text = body[:end if end > 0 else len(body)].decode('latin-1', 'replace')
 lines = [l for l in text.splitlines() if l.strip()]

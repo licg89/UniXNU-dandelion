@@ -7332,3 +7332,90 @@ DANDELION-REASON: pid=113 comm=SpringBoard   … 37 00 00 00 30 00 00 00 8f 00 0
 → **这两个函数名不能当结论** ✗，必须以本轮日志里的 `unslid=` 重算为准 ✓
 
 ---
+
+## 0.133 2026-11-13 14:09–14:30：滑镜像已跑完，只差一次按键就能拿到 `unslid`
+
+### 一、这一轮实际做了什么
+
+| 步骤 | 结果 |
+| --- | --- |
+| 校验镜像内容 | `boot-slide.img` 里有 `DANDELION-BRK: pid=%d comm=%s pc=… slide=… unslid=… lr=… comment=…` 格式串，偏移 **3,646,326** ✓；对照 `boot-good-0113.img` 里**没有**该串 ✓ |
+| 刷入 | `fastboot flash boot D:\aios\out3\boot-slide.img`（62,196 KB）✓ 14:09，sha256 `7B7EEFA0…424EE` |
+| 启动 | `fastboot reboot` **14:10:03** ✓ |
+| **14:27:13** 状态 | 既不在 `adb` 也不在 `fastboot` ✓ = SpringBoard 断言后挂住（与 10–15 分钟到 SpringBoard 的旧记录一致 ✓）|
+| 取日志 | ✗ **未完成** —— 读 `flashinfo` 必须先回 Android，而回 fastboot 只有按键一条路 ✗ |
+
+### 二、工具已全部就绪（手机一按就能出结果 ✓）
+
+`scripts/brk-symbolize.py`：自包含，自己解析缓存头（镜像表 0x1C0/0x1C4）与 `.symbols`（0x4000 起 16 字节表），
+不再依赖 `local-symbols.py` 的 `main()`。已用**已知地址**反向验证过，管线本身没有不确定性 ✓：
+
+```
+0x1c39224f8 -> CoreSuggestionsInternals + 0x754f8
+        = ___38-[SGNameMappingTransformer transform:]_block_invoke + 0xac
+0x1a140b2ec -> CoreML + 0x4b42ec
+        = CoreML::validate<MLModelType2005> + 0xe8
+```
+
+`scripts/collect-slide.ps1`：把按键之后的全部步骤串成一条命令 ——
+等 fastboot（20 分钟）→ 刷回 `D:\aios\artifacts\boot_backup.img`（不擦除，adb key 保留）→ 等 adb →
+`dd` 出 16 MiB `flashinfo` → 解码成文本 → 清块 → 符号化 ✓
+
+提交 `6abb66d` ✓
+
+### 三、下次第一件事（两步，一条命令）
+
+1. 手机：长按电源 ~10 秒 → `电源 + 音量下` 进 fastboot
+2. Windows：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\aios\_work\UniXNU-dandelion\scripts\collect-slide.ps1 -Tag slide
+```
+
+产物：`D:\aios\flashinfo-slide-<时间戳>.bin`、`out\console-slide-<时间戳>.txt`、`out\brk-slide-<时间戳>.txt`（含函数名）。
+
+### 四、重解旧日志得到的一条新证据
+
+把 `flashinfo-brkpid-20261113-120251.bin`（342,410 非零字节 / 5,454 行）重解，`DANDELION-REASON` 里的**线程名是 `exc handler`**：
+
+```
+DANDELION-BRK:    pid=113 comm=SpringBoard   pc=0x1bf04b2ec lr=0x1bf04b2ec comment=0
+DANDELION-REASON: pid=113 comm=SpringBoard   … 37 00 00 00 30 00 00 00 8f 00 00 00 … "exc handler"
+```
+
+→ 陷阱线程不是主线程，而是进程的 **Mach 异常处理线程**（libsystem 把它命名为 `exc handler`）
+→ 也就是说这是**二次崩溃**：真正的失败先发生，异常处理线程在投递时又 `brk` ✗
+→ 与 `comment=0x1`（`brk #1`，Swift 断言）是两类不同事件；下一轮必须把 **pid / comm / comment** 一起读 ✓
+
+### 五、⚠ 必须收回的一处结论
+
+`MORNING.md` §七 与 §0.131 的"崩溃地址归属已解出 → CoreSuggestionsInternals / CoreML"，是**按 slide=0 假设**算出来的；
+而 §0.132 已证 `slide` 是 **per-task 且非 16 MB 对齐** ✓
+→ **这两个函数名不能当结论** ✗，必须以本轮日志里的 `unslid=` 重算为准 ✓
+
+### 六、旧日志 9 条 BRK 记录（无 slide 版，只作对照）
+
+| comm | pid | pc | comment |
+| --- | --- | --- | --- |
+| watchdogd | 52 | `0x1005f8b0c` | `0x1` |
+| watchdogd | 93 | `0x100eefb0c` | `0x1` |
+| SpringBoard | 26 / 111 / 113 / 115 | `0x1bf04b2ec`（四次全同）| `0x0` |
+| liveactivitiesd | 110 / 118 / 121 | `0x1e15624f8`（三次全同）| `0x1` |
+
+三条可用的判据（都能在**没有手机**时先定下来 ✓）：
+
+1. **只有 `pc ≥ 0x180000000` 才可能是共享缓存地址** ✓
+   `watchdogd` 那两条 `0x1005f8b0c` / `0x100eefb0c` **低于**共享区起点 → 在 app 区（自身 Mach-O 文本），
+   `local-symbols.py` / `brk-symbolize.py` **永远解不出它们** ✗（该区间的二进制在盘上是 stub，见提交 `6e3a1bc`）
+2. 两条 watchdogd 相差 `0x8f7000`，**不是 16 KB 的整数倍** → 它们不是"同一地址不同 slide"，是**两个不同代码点** ✗
+   （所以不能靠跨 pid 相减反推 slide ✗）
+3. 同一次启动内，同一个二进制的多个实例 **pc 完全相同**（SpringBoard 四次、liveactivitiesd 三次）
+   → 重复启动的 slide 是可复现的 ✓ 因此**一次成功取数就够用** ✓
+
+### 七、顺手修掉的一个真 bug
+
+`collect-slide.ps1` 第一版从分区起点 0 开始 `find(b'\x00')` 截断 → 会在**第 9 字节**（`DLXLOG01` 头里的 NUL）
+就截断，解出空文本 ✗。已改成"扇区 0 是二进制头，正文从偏移 512 起"，并用旧日志实测：
+**5,371 行 / 9 条 BRK 记录** ✓（不换行、正文连续写，第一个 NUL 之后就是上一轮的残留 ✓）
+
+---
