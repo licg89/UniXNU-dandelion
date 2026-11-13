@@ -77,3 +77,4 @@ dandelion-exit-trace.patch
 dandelion-abort-trace.patch
 dandelion-brk-report.patch
 dandelion-brk-trace.patch
+dandelion-sr-probe.patch

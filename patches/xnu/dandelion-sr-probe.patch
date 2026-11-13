@@ -1,0 +1,104 @@
+diff --git a/bsd/kern/kern_exit.c b/bsd/kern/kern_exit.c
+index bf70c14..4710208 100644
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -1535,6 +1535,8 @@ exit_with_reason(proc_t p, int rv, int *retval, boolean_t thread_can_terminate,
+ 		extern uint64_t dandelion_brk_lr;
+ 		extern uint64_t dandelion_brk_slide;
+ 		extern unsigned dandelion_brk_comment;
++		extern uint64_t dandelion_brk_sr_slide;
++		extern uint64_t dandelion_brk_sr_base;
+ 		if (WIFSIGNALED(rv) && WTERMSIG(rv) == SIGTRAP && dandelion_brk_pc != 0) {
+ 			uint64_t unslid = dandelion_brk_pc - dandelion_brk_slide;
+ 			printf("DANDELION-BRK: pid=%d comm=%s pc=%#llx slide=%#llx unslid=%#llx lr=%#llx comment=%#x\n",
+@@ -1544,6 +1546,11 @@ exit_with_reason(proc_t p, int rv, int *retval, boolean_t thread_can_terminate,
+ 			    (unsigned long long)unslid,
+ 			    (unsigned long long)(dandelion_brk_lr - dandelion_brk_slide),
+ 			    dandelion_brk_comment);
++			printf("DANDELION-SR: pid=%d comm=%s sr_slide=%#llx sr_base=%#llx task_slide=%#llx\n",
++			    proc_getpid(p), p->p_comm,
++			    (unsigned long long)dandelion_brk_sr_slide,
++			    (unsigned long long)dandelion_brk_sr_base,
++			    (unsigned long long)dandelion_brk_slide);
+ 			dandelion_brk_pc = 0;
+ 		}
+ 	}
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 59757e4..d2ccb9c 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -170,6 +170,8 @@ uint64_t dandelion_brk_pc;
+ uint64_t dandelion_brk_lr;
+ uint64_t dandelion_brk_slide;
+ unsigned dandelion_brk_comment;
++uint64_t dandelion_brk_sr_slide;
++uint64_t dandelion_brk_sr_base;
+ 
+ static void handle_breakpoint(arm_saved_state_t *, uint32_t) __dead2;
+ 
+@@ -1256,6 +1258,17 @@ handle_breakpoint(arm_saved_state_t *state, uint32_t esr __unused)
+ 	dandelion_brk_lr = (uint64_t)get_saved_state_lr(state);
+ 	dandelion_brk_slide = (uint64_t)current_task()->task_shared_region_slide;
+ 	dandelion_brk_comment = (unsigned)(ISS_BRK_COMMENT(esr));
++	/*
++	 * The per-task slide above is -1 unless the kernel managed to copy the cache UUID in when the
++	 * region was mapped, so the region's own slide is recorded too: it is what actually placed the
++	 * cache, and the host needs exactly it to turn pc back into an address in the image table.
++	 */
++	{
++		extern uint64_t dandelion_shared_region_slide(void);
++		extern uint64_t dandelion_shared_region_base(void);
++		dandelion_brk_sr_slide = dandelion_shared_region_slide();
++		dandelion_brk_sr_base = dandelion_shared_region_base();
++	}
+ 
+ 	codes[1] = get_saved_state_pc(state);
+ 	exception_triage(exception, codes, numcodes);
+diff --git a/osfmk/vm/vm_shared_region.c b/osfmk/vm/vm_shared_region.c
+index 1ab7232..18fe74a 100644
+--- a/osfmk/vm/vm_shared_region.c
++++ b/osfmk/vm/vm_shared_region.c
+@@ -4044,3 +4044,43 @@ vm_shared_region_root_dir(
+ 	vm_shared_region_unlock();
+ 	return vnode;
+ }
++
++/*
++ * Board diagnostic: the slide and base address the task's shared region was mapped with.
++ *
++ * task_shared_region_slide is only filled in when the UUID copyin inside
++ * vm_shared_region_start_address() succeeds, and it stays -1 otherwise, so a trap report built on it
++ * can come back as 0xffffffff with no way to place the address.  These read the region itself,
++ * without the lock: both values are set once, when the cache is mapped, and are read-only after.
++ */
++uint64_t
++dandelion_shared_region_slide(void)
++{
++	task_t task = current_task();
++	vm_shared_region_t sr;
++
++	if (task == NULL) {
++		return ~0ull;
++	}
++	sr = task->shared_region;
++	if (sr == NULL) {
++		return ~0ull;
++	}
++	return (uint64_t)sr->sr_slide;
++}
++
++uint64_t
++dandelion_shared_region_base(void)
++{
++	task_t task = current_task();
++	vm_shared_region_t sr;
++
++	if (task == NULL) {
++		return ~0ull;
++	}
++	sr = task->shared_region;
++	if (sr == NULL) {
++		return ~0ull;
++	}
++	return (uint64_t)sr->sr_base_address;
++}
