@@ -7805,3 +7805,49 @@ powershell -ExecutionPolicy Bypass -File D:\aios\_work\UniXNU-dandelion\scripts\
 应等于本轮拟合的 `0x1fc6c000`）、`DANDELION-IMG/EXE/TEXT`（含 watchdogd 的镜像与偏移）✓
 
 ---
+
+## 0.138 2026-11-13 15:57–16:05：app 区（非共享缓存）地址的解析器
+
+### 一、`scripts/resolve-app-text.py`
+
+watchdogd 那类 pc（< `0x180000000`）不属于共享缓存，需要"哪个二进制 + 偏移"。这个工具把它做成一条命令：
+
+- 扫本机 iOS raw 镜像里的 Mach-O（`0xfeedfacf`）
+- 对每个候选，用**它自己的** `__TEXT.vmaddr` 算 `delta = pc - vmaddr`，要求 `delta` 落在 `__TEXT` 内、
+  且该处 4 字节正好是 `brk #comment`（编码 `0xD4200000 | imm<<5`）
+- 命中后打印：文件内偏移、cputype/filetype、`__TEXT` vmaddr/size、UUID、链接的前几个 dylib、
+  以及 **trap 前后 0x40 字节的反汇编**
+
+### 二、它甚至不需要内核给 base
+
+因为每个候选都是拿**自己的** vmaddr 去对，等价于"该镜像被映射到这个 pc 时的偏移" ✓
+内核打印的 `DANDELION-TEXT` 的 `base`/`path` 只是**收窄**答案（`--base` / `--path`），不是前提 ✓
+
+### 三、跑了自测（不是空喊）
+
+在 1.2 GB 切片里挑一个真 Mach-O，取它 `__TEXT` 里一处 `brk #1` 反算出合成 pc，再让工具**只凭 pc** 找回来：
+
+```
+picked   file offset 0x7ab000  __TEXT vmaddr 0x18b9c5000  uuid 607a0ccc…
+resolver file offset 0x7ab000  ... brk #1 at +0x16d74   ← 同一个文件 ✓
+RESULT: PASS
+```
+
+反汇编还顺带给出该 trap 的形状：`bl 0x18bc1f0a0` 之后紧跟 `brk #1`（先调报告函数、再 trap）✓
+
+### 四、`--log` 模式也验过
+
+给一份合成的 console（含 `DANDELION-BRK/SR/IMG/EXE/TEXT` 五种行），
+`--log` 会按 `DANDELION-TEXT` 的 `base` 精确选中那个 Mach-O 并反汇编 ✓
+→ **等你按过一次键，`resolve-app-text.py --log <console.txt>` 就能把 watchdogd 一步解掉** ✓
+
+### 五、现在的工具链（都不需要手机）
+
+| 工具 | 用途 |
+| --- | --- |
+| `scripts/brk-symbolize.py` | 有 slide 的日志 → 镜像 + 函数名 |
+| `scripts/fit-cache-slide.py` | **没有** slide 的日志 → 拟合 slide（`brk` 操作码 + 系统级单一 slide）|
+| `scripts/resolve-app-text.py` | **不在共享缓存**的 pc → 定位 Mach-O + 反汇编 |
+| `scripts/collect-slide.ps1` | 唯一需要按键的那一步：刷镜像 → 等 → 采集 → 解码 → 符号化 |
+
+---
