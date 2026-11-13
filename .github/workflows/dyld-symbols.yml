@@ -2,11 +2,12 @@ name: userspace binaries
 
 # Copy the binaries that trap, so their own __TEXT can be disassembled locally.
 #
-# watchdogd traps at 0x1005f8b0c and 0x100eefb0c, which is outside the shared cache: those are its own
-# code.  SpringBoard and liveactivitiesd trap inside the cache, where the per-process slide makes the
-# image ambiguous, so their own binaries settle what the cache cannot.
+# watchdogd traps at 0x1005f8b0c and 0x100eefb0c, below the shared region: those are its own code.
+# SpringBoard and liveactivitiesd trap inside the cache, where a per-process slide makes the image
+# ambiguous, so their own binaries are what resolve them.
 #
-# The sealed SystemCryptex volume cannot be read on Linux, but a macOS runner mounts it with hdiutil.
+# The first attempt looked only inside the SystemCryptex volume and found none of them there; the apps and
+# daemons live on the OS volume, so both members are mounted and both are searched.
 
 on:
   workflow_dispatch:
@@ -16,6 +17,8 @@ permissions:
 
 env:
   IPSW_URL: https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw
+  OS_MEMBER: 044-76040-038.dmg
+  OS_SHA256: 3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d
   SYSTEMOS_MEMBER: 044-76034-038.dmg
   SYSTEMOS_SHA256: b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f
 
@@ -30,7 +33,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ipsw"
           curl -fSL --retry 3 --retry-delay 5 -o "$RUNNER_TEMP/ipsw/restore.ipsw" "$IPSW_URL"
 
-      - name: Extract the SystemOS member
+      - name: Extract both members
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -39,51 +42,56 @@ jobs:
           ipsw = Path(os.environ['RUNNER_TEMP']) / 'ipsw/restore.ipsw'
           out = Path(os.environ['RUNNER_TEMP']) / 'os'
           out.mkdir(parents=True, exist_ok=True)
-          member = os.environ['SYSTEMOS_MEMBER']
-          with zipfile.ZipFile(ipsw) as archive, archive.open(member) as source:
-              digest = hashlib.sha256()
-              with (out / member).open('wb') as target:
-                  while chunk := source.read(8 * 1024 * 1024):
-                      target.write(chunk)
-                      digest.update(chunk)
-          got, want = digest.hexdigest(), os.environ['SYSTEMOS_SHA256']
-          print(f'{member} sha256 {got}')
-          if got != want:
-              raise SystemExit(f'{member} hashes to {got}, expected {want}')
+          wanted = {
+              os.environ['OS_MEMBER']: os.environ['OS_SHA256'],
+              os.environ['SYSTEMOS_MEMBER']: os.environ['SYSTEMOS_SHA256'],
+          }
+          with zipfile.ZipFile(ipsw) as archive:
+              for member, want in wanted.items():
+                  with archive.open(member) as source:
+                      digest = hashlib.sha256()
+                      with (out / member).open('wb') as target:
+                          while chunk := source.read(8 * 1024 * 1024):
+                              target.write(chunk)
+                              digest.update(chunk)
+                  got = digest.hexdigest()
+                  print(f'{member} sha256 {got}')
+                  if got != want:
+                      raise SystemExit(f'{member} hashes to {got}, expected {want}')
           PY
           rm -f "$RUNNER_TEMP/ipsw/restore.ipsw"
 
-      - name: Mount and copy the trapping binaries
+      - name: Mount both volumes and search for the binaries
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/systemos" "$RUNNER_TEMP/out"
-          hdiutil attach -readonly -nobrowse -owners off \
-            -mountpoint "$RUNNER_TEMP/systemos" "$RUNNER_TEMP/os/$SYSTEMOS_MEMBER"
-          ROOT="$RUNNER_TEMP/systemos"
-          set +e
-          for path in \
-            System/Library/CoreServices/SpringBoard.app/SpringBoard \
-            usr/libexec/watchdogd \
-            usr/libexec/liveactivitiesd \
-            System/Library/CoreServices/backboardd \
-            usr/libexec/backboardd
-          do
-            if [ -f "$ROOT/$path" ]; then
-              cp "$ROOT/$path" "$RUNNER_TEMP/out/$(basename "$path")"
-              echo "copied $path"
-            else
-              echo "missing $path"
-            fi
+          mkdir -p "$RUNNER_TEMP/osvol" "$RUNNER_TEMP/sysvol" "$RUNNER_TEMP/out"
+          hdiutil attach -readonly -nobrowse -owners off -mountpoint "$RUNNER_TEMP/osvol" "$RUNNER_TEMP/os/$OS_MEMBER"
+          hdiutil attach -readonly -nobrowse -owners off -mountpoint "$RUNNER_TEMP/sysvol" "$RUNNER_TEMP/os/$SYSTEMOS_MEMBER" || true
+
+          for base in "$RUNNER_TEMP/osvol" "$RUNNER_TEMP/sysvol"; do
+            echo "=== searching $base"
+            for path in \
+              System/Library/CoreServices/SpringBoard.app/SpringBoard \
+              usr/libexec/watchdogd \
+              usr/libexec/liveactivitiesd \
+              System/Library/CoreServices/backboardd \
+              usr/libexec/backboardd
+            do
+              if [ -f "$base/$path" ]; then
+                cp "$base/$path" "$RUNNER_TEMP/out/$(basename "$path")"
+                echo "  copied $path"
+              fi
+            done
           done
-          set -e
-          echo "--- also list the likely directories"
-          ls "$ROOT/System/Library/CoreServices" 2>/dev/null | head -10 || true
-          ls "$ROOT/usr/libexec" 2>/dev/null | grep -iE 'watchdog|activity|backboard' | head -10 || true
+
+          echo "=== directories for reference"
+          ls "$RUNNER_TEMP/osvol/System/Library/CoreServices" 2>/dev/null | head -12 || true
+          ls "$RUNNER_TEMP/osvol/usr/libexec" 2>/dev/null | grep -iE 'watchdog|activity|backboard' | head -10 || true
           ls -l "$RUNNER_TEMP/out"
 
-      - name: Upload the binaries
+      - name: Upload whatever was found
         uses: actions/upload-artifact@v4
         with:
           name: userspace-binaries
           path: ${{ runner.temp }}/out/*
-          if-no-files-found: error
+          if-no-files-found: warn
