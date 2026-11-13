@@ -150,6 +150,10 @@ image table: 3354 entries at 0x270
    watchdogd 的 pc 不在共享缓存里，需要它自己的二进制。详见 §0.136（原文）与 §0.135（定位/反汇编）
 3. **修法方向**：显示栈。让 display monitor 拿到合法显示配置（provider 做成 `AppleARMIODevice`、
    补齐 BackBoardServices 读的属性）；§0.101 的 `provider was not AppleARMIODevice` 是同一条链
+3b. **硬件已互证（§0.139）**：16:52 采到的 `flashinfo-slide2` 里 15 条 BRK，`slide=0x939c000`，
+   SpringBoard 的 `unslid=0x19f3df2ec`、liveactivitiesd 的 `0x1c18f64f8` —— 与离线拟合**逐字节相同** ✓
+   ⚠ 但 `boot-sr3.img`（会打印 `DANDELION-TEXT`）被固件以 `Compromised Data` 拒启动；
+   嫌疑是重建出的 FD（770,794 B）与能启动的旧 FD（771,371 B）不同 → 先修这个，watchdogd 才解得掉
 4. 符号化资产在 `/root/work/symtab/`（缓存头 + 685 MB 符号表），**不必重下**
 5. 没有 slide 的日志也能解：`python3 scripts/fit-cache-slide.py --log <console.txt> --image <userdata-root.img>`
    （原理：pc 必落在 `brk #comment` 指令上、一次启动只有一个 slide；见 §0.135 第二节）
