@@ -21,7 +21,10 @@ param(
     [string]$AndroidBoot = 'D:\aios\artifacts\boot_backup.img',
     [string]$Serial = 'QS55XCPRCA9LDA5T',
     [int]$WaitFastbootMinutes = 20,
-    [int]$WaitAndroidMinutes = 8
+    [int]$WaitAndroidMinutes = 8,
+    # -ResolveApps also maps records below the shared region to a Mach-O, using DANDELION-TEXT.
+    [switch]$ResolveApps,
+    [string]$Image = '/root/work/UniXNU/out/dandelion/ipados-17.7.11-21H461/dandelion/userdata/userdata-root.img'
 )
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -99,3 +102,10 @@ PY"
 
 Write-Host "symbolizing $txt"
 wsl -d Ubuntu -e bash -lc "python3 /mnt/d/aios/_work/UniXNU-dandelion/scripts/brk-symbolize.py /mnt/d/aios/_work/UniXNU-dandelion/out/console-$Tag-$stamp.txt --out /mnt/d/aios/_work/UniXNU-dandelion/out/brk-$Tag-$stamp.txt 2>&1 | tail -40"
+
+if ($ResolveApps) {
+    # Addresses below the shared region need the per-process load base, which the image probe prints
+    # as DANDELION-TEXT.  This turns those into "which Mach-O, at what offset" and disassembles them.
+    Write-Host 'resolving app-region records (DANDELION-TEXT) against the local iOS image'
+    wsl -d Ubuntu -e bash -lc "python3 /mnt/d/aios/_work/UniXNU-dandelion/scripts/resolve-app-text.py --image $Image --log /mnt/d/aios/_work/UniXNU-dandelion/out/console-$Tag-$stamp.txt 2>&1 | tail -60"
+}

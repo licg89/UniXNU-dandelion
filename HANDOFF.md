@@ -8199,3 +8199,28 @@ bash scripts/package.sh --os 17 --uefi ../uefi-dandelion \
 应该由你确认后再固化 ✗
 
 ---
+
+## 0.145 2026-11-14 22:40：工具链收尾（让下一轮一条命令跑完）
+
+### 一、`resolve-app-text.py` 两处收紧
+
+| 改动 | 原因 |
+| --- | --- |
+| `--log` 没有 `DANDELION-TEXT` 时**立刻**说明缺 base，并列出待解地址 | 之前会退化成"无 base 全盘扫"，耗时数分钟且输出噪声 ✗ 现在 **0.2 s** 返回 ✓ |
+| `--pcs` 增加 slide 合理性过滤（`0 ≤ slide < 0x200000000` 且 4 KB 对齐）| 之前命中的是连续 `brk #1` 组成的 trap 表、算出**负 slide** 的假阳性 ✗ 现在对那三条真实 pc 直接报"没有 Mach-O 在那些相对偏移上都有 brk #1" ✓ |
+
+### 二、`collect-slide.ps1` 新增 `-ResolveApps` / `-Image`
+
+采集并符号化之后，如果给了 `-ResolveApps`，会再跑一遍 app 区解析：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\collect-slide.ps1 `
+    -Tag sr7 -FlashImage D:\aios\out3\boot-sr7-panic-off.img -ResolveApps
+```
+
+→ 下一轮**一条命令**即可拿到：`DANDELION-BRK`（含 slide/unslid）、`DANDELION-SR`、
+`DANDELION-TEXT`（watchdogd 的镜像 base/off/path）+ 符号化 + 反汇编 ✓
+
+已用 `-WaitFastbootMinutes 0` 做过冒烟测试：脚本正确停在"等 fastboot"，**没有碰手机** ✓
+
+---

@@ -24,6 +24,8 @@ LC_SEGMENT_64 = 0x19
 LC_UUID = 0x1b
 LC_LOAD_DYLIB = 0x0c
 LC_ID_DYLIB = 0x0d
+GRANULE = 0x1000                 # main executables slide on the kernel's 4 KB page grid
+MAX_SLIDE = 0x200000000          # and never far enough to reach the shared region
 TEXT_PC = re.compile(r'DANDELION-TEXT: pid=(-?\d+) comm=(\S+) pc=(0x[0-9a-fA-F]+) '
                      r'base=(0x[0-9a-fA-F]+) off=(0x[0-9a-fA-F]+) path=(.*)')
 BRK_PC = re.compile(r'DANDELION-BRK: pid=(-?\d+) comm=(\S+) pc=(0x[0-9a-fA-F]+)'
@@ -206,11 +208,17 @@ def find_offsets_by_constraint(image, pcs, comment, limit=6):
                 at = text.find(needle, at + 1)
             for o in sorted(sites):
                 if all((o + d) in sites for d in deltas):
+                    slide = pcs[0] - vmaddr - o
+                    # A main executable slides on the same 4 KB grid the kernel slides the cache on,
+                    # and stays below the shared region.  Without this a trap table full of adjacent
+                    # brk #1 opcodes matches any offset triple and produces a negative slide.
+                    if not (0 <= slide < MAX_SLIDE and slide % GRANULE == 0):
+                        continue
                     info = dict(info)
                     info['offsets'] = [o + d for d in deltas]
                     info['vmaddr'] = vmaddr
                     info['imm'] = comment
-                    info['slide'] = pcs[0] - vmaddr - o
+                    info['slide'] = slide
                     hits.append(info)
                     break
             if len(hits) >= limit:
@@ -269,16 +277,25 @@ def main():
             print('\n## %s pid %s path %s' % (comm, pid, path.strip()))
             report(args.image, int(pc, 16), None, int(base, 16), path.strip())
         if not done:
+            # Without DANDELION-TEXT there is no load base, and searching base-free is both slow and
+            # prone to matching a trap table, so say what is missing instead of guessing.
+            pending = []
             for pid, comm, pc, comment in BRK_PC.findall(text):
                 value = int(pc, 16)
-                if value >= 0x180000000:
-                    continue
-                key = (comm, pc)
-                if key in done:
-                    continue
-                done.add(key)
-                report(args.image, value,
-                       int(comment, 16) if comment else None, None, None)
+                if value < 0x180000000:
+                    pending.append((comm, value, int(comment, 16) if comment else None))
+            if not pending:
+                print('no app-region DANDELION-BRK records in this log')
+                return 0
+            names = sorted({comm for comm, _v, _c in pending})
+            print('no DANDELION-TEXT records in this log, so there is no load base for: %s'
+                  % ', '.join(names))
+            print('the addresses are:')
+            for comm, value, comment in pending:
+                print('   %-16s pc %#x comment %s' % (comm, value, comment))
+            print('\nrun an image built with dandelion-image-probe.patch (boot-sr5 or later) and pass')
+            print('its console here; the DANDELION-TEXT lines give base and offset directly.')
+            return 0
         return 0
 
     if not args.pc:
