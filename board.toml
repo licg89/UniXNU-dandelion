@@ -179,6 +179,24 @@ title = "UniXNU"
 # accepts this file only if its SHA-256 is the one recorded here.
 #
 trust_cache_sha256 = "4563bdbf6ed8f72237d45dbba3ccde432634338f95c10d79d5d4631678a97c7c"
+#
+# What the payload actually ships is a *bundle* of modules: the OS cache above, the SystemOS cache
+# (the dyld shared cache lives there, so AMFI needs its cdhash), and our own fixtures' cdhashes.
+# On this board the bundle that boots is 62,680 bytes / 3 modules / 2,608 entries,
+# sha256 3c3f2a6f9f886085a13db175178ecb4f3a380b3efa96da802239be22fc8f1e95.
+#
+# The framework prefers unixnu.local.toml's owner_trust_cache over --trust-cache and skips the
+# sha256 check above for it, so that file has to *be* the bundle.  Pointing it at a one-entry file
+# (the 56-byte launchd bundle) ships a payload DarwinBoot refuses with "Compromised Data".
+# Regenerate it from an image that boots:
+#
+#   python3 scripts/make-owner-trustcache.py --from-image D:\aios\out3\boot-slide.img \
+#       --out /root/work/dandelion-merged.trustcache
+#
+# and keep unixnu.local.toml at:
+#
+#   owner_trust_cache = "/root/work/dandelion-merged.trustcache"
+#
 kernel_args = ["-v", "serial=3", "sheng-pmgr=2", "amfi_get_out_of_my_way=1", "sheng-no-lc=1", "sheng-skip-cs=1",
                "native-msdc-persist=1", "native-msdc-root=1", "native-msdc-area=20480", "native-msdc-mode=1", "launchd_unsecure_cache=1", "wdt=-1", "ignition_level=1", "-no_slto_panic", "sheng-aks=1", "native-msdc-clock=1", "native-msdc-clk=0", "native-msdc-hsmode=1", "offline-mobile-graphics-load=1", "offline-mobile-graphics-client=1", "offline-legacy-register=1", "offline-legacy-gop=1", "offline-legacy-unit-scale=2", "offline-legacy-pm=1", "offline-legacy-phase=4", "offline-legacy-transfer=1", "offline-legacy-validate=1", "offline-legacy-cpu-present=1", "vm_compressor=2"]
 #

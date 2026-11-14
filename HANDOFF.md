@@ -8039,3 +8039,46 @@ fixture 的 cdhash（`--extra=<cdhash>` 累积而来），不在 IPSW 里 ✗
 配合 `scripts/resolve-app-text.py --log` 就能把 watchdogd 的镜像与偏移解出来 ✓
 
 ---
+
+## 0.142 2026-11-14：把信任缓存的构建配置改正式
+
+### 一、本机配置（已生效）
+
+`/root/work/UniXNU/unixnu.local.toml`：
+
+```toml
+owner_trust_cache = "/root/work/dandelion-merged.trustcache"   # 62,680 B / 3 模块 / 2,608 条
+```
+
+（原值是 `/root/work/dandelion-launchd.trustcache`，56 B、1 条 —— 正是它让每次重建的 payload 都过不了
+DarwinBoot，见 §0.141）
+
+### 二、新增可复现工具
+
+`scripts/make-owner-trustcache.py`：
+
+```bash
+python3 scripts/make-owner-trustcache.py --from-image D:\aios\out3\boot-slide.img \
+    --out /root/work/dandelion-merged.trustcache
+```
+
+- `--from-image`：从**能启动**的镜像里取 bundle（条目是系统二进制的 cdhash，与我们的内核无关，
+  所以取出来的仍然有效）。已验证 `boot-slide.img` 与 `boot-sr5.img` 取出的 bundle **sha 完全相同**
+  （`3c3f2a6f…`）✓
+- `--merge`：用树里的 `merge_trustcache.py` 从 IPSW 两份缓存重建；**注意**它只给 2 模块 / 2,554 条，
+  少了我们自己 fixture 的那 54 条 ✗ 所以默认走 `--from-image`
+- 工具会把结果按 DarwinBoot 的布局复核（count / 升序对齐 offsets / 每模块 version==2 / 长度自洽），
+  对不上就报错；尺寸与本板已知能启动的那份不同时会提醒
+
+### 三、`board.toml` 也补了说明
+
+在 `trust_cache_sha256` 旁边写清了：payload 里那份其实是**三模块的 bundle**、本板能启动的形状是
+62,680 B / 3 / 2,608（sha `3c3f2a6f…`）、框架会优先用 `owner_trust_cache` 并跳过 sha 校验、
+以及上面那条重新生成的命令 ✓
+
+### 四、状态
+
+- `boot-sr5.img`（`0e5d92d1`）：带修复 + 五个探针，**待真机验证**
+- 配置已永久指向合并 bundle；下次重建会沿用 ✓
+
+---
