@@ -8224,3 +8224,54 @@ powershell -ExecutionPolicy Bypass -File scripts\collect-slide.ps1 `
 已用 `-WaitFastbootMinutes 0` 做过冒烟测试：脚本正确停在"等 fastboot"，**没有碰手机** ✓
 
 ---
+
+## 0.146 2026-11-14 22:45：那份 bundle 到底由什么组成，现在可以完全复现
+
+### 一、谜底：54 条 extras 是 dyld 缓存每个文件的 cdhash
+
+`/mnt/d/aios/_work/rebuild_trustcache.sh` 的头注释写着原因：
+
+> The kernel hashes a mapped file page by page unless its cdhash is in a trust cache. Only the main
+> cache was listed, so the 52 **subcaches were hashed end to end** — the 3.7 GB sequential sweep that
+> makes a boot take **hours** at the board's 96 kHz bus rate.
+
+→ 所以 extras = `/root/work/cache-cdhashes.txt`（**54 行**：主缓存 + 52 分片 + symbols）里的 cdhash，
+逐个 `--extra=<sha256 前 40 位>` 加进 bundle ✓
+这也是为什么"只合并两份 IPSW 缓存"只有 2,554 条 —— 少了这 54 条，内核会把 3.7 GB 缓存逐页哈希，
+启动会慢到几小时 ✗
+
+### 二、正式产物与我抽出来的那份是同一个文件
+
+| 文件 | 大小 | sha256 前缀 |
+| --- | --- | --- |
+| `/mnt/d/aios/out3/apple-trustcache.bundle`（`rebuild_trustcache.sh` 的产物）| 62,680 | `3c3f2a6f…` |
+| `/root/work/dandelion-merged.trustcache`（§0.141 从能启动镜像里抽的）| 62,680 | `3c3f2a6f…` |
+
+`cmp` 判定**逐字节相同** ✓（本机 `unixnu.local.toml` 指向后者，等价 ✓）
+
+### 三、`make-owner-trustcache.py` 现在两条路都能复现同一份
+
+新增 `--extras-file`：
+
+```bash
+python3 scripts/make-owner-trustcache.py --merge \
+    /root/work/UniXNU/out/ipsw/21H461/044-76040-038.dmg.trustcache \
+    /root/work/UniXNU/out/ipsw/21H461/044-76034-038.dmg.trustcache \
+    --extras-file /root/work/cache-cdhashes.txt \
+    --out /tmp/merged-repro.bundle
+```
+
+实测输出：
+
+```
+extras from /root/work/cache-cdhashes.txt: 54
+         62680 bytes, 3 module(s), 2608 entries
+sha256 : 3c3f2a6f9f886085a13db175178ecb4f3a380b3efa96da802239be22fc8f1e95
+```
+
+**与正式 bundle 完全相同** ✓ 于是：
+
+- `--from-image`（从能启动的镜像取）与 `--merge --extras-file`（从 IPSW + cdhash 列表重建）**互为校验**
+- 换 IPSW 或改了 dyld 缓存时，按第三节重跑即可，不必依赖某枚历史镜像 ✓
+
+---

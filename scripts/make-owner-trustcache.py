@@ -91,9 +91,19 @@ def main():
                     help='IPSW .trustcache files to merge instead (needs --tree)')
     ap.add_argument('--extra', action='append', default=[],
                     help='cdhash to add when merging (one per fixture)')
+    ap.add_argument('--extras-file', default=None,
+                    help='file of "<name> <sha256>" lines, e.g. /root/work/cache-cdhashes.txt: '
+                         'the dyld cache set, so the kernel does not have to hash 3.7 GB page by page')
     ap.add_argument('--tree', default='/root/work/UniXNU/out/dandelion/ipados-17.7.11-21H461/dandelion/tree')
     ap.add_argument('--out', required=True)
     args = ap.parse_args()
+
+    extras = list(args.extra)
+    if args.extras_file:
+        lines = pathlib.Path(args.extras_file).read_text().splitlines()
+        from_file = [line.split()[1] for line in lines if len(line.split()) >= 2]
+        extras += from_file
+        print('extras from %s: %d' % (args.extras_file, len(from_file)))
 
     if args.from_image:
         blob = bundle_from_image(args.from_image)
@@ -105,12 +115,12 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             out = pathlib.Path(tmp) / 'merged.bundle'
             cmd = ['python3', str(tool), str(out)] + list(args.merge)
-            cmd += ['--extra=%s' % extra for extra in args.extra]
+            cmd += ['--extra=%s' % extra[:40] for extra in extras]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
                 raise SystemExit(result.stderr.strip() or result.stdout.strip())
             blob = out.read_bytes()
-        source = 'merge of %d cache file(s) + %d extra cdhash(es)' % (len(args.merge), len(args.extra))
+        source = 'merge of %d cache file(s) + %d extra cdhash(es)' % (len(args.merge), len(extras))
     else:
         raise SystemExit('give --from-image IMG or --merge FILE [FILE ...]')
 
