@@ -8160,3 +8160,42 @@ bring-up 阶段这正是想要的：watchdogd 依旧会崩（那是另一个问�
 （与之前 `/private/var/vm` 同类问题）。
 
 ---
+
+## 0.144 2026-11-14 22:36：备用实验镜像（不改仓库配置）
+
+### 一、`boot-sr7-panic-off.img`（sha `ba129e08`）
+
+同一套 72 个补丁 + 已修正的信任缓存，**另外在命令行追加** `panic_on_crash_disabled=1`：
+
+```bash
+bash scripts/package.sh --os 17 --uefi ../uefi-dandelion \
+     --kernel-arg panic_on_crash_disabled=1
+```
+
+`scripts/package.sh` 会把未知参数原样透传给 `unixnu release` ✓（文件头就写明 "any other unixnu option"），
+所以**没有改 `board.toml`**、也没动本机 local.toml ✓
+
+### 二、三项校验
+
+| 项 | 结果 |
+| --- | --- |
+| 信任缓存 | 62,680 B / 3 模块 / 2,608 条，sha `3c3f2a6f…` ✓（与能启动那枚相同）|
+| 五个探针 | `DANDELION-BRK/SR/IMG/EXE/TEXT` 全在 ✓ |
+| 内核参数 | payload 内 `unixnu.toml` 的 `args` 末尾确有 **`panic_on_crash_disabled=1`** ✓ |
+
+### 三、它和 `boot-sr6.img` 的区别
+
+只差那一个 boot-arg：
+
+- `boot-sr6.img`（`06f035b6`）：watchdogd 崩溃 → **内核 panic**，启动停在 ~17 分钟（与 §0.139 一致）
+- `boot-sr7-panic-off.img`（`ba129e08`）：同样会崩，但内核打印 `panic-on-crash disabled via boot-arg`
+  并**继续** ⇒ 能看到 watchdogd 之后还能走多远（backboardd / SpringBoard 是否起来）
+
+两者都带 `DANDELION-TEXT`，所以**任选一枚**都能解 watchdogd 的镜像与偏移 ✓
+
+### 四、待你决定
+
+我没有把这个 boot-arg 写进 `board.toml`：它把"崩了就停"换成"崩了继续"，属于诊断策略，
+应该由你确认后再固化 ✗
+
+---
