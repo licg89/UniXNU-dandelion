@@ -8082,3 +8082,81 @@ python3 scripts/make-owner-trustcache.py --from-image D:\aios\out3\boot-slide.im
 - 配置已永久指向合并 bundle；下次重建会沿用 ✓
 
 ---
+
+## 0.143 2026-11-14 22:30：panic 栈符号化完成 —— 是"关键进程退出即 panic"，且有开关
+
+### 一、13 帧内核栈全部符号化（`kernel.macho` 自带 185,480 个符号）
+
+该次启动 **内核 slide = 0**（帧地址直接用链接地址对上，无需减偏移 ✓）：
+
+| 帧 | 符号 |
+| --- | --- |
+| `0xfffffff007a4e9b8` | `_scalable_counter_static_init + 0x88`（panic 点，符号边界内的匿名段）|
+| `0xfffffff007756134` | `_proc_prepareexit + 0x834` |
+| `0xfffffff0077bb614` | `_domaininit + 0x1a4` |
+| `0xfffffff007771990` | `_postsig_locked + 0x130` |
+| `0xfffffff007771ce4` | `_bsd_ast + 0xe4` |
+| `0xfffffff00727cba8` | `_ast_taken_user + 0xf8` |
+| `0xfffffff0074339fc` | `user_take_ast + 0xc` |
+| `0xfffffff007433bf0` | `_thread_exception_return + 0x30` |
+| `0xfffffff00728ece8` | `_exception_triage_thread + 0x248` |
+| `0xfffffff007435018` | **`_handle_breakpoint + 0xa8`** |
+| `0xfffffff007434834` | `_sleh_synchronous + 0xc04` |
+| `0xfffffff0074335d8` | `_fleh_synchronous + 0x28` |
+| `0xfffffff0074335a0` | `fleh_dispatch64_common + 0xa4` |
+
+→ 整条链就是**brk 陷阱 → 异常投递 → AST → 进程退出**：
+`handle_breakpoint → sleh_synchronous → fleh_synchronous → exception_triage_thread →
+thread_exception_return → user_take_ast → ast_taken_user → bsd_ast → postsig_locked →
+proc_prepareexit → panic`
+**与我们 `DANDELION-BRK` 的观测完全吻合** ✓
+
+### 二、panic 的真正来源（源码级）
+
+`bsd/kern/kern_exit.c`：
+
+```c
+static bool proc_should_trigger_panic(proc_t p, int rv)   // :1876
+{
+    if (p == initproc) return true;
+    if (panic_on_crash_disabled) { printf("panic-on-crash disabled via boot-arg\n"); return false; }
+    if ((p->p_crash_behavior & POSIX_SPAWN_PANIC_ON_EXIT) != 0) return true;
+    ...
+}
+
+static void proc_handle_critical_exit(proc_t p, int rv)   // :1997
+{
+    if (!proc_should_trigger_panic(p, rv)) return;
+    ...
+    panic_with_options(0, NULL, DEBUGGER_OPTION_INITPROC_PANIC,
+        "%s %s -- exit reason namespace %d subcode 0x%llx description: %s", ...);   // :2050
+}
+```
+
+屏幕上那句 `watchdogd[100] exited -- exit reason namespace 2 subcode 0x5 description: none`
+就是 :2050 这条 `panic_with_options` 打出来的 ✓ —— 也就是说 **watchdogd 被 launchd 以
+`POSIX_SPAWN_PANIC_ON_*` 方式拉起**，它一崩（SIGTRAP）内核就 panic ✗
+这也解释了为什么这轮不是"静默挂住"而是 panic 屏。
+
+### 三、下一步修复（现成的开关）
+
+`kern_exit.c:1873`：
+
+```c
+static TUNABLE(bool, panic_on_crash_disabled, "panic_on_crash_disabled", false);
+```
+
+→ 在 `board.toml` 的 `kernel_args` 里加一个 **`panic_on_crash_disabled=1`**，
+内核就会打印 `panic-on-crash disabled via boot-arg` 并**不再 panic** ✓
+bring-up 阶段这正是想要的：watchdogd 依旧会崩（那是另一个问题），但启动**能越过它继续**，
+后面 backboardd / SpringBoard 才有机会起来 —— 也就是能验证 §0.136 的"缺 CADisplay"结论是否还成立。
+
+⚠ 这会把"崩了就停"换成"崩了继续"，属于诊断策略选择，**本轮只记录不擅自改**
+
+### 四、另一个小修
+
+`coredump (watchdogd, pid 100): failed to open core dump file /private/var/cores/watchdogd.core: error 2`
+→ `/private/var/cores/` 不存在。在 `scripts/build-data-seed.py` 的 `SEED_FILES` 里补这个目录即可
+（与之前 `/private/var/vm` 同类问题）。
+
+---
