@@ -1,8 +1,8 @@
 diff --git a/bsd/kern/kern_exit.c b/bsd/kern/kern_exit.c
-index 4710208..d3393c0 100644
+index 4710208..86a3916 100644
 --- a/bsd/kern/kern_exit.c
 +++ b/bsd/kern/kern_exit.c
-@@ -1551,6 +1551,86 @@ exit_with_reason(proc_t p, int rv, int *retval, boolean_t thread_can_terminate,
+@@ -1551,6 +1551,90 @@ exit_with_reason(proc_t p, int rv, int *retval, boolean_t thread_can_terminate,
  			    (unsigned long long)dandelion_brk_sr_slide,
  			    (unsigned long long)dandelion_brk_sr_base,
  			    (unsigned long long)dandelion_brk_slide);
@@ -20,18 +20,22 @@ index 4710208..d3393c0 100644
 +			{
 +				struct user64_dyld_all_image_infos ai = {};
 +				uint64_t ai_address = (uint64_t)task_get_all_image_info_addr(proc_task(p));
++				int ai_copyin = -1;
 +
 +				/*
-+				 * Report the address itself first: it comes from the task, not from user memory,
-+				 * so it always prints.  That is what tells a zeroed value (dyld cleared it before
-+				 * exit) apart from a copyin refusal, which the return code then shows.
++				 * One copyin, reported.  The address itself comes from the task rather than from
++				 * user memory, so it always prints: that tells a zeroed value (dyld cleared it
++				 * before exit) apart from a refusal, which the return code then shows.  Calling
++				 * copyin twice here would only double the chance of the fault this port has
++				 * already seen once in this path.
 +				 */
++				if (ai_address != 0) {
++					ai_copyin = copyin((user_addr_t)ai_address, &ai, sizeof(ai));
++				}
 +				printf("DANDELION-AI: pid=%d comm=%s addr=%#llx copyin=%d\n",
-+				    proc_getpid(p), p->p_comm, (unsigned long long)ai_address,
-+				    (ai_address != 0) ? copyin((user_addr_t)ai_address, &ai, sizeof(ai)) : -1);
++				    proc_getpid(p), p->p_comm, (unsigned long long)ai_address, ai_copyin);
 +
-+				if (ai_address != 0 && copyin((user_addr_t)ai_address,
-+				    &ai, sizeof(ai)) == 0) {
++				if (ai_copyin == 0) {
 +					printf("DANDELION-IMG: pid=%d comm=%s cache_slide=%#llx cache_base=%#llx images=%u\n",
 +					    proc_getpid(p), p->p_comm,
 +					    (unsigned long long)ai.sharedCacheSlide,
