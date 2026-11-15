@@ -103,6 +103,9 @@ PY"
 Write-Host "symbolizing $txt"
 wsl -d Ubuntu -e bash -lc "python3 /mnt/d/aios/_work/UniXNU-dandelion/scripts/brk-symbolize.py /mnt/d/aios/_work/UniXNU-dandelion/out/console-$Tag-$stamp.txt --out /mnt/d/aios/_work/UniXNU-dandelion/out/brk-$Tag-$stamp.txt 2>&1 | tail -40"
 
+Write-Host 'summarizing the boot: processes, display stages, probes'
+wsl -d Ubuntu -e bash -lc "python3 /mnt/d/aios/_work/UniXNU-dandelion/scripts/analyze-console.py /mnt/d/aios/_work/UniXNU-dandelion/out/console-$Tag-$stamp.txt 2>&1 | tee /mnt/d/aios/_work/UniXNU-dandelion/out/summary-$Tag-$stamp.txt | head -80"
+
 if ($ResolveApps) {
     # Addresses below the shared region need the per-process load base, which the image probe prints
     # as DANDELION-TEXT.  This turns those into "which Mach-O, at what offset" and disassembles them.
