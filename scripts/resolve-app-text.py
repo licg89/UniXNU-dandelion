@@ -27,7 +27,7 @@ LC_ID_DYLIB = 0x0d
 GRANULE = 0x1000                 # main executables slide on the kernel's 4 KB page grid
 MAX_SLIDE = 0x200000000          # and never far enough to reach the shared region
 TEXT_PC = re.compile(r'DANDELION-TEXT: pid=(-?\d+) comm=(\S+) pc=(0x[0-9a-fA-F]+) '
-                     r'base=(0x[0-9a-fA-F]+) off=(0x[0-9a-fA-F]+) path=(.*)')
+                     r'base=(0x[0-9a-fA-F]+) off=(0x[0-9a-fA-F]+)(?: path=(.*))?')
 BRK_PC = re.compile(r'DANDELION-BRK: pid=(-?\d+) comm=(\S+) pc=(0x[0-9a-fA-F]+)'
                     r'(?:[^\n]*comment=(0x[0-9a-fA-F]+))?')
 REGION_TOKENS = ('0x18', '0x19', '0x1a', '0x1b', '0x1c', '0x1d', '0x1e', '0x1f',
@@ -154,6 +154,50 @@ def disasm(image, info, span=0x40):
     return [l.rstrip() for l in out.splitlines() if ':\t' in l]
 
 
+def find_by_text_offset(image, text_offset, base, comment, limit=6):
+    """Find the Mach-O the kernel's DANDELION-TEXT record describes.
+
+    The record gives the runtime base and the offset inside it, so the file must carry the trap
+    opcode at __TEXT + offset, and its link address plus a plausible main-executable slide must equal
+    that base.  The second condition is what rejects cache dylibs, whose vmaddr already sits above
+    the app region and would need a negative slide.
+    """
+    size = pathlib.Path(image).stat().st_size
+    hits = []
+    with open(image, 'rb') as fh:
+        for file_off in scan_machos(image):
+            if file_off + 32 > size:
+                continue
+            info = parse_macho(fh, file_off, size)
+            if info is None or info['cputype'] != 0x0100000c:
+                continue
+            vmaddr, _vmsize, text_fileoff, filesize = info['text']
+            if filesize < text_offset + 4:
+                continue
+            slide = (base - vmaddr) & 0xffffffffffffffff
+            if not (0 <= slide < MAX_SLIDE and slide % GRANULE == 0):
+                continue
+            fh.seek(file_off + text_fileoff + text_offset)
+            word = fh.read(4)
+            if len(word) < 4:
+                continue
+            value = struct.unpack('<I', word)[0]
+            if value >> 20 != 0xD42:
+                continue
+            imm = (value >> 5) & 0xffff
+            if comment is not None and imm != comment:
+                continue
+            info = dict(info)
+            info['imm'] = imm
+            info['delta'] = text_offset
+            info['slide'] = slide
+            info['vmaddr'] = vmaddr
+            hits.append(info)
+            if len(hits) >= limit:
+                break
+    return hits
+
+
 def report(image, pc, comment, base_hint, path_hint):
     print('\n=== pc %#x (comment %s) %s' % (pc, comment, 'base hint %#x' % base_hint if base_hint is not None else ''))
     hits = find_at_pc(image, pc, comment, base_hint, path_hint)
@@ -270,12 +314,30 @@ def main():
         text = pathlib.Path(args.log).read_bytes().decode('latin-1', 'replace')
         done = set()
         for pid, comm, pc, base, off, path in TEXT_PC.findall(text):
-            key = (comm, pc)
-            if key in done:
+            if (comm, pc) in done:
                 continue
-            done.add(key)
-            print('\n## %s pid %s path %s' % (comm, pid, path.strip()))
-            report(args.image, int(pc, 16), None, int(base, 16), path.strip())
+            done.add((comm, pc))
+            print('\n## %s pid %s  pc=%s base=%s off=%s%s'
+                  % (comm, pid, pc, base, off, (' path=' + path.strip()) if path else ''))
+            if int(base, 16) >= 0x180000000:
+                print('   base is inside the shared region: this is a cache image, so use')
+                print('   brk-symbolize.py (or fit-cache-slide.py) instead of a file scan')
+                continue
+            hits = find_by_text_offset(args.image, int(off, 16), int(base, 16), None)
+            if not hits:
+                print('   no Mach-O has a brk at __TEXT + %s with a matching load base' % off)
+                continue
+            for found in hits:
+                vmaddr, vmsize, _tf, _fs = found['text']
+                print('   file offset %#x  filetype %d  __TEXT vmaddr %#x size %#x  slide %#x'
+                      % (found['file_off'], found['filetype'], vmaddr, vmsize, found['slide']))
+                print('      uuid %s  brk #%d at __TEXT + %#x'
+                      % (found['uuid'], found['imm'], found['delta']))
+                if found['dylibs']:
+                    print('      links: %s'
+                          % ', '.join(d.split('/')[-1] for d in found['dylibs'][:6]))
+                for line in disasm(args.image, found):
+                    print('      %s%s' % (line, '   <<< trap' if 'brk' in line else ''))
         if not done:
             # Without DANDELION-TEXT there is no load base, and searching base-free is both slow and
             # prone to matching a trap table, so say what is missing instead of guessing.

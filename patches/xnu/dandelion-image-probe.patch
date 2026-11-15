@@ -1,8 +1,8 @@
 diff --git a/bsd/kern/kern_exit.c b/bsd/kern/kern_exit.c
-index 4710208..9e4fc4d 100644
+index 4710208..d3393c0 100644
 --- a/bsd/kern/kern_exit.c
 +++ b/bsd/kern/kern_exit.c
-@@ -1551,6 +1551,76 @@ exit_with_reason(proc_t p, int rv, int *retval, boolean_t thread_can_terminate,
+@@ -1551,6 +1551,86 @@ exit_with_reason(proc_t p, int rv, int *retval, boolean_t thread_can_terminate,
  			    (unsigned long long)dandelion_brk_sr_slide,
  			    (unsigned long long)dandelion_brk_sr_base,
  			    (unsigned long long)dandelion_brk_slide);
@@ -19,8 +19,18 @@ index 4710208..9e4fc4d 100644
 +			 */
 +			{
 +				struct user64_dyld_all_image_infos ai = {};
++				uint64_t ai_address = (uint64_t)task_get_all_image_info_addr(proc_task(p));
 +
-+				if (copyin((user_addr_t)task_get_all_image_info_addr(proc_task(p)),
++				/*
++				 * Report the address itself first: it comes from the task, not from user memory,
++				 * so it always prints.  That is what tells a zeroed value (dyld cleared it before
++				 * exit) apart from a copyin refusal, which the return code then shows.
++				 */
++				printf("DANDELION-AI: pid=%d comm=%s addr=%#llx copyin=%d\n",
++				    proc_getpid(p), p->p_comm, (unsigned long long)ai_address,
++				    (ai_address != 0) ? copyin((user_addr_t)ai_address, &ai, sizeof(ai)) : -1);
++
++				if (ai_address != 0 && copyin((user_addr_t)ai_address,
 +				    &ai, sizeof(ai)) == 0) {
 +					printf("DANDELION-IMG: pid=%d comm=%s cache_slide=%#llx cache_base=%#llx images=%u\n",
 +					    proc_getpid(p), p->p_comm,

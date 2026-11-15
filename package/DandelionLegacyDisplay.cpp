@@ -24,10 +24,16 @@ extern "C" void native_diag_process_summary(void) __attribute__((weak));
 static void dline(unsigned line, const char *format, ...) {
     char text[96];
     va_list list;
-    if (!native_gop_text) return;
     va_start(list, format);
     vsnprintf(text, sizeof(text), format, list);
     va_end(list);
+    /*
+     * These lines used to go to the panel only, so a boot said nothing about the display chain
+     * unless somebody photographed the screen.  The kernel console reaches the flashinfo log, so
+     * mirror every stage there and the capture carries it.
+     */
+    printf("DANDELION-DISP(%u): %s\n", line, text);
+    if (!native_gop_text) return;
     native_gop_text(line, text);
 }
 

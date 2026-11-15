@@ -8353,3 +8353,75 @@ lr 0xfffffff00775581c → _exit_with_reason + 0x7bc
 BRK 退出时再打印 ✓ 这样 watchdogd 就能定位。
 
 ---
+
+## 0.148 ★★★ 2026-11-16 凌晨：CADisplay 断链解析到源码级，显示诊断改走日志
+
+### 一、SpringBoard 为什么拿不到显示器（全部从二进制里读出来的）
+
+`-[FBSDisplayMonitor _initWithBookendObserver:transformer:]`（FrontBoardServices，trap 在 +0x47c）：
+
+```
+19f3def30  bl _getCADisplayClass            ; 取 CADisplay 类
+19f3def34  cbz x0 → 断言 "failed to find the symbol for CADisplay"   ← 没触发
+19f3def3c  bl _objc_msgSend$displays        ; [CADisplay displays]     ← 空数组
+19f3def48  bl _objc_msgSend$firstObject     ; [displays firstObject]   ← nil
+19f3def54  str x0, [x19, #16]               ; 存进 _mainDisplay
+19f3def60  cbz x0 → 断言 "failed to find the main CADisplay"         ← **我们撞的这条**
+```
+
+继续往下一层：
+
+```
++[CADisplay mainDisplay]  →  ensure_displays()  →  query_displays()
+query_displays()          →  __CASGetDisplays()   （QuartzCore 内的 CoreSurface 桥）
+__CASGetDisplays          →  构造请求结构 + 消息号 0x1513 → **服务端往返**
+```
+
+→ **显示器列表不是本进程从 IOKit 枚举的，而是向 WindowServer（backboardd）要的** ✓
+→ 我们拿到的是**空数组**，说明 WindowServer 侧没有显示器（或没起来）✗
+
+符号怎么来的：`scripts/cache-symbols.py`（按模式列出缓存镜像符号）+ `scripts/cache-disasm.py`
+（反汇编一个缓存函数并把每个 `bl` 目标符号化）—— 两者都是本轮新写的，均可用 ✓
+
+### 二、日志侧的证据
+
+sr11 的 88 条退出记录里：**没有 backboardd**；`IOMFB_FDR_Loader` 退出 **status=1**（用户态显示加载器失败）；
+全日志 **0 条** display/framebuffer 字样 ✗
+
+原因找到了：显示 shim 的 `dline()` **只画在面板上**（`native_gop_text`），从不写 eMMC 日志 ——
+所以"显示栈走到哪一步"以前只能靠拍照 ✗
+
+### 三、本轮改动（都离线验证过）
+
+| 改动 | 目的 | 验证 |
+| --- | --- | --- |
+| `dline()` 增加 `printf("DANDELION-DISP(%u): %s\n", …)` | 显示阶段进日志 | 需**构建侧**检出 `/root/work/UniXNU-dandelion` 改（我第一次改错成 D: 那份 ✗）|
+| 新补丁 `dandelion-exec-name.patch` | `DANDELION-EXEC` 打进程名：`vnode_getname(imgp->ip_vp)` | 内核串 `DANDELION-EXEC: pid %d comm=%s` ✓ |
+| `DANDELION-AI` 探针 | 无条件打印 `all_image_info_addr` + copyin 返回码 | 串在 ✓ |
+| `resolve-app-text.py` 正则 | `path=` 改为可选（内核已不打 path，旧正则导致"没有 TEXT 记录"） | 实测 sr11 日志解析正常 ✓ |
+| `resolve-app-text.py` 语义 | 改用 `off` 匹配 `__TEXT` 偏移，并用 `base` 反推 slide 过滤 | 缓存镜像的假阳性被排除，app 区无候选时如实说 ✓ |
+
+### 四、watchdogd 的真实数据（一直就在日志里）
+
+```
+DANDELION-IMG : pid=52 comm=watchdogd cache_slide=0x6604000 cache_base=0x186604000 images=159
+DANDELION-EXE : pid=52 comm=watchdogd base=0x1965ab000
+DANDELION-TEXT: pid=52 comm=watchdogd pc=0x100691b0c base=0x100687000 off=0xab0c
+```
+
+8 次启动 **off 全是 `0xab0c`** ✓（正是从 pc 低 12 位 `0xb0c` 推出来的那处代码），base 每次不同（ASLR）。
+
+但：**本机镜像里找不到**"在 `__TEXT+0xab0c` 处有 `brk #1` 且 base 反推 slide 合理"的 Mach-O ✗
+（6 个候选都是缓存 dylib，反推 slide 为负 ✓ 已排除）
+→ watchdogd 自己的二进制要么在 sealed 卷里读不出、要么被压缩，
+**函数名需要从设备侧取二进制**（Android root 下 dd iOS 区域 → 本地按 `off` 与 `brk` 定位）✗
+
+### 五、今晚的结论一句话
+
+**启动链已经通了**（87+ 进程、SpringBoard 反复重启），**唯一卡点是 WindowServer 没有显示器**；
+下一步不是猜，而是等 oot-sr14-daemons.img（sha 5a996671）这一次启动给出三件事：
+① 完整进程清单（DANDELION-EXEC … comm=）（backboardd 到底起没起）
+② 显示栈各阶段（`DANDELION-DISP(n)`，现在进日志了）
+③ `DANDELION-AI` 的 copyin 结论（决定 watchdogd 基址走哪条路）
+
+---

@@ -79,3 +79,4 @@ dandelion-brk-report.patch
 dandelion-brk-trace.patch
 dandelion-sr-probe.patch
 dandelion-image-probe.patch
+dandelion-exec-name.patch

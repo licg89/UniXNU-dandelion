@@ -1,0 +1,25 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 94c0d6b..b96a60f 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8746,8 +8746,18 @@ process_signature(proc_t p, struct image_params *imgp)
+ 	{
+ 		uint32_t skip_cs = 0;
+ 		if (PE_parse_boot_argn("sheng-skip-cs", &skip_cs, sizeof(skip_cs)) && skip_cs != 0) {
+-			printf("DANDELION-EXEC: pid %d (policy answer %d)\n",
+-			    proc_getpid(p), imgp->ip_mac_return);
++			/*
++			 * dandelion: name the executable, not just its pid.  The console is the only trace this
++			 * port has, and "which daemons actually started" cannot be answered from a pid list --
++			 * backboardd in particular decides whether CoreAnimation ever gets a display.
++			 */
++			const char *exe_name = vnode_getname(imgp->ip_vp);
++
++			printf("DANDELION-EXEC: pid %d comm=%s (policy answer %d)\n",
++			    proc_getpid(p), exe_name != NULL ? exe_name : "?", imgp->ip_mac_return);
++			if (exe_name != NULL) {
++				vnode_putname(exe_name);
++			}
+ 			imgp->ip_mac_return = 0;
+ 		}
+ 	}
