@@ -8275,3 +8275,81 @@ sha256 : 3c3f2a6f9f886085a13db175178ecb4f3a380b3efa96da802239be22fc8f1e95
 - 换 IPSW 或改了 dyld 缓存时，按第三节重跑即可，不必依赖某枚历史镜像 ✓
 
 ---
+
+## 0.147 ★★★ 2026-11-16 01:54：payload 真正跑起来了（87+ 进程），36 条 BRK 入库
+
+### 一、`Compromised Data` 的根因与修复（已上机验证）
+
+根因不是信任缓存、不是 ADT 结构，而是 **`DarwinBoot.c:678`**：
+
+```c
+if (KeepPacked && (!RamdiskPacked || (RamdiskOffset == MAX_UINTN))) {
+    Status = EFI_COMPROMISED_DATA; goto Fail;
+}
+```
+
+- `KeepPacked` 来自 ADT 的 `PackedRAMDisk` 属性（我们一直有 ✓）
+- `RamdiskPacked` 是 DarwinBoot **直接看 ramdisk 字节**（`RamdiskLayout`）判定的，要求 `DBRDISK1`
+- 而我本机的 `data_ramdisk = /root/work/dandelion-data-seed.dbr`（4,194,304 B）
+  头是 `f8 e9 62 03…` —— **未打包** ✗
+
+→ ADT 说"打包"、实际没打包 = 拒绝 ✓
+修复：用能启动镜像里那份 **`DBRDISK1` packed seed**（1,060,960 B，已存为
+`/root/work/dandelion-data-packed.dbr`）重建 payload ✓
+
+**上机结果**（sr9，01:19）：日志 4,182 行，`D4K beat 28: procs=87 pid1stat=2` —— 启动链彻底通了 ✓
+
+### 二、我引入并修掉的一个内核 panic
+
+sr9 的 panic 屏：
+
+```
+pc 0xfffffff007428578 → _copyinstr + 0x18
+lr 0xfffffff00775581c → _exit_with_reason + 0x7bc
+```
+
+是我 `dandelion-image-probe.patch` 里读 `imageFilePath` 那行 `copyinstr` ✗
+**同一块里的 `copyin`（结构体、镜像数组）是好的**，只有 `copyinstr` 炸 → 已删除，
+`DANDELION-TEXT` 改为只打 `pc/base/off`（无 path）✓
+验证：内核里 `base=%#llx off=%#llx path=%s` **不存在**（-1）、新格式存在 ✓
+
+### 三、sr11 实采（01:54 启动，02:15 采集）
+
+| 项 | 值 |
+| --- | --- |
+| 日志 | **7,111 行 / 458,400 字节** |
+| `DANDELION-BRK` | **36 条** |
+| `DANDELION-SR` | 有 ✓（`sr_base=0x180000000`，`sr_slide=0x6604000`，与 BRK 的 slide **完全一致** ✓）|
+| `DANDELION-IMG/TEXT` | **没有** ✗（见第五节）|
+
+- SpringBoard 与 liveactivitiesd 的 unslid **又一次完全相同**：`0x19f3df2ec` / `0x1c18f64f8` ✓
+  （第三次独立启动互证，slide `0x6604000` 与之前 `0x1fc6c000`、`0x202c000` 都不同 ✓）
+- SpringBoard 这次反复重启到 **pid 183**，liveactivitiesd 同样反复 → 说明
+  `panic_on_crash_disabled=1` 生效，watchdogd 崩溃不再拖垮整机 ✓
+- 产物：`D:\aios\flashinfo-sr11-20261116-015455.bin`、`out\console-sr11-20261116-015455.txt`
+
+### 四、watchdogd 的新线索：**8 次启动都撞在同一处代码**
+
+8 条记录（pid 52/93/100/121/130/138/146/152）：
+
+```
+0x10004bb0c 0x100691b0c 0x10091eb0c 0x10095bb0c
+0x100b65b0c 0x100c1db0c 0x100f8eb0c 0x101252b0c
+```
+
+**全部以 `0xb0c` 结尾** → 低 12 位不变 ⇒ **同一个代码点**，每次启动的主可执行文件 slide 不同
+（所以"相对差值约束"必然失败：它假设 8 条共用一个 base ✗ 已实测确认失败）
+
+可用的约束：设代码偏移为 X，则 `base_i = pc_i − X`，X 必须 ≡ `0xb0c`（mod 0x1000）
+且 X ≤ `0x4BB0C`（否则最小那条 pc 的 base 会低到不合理）✓
+
+### 五、为什么 `DANDELION-IMG/TEXT` 没出来
+
+`copyin(task_get_all_image_info_addr(task), &ai, sizeof(ai))` 返回失败 —— 最可能是
+**dyld 在进程退出时已经把 all_image_info_addr 清零**（所以 exit 时刻读不到），
+而不是上一次那种"copyin 本身不可用"（那次结构体是读到了的）。
+
+→ 下一步（需要再一轮上机）：把主可执行文件的 base 在 **exec 时**记进 proc（内核侧，无 copyin），
+BRK 退出时再打印 ✓ 这样 watchdogd 就能定位。
+
+---
