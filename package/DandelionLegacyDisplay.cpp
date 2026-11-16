@@ -151,7 +151,7 @@ volatile uint64_t native_legacy_object,native_legacy_nub,native_legacy_workloop;
 volatile uint32_t native_legacy_guard_slot;
 volatile uint64_t native_legacy_guard_object,native_legacy_guard_caller;
 volatile int native_legacy_surface_status=-1;
-volatile uint32_t native_legacy_surface_found;
+volatile uint32_t native_legacy_surface_found,native_legacy_surface_alt,native_legacy_surface_class;
 volatile uint64_t native_legacy_video_base,native_legacy_video_bytes;
 volatile uint64_t native_legacy_gop_map,native_legacy_gop_virtual,native_legacy_gop_physical,native_legacy_gop_bytes;
 volatile uint32_t native_legacy_gop_width,native_legacy_gop_height;
@@ -646,6 +646,30 @@ void native_legacy_display_late_probe(void) {
     native_legacy_surface_status=OSKextLoadKextWithIdentifier("com.apple.iokit.IOSurface");
     OSDictionary *matching=IOService::nameMatching("IOCoreSurfaceRoot");
     IOService *surface=matching?IOService::waitForMatchingService(matching,5000000000ULL):nullptr;
+    /*
+     * The console used to carry a single number here, F0, which cannot be told apart from "the kext
+     * never started".  When the first wait comes back empty, ask under the class name as well: if the
+     * service publishes as IOSurfaceRoot the display works, and if it does not either, the extra line
+     * says so instead of leaving the guesswork.
+     */
+    if(!surface){
+        OSDictionary *alt=IOService::nameMatching("IOSurfaceRoot");
+        IOService *byName=alt?IOService::waitForMatchingService(alt,3000000000ULL):nullptr;
+        native_legacy_surface_alt=byName!=nullptr;dline(23,"DISP SURFALT %d",native_legacy_surface_alt);
+        if(byName){surface=byName;OSSafeReleaseNULL(matching);matching=alt;alt=nullptr;}
+        OSSafeReleaseNULL(alt);
+    }
+    if(!surface){
+        /*
+         * Tell "the kext never loaded" apart from "the class is there but nothing published".
+         * A missing class means no wait of any length will help, and that calls for a different
+         * fix than a class that exists and simply never starts.
+         */
+        OSObject *cls=OSMetaClass::allocClassWithName("IOSurfaceRoot");
+        native_legacy_surface_class=cls!=nullptr;
+        dline(23,"DISP SURFCLASS %d",native_legacy_surface_class);
+        if(cls){cls->release();}
+    }
     native_legacy_surface_found=surface!=nullptr;dline(23,"DISP SURF %d F%d",native_legacy_surface_status,native_legacy_surface_found);OSSafeReleaseNULL(surface);OSSafeReleaseNULL(matching);
     PE_Video video={};
     if(!native_legacy_surface_status && native_legacy_surface_found && !PE_current_console(&video)
