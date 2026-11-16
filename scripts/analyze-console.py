@@ -114,6 +114,7 @@ def main():
             print('   springboard never appears in a beat')
 
     print('\n== all_image_info_addr probe')
+    ais = AI.findall(text)
     if not ais:
         print('   none in this log')
     else:

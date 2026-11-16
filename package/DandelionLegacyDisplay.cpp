@@ -662,7 +662,23 @@ static void surfacePollThread(void *, wait_result_t) {
         OSDictionary *pollMatch=IOService::nameMatching("IOCoreSurfaceRoot");
         IOService *pollSurface=pollMatch?IOService::waitForMatchingService(pollMatch,0):nullptr;
         OSSafeReleaseNULL(pollMatch);
-        if(pollSurface){dline(23,"DISP SURFAPPEAR %u",second);OSSafeReleaseNULL(pollSurface);surfacePollState=3;return;}
+        if(pollSurface){
+            dline(23,"DISP SURFAPPEAR %u",second);
+            OSSafeReleaseNULL(pollSurface);
+            surfacePollState=3;
+            /*
+             * The service turned up after the probe had already given up: the afternoon run showed it
+             * arriving at second four, which left the panel on the GOP fallback and made SpringBoard
+             * die on "failed to find the main CADisplay" twenty-six times.  Run the whole late probe
+             * again now that the service exists; it parks the same display object it parked before.
+             */
+            if(!native_legacy_start_result && !activeLegacyDisplay && native_legacy_object){
+                pendingLegacyDisplay=(IOService *)native_legacy_object;
+                dline(23,"DISP SURFRETRY");
+                native_legacy_display_late_probe();
+            }
+            return;
+        }
     }
     dline(23,"DISP SURFNEVER");
     surfacePollState=4;
@@ -672,7 +688,11 @@ void native_legacy_display_late_probe(void) {
     IOService *display=pendingLegacyDisplay;if(!display)return;pendingLegacyDisplay=nullptr;dline(21,"DISP LATE");
     native_legacy_surface_status=OSKextLoadKextWithIdentifier("com.apple.iokit.IOSurface");
     OSDictionary *matching=IOService::nameMatching("IOCoreSurfaceRoot");
-    IOService *surface=matching?IOService::waitForMatchingService(matching,5000000000ULL):nullptr;
+    /*
+     * Twenty seconds, not five.  Measured on this board the service can appear around second four to
+     * twelve after the probe runs, and a five second wait then a three second retry lost the race.
+     */
+    IOService *surface=matching?IOService::waitForMatchingService(matching,20000000000ULL):nullptr;
     /*
      * The console used to carry a single number here, F0, which cannot be told apart from "the kext
      * never started".  When the first wait comes back empty, ask under the class name as well: if the
@@ -681,7 +701,7 @@ void native_legacy_display_late_probe(void) {
      */
     if(!surface){
         OSDictionary *alt=IOService::nameMatching("IOSurfaceRoot");
-        IOService *byName=alt?IOService::waitForMatchingService(alt,3000000000ULL):nullptr;
+        IOService *byName=alt?IOService::waitForMatchingService(alt,10000000000ULL):nullptr;
         native_legacy_surface_alt=byName!=nullptr;dline(23,"DISP SURFALT %d",native_legacy_surface_alt);
         if(byName){surface=byName;OSSafeReleaseNULL(matching);matching=alt;alt=nullptr;}
         OSSafeReleaseNULL(alt);
