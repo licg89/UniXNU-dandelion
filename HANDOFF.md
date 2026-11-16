@@ -9378,3 +9378,95 @@ vm_swap_create_file failed @ 37 secs        ← sr26 是 285 秒
 | 镜像 | `boot-sr29-clockearly.img` = `0eee9436`（**提速版**）；`boot-sr26-emmc-linked.img` = `af96f451`（**日志完整版**）|
 
 ---
+
+## 0.164 2026-11-17 02:4x：诚实的账 —— 启动**没有变快**，并修正 0.163 的三处夸大
+
+用户直接指出 0.163 的总结有问题（"启动慢还是比较慢，界面乱还是没怎么解决"）✓ 复核后确认用户正确 ✗
+
+### 一、实测：端到端**没有变快**，个别里程碑更慢 ✗
+
+用 `D4K beat`（每 20 s 一跳）给各里程碑定时：
+
+| 里程碑 | sr26（原状）| sr30（含 clockearly）|
+| --- | --- | --- |
+| launchd hello | ~360 s | **~400 s** ✗ |
+| SpringBoard exec | ~360 s | **~420 s** ✗ |
+| backboardd exec | ~500 s | **~620 s** ✗ |
+
+策略读省的 227 s 被别的东西吃掉了 ✗ ⇒ **0.163 说的"启动变快"是以偏概全** ✗
+
+### 二、真正的耗时：崩溃循环导致 739k 次重复读
+
+sr30 约 30 分钟内的统计：
+
+| 服务 | BRK | EXIT |
+| --- | --- | --- |
+| **xpcproxy** | **437** | — |
+| bluetoothd | 158 | **79** |
+| fairplayd | 154 | **77** |
+| liveactivitiesd | 153 | 17 |
+| watchdogd | 152 | 17 |
+
+累计读盘 **738,931 次**（按 64 KiB/次 = **48 GB** ✗）✓
+`No space left on device` 从日志第 14,314 行**一直持续到最后一行** ✗
+
+### 三、因果链（假设，未完全验证）
+
+```
+Data 卷 256 MiB 满  →  launchd 无法写 /private/var/db/com.apple.xpc.launchd/
+   →  disabled.plist 的"禁用"状态记录不下来
+   →  bluetoothd / fairplayd / watchdogd 无限重启
+   →  每次重启重读二进制与缓存  →  739k 次读  →  启动慢
+```
+
+种子确实禁了它们（`build-data-seed.py` 的 `disabled.plist` 含 watchdogd/bluetoothd/cryptexd/
+PerfPowerServices/liveactivitiesd/ScreenTimeAgent/dmd/UsageTrackingAgent ✓）但它们照样崩 ✗
+
+### 四、两条死路（已实测，别再试）
+
+**① 4 GiB Data 卷不可行** ✗
+`DarwinBootPkg/Driver/PackedRamdisk.h` 写明 DBRDISK1 携带的是 "**expanded bytes**" ✓
+加载时展开成完整逻辑大小 ⇒ **4 GiB 种子需要 4 GiB 连续内存** ✗ 手机总共才 3–4 GB ✗✓
+`build-data-seed.py` 的 `--size-mib 256`（注释 "a RAM seed"）是**必然选择**，不是疏忽 ✓
+用 GitHub Actions 的现成 `data-seed.yml`（`size_mib=4096` ✓）生成、改 UUID、打进 sr32 →
+**日志 270 行即死，Data 卷没挂上** ✗
+
+**② `native-msdc-clockearly` 不安全** ✗
+sr32 日志：`verify 779654 len 4096 data 00000000 00000000 got 3df42b43 want ad7facb2`
+⇒ **读回的数据是错的** ✓ 正是驱动注释警告过的边缘时钟失效模式 ✓
+它确实把策略读从 228 s 降到 4.8 s ✓ 但代价是偶发数据错误 ✗ 已从默认参数移除 ✓（代码保留 ✓）
+
+⇒ **0.163 的"45× 提速"应重新定性为：单点有效但**不可靠**，不能作为默认 ✓**
+
+### 五、界面乱：**未解决** ✗
+
+只做了两件事：
+- 把进度行从 21–24 行（压在跑码上）挪到 60–62 行 ✓
+- 给控制台留出底部 6 行（`kProgressStripPx`）✓
+
+**sr31 实测失败** ✗：我第一次放在 127–129 行，而面板 1600 px / 24 px 字 = **只有 66 行** ✗
+⇒ 完全在屏幕外、什么都没画 ✗（用户看到底部一片空白 ✓）已修正为 60–62 行 ✓
+
+**根因仍未动** ✗：引导菜单、控制台跑码、驱动的 `screen()` **三个写者抢同一块帧缓冲** ✓
+参考图（三星那台）干净是因为它只有一个写者 ✓
+
+### 六、本轮有效但有限的成果
+
+| 项 | 状态 |
+| --- | --- |
+| 策略读 228 s → 4.8 s | ✅ 机制成立 ✓ 但有数据错误风险 ✗ |
+| 崩溃循环机制定位 | ✅ 新发现（ENOSPC → disabled.plist 失效 → 无限重启）|
+| Data 卷 256 MiB 是硬约束 | ✅ 已证（RAM 展开）✗ |
+| 面板进度行 | ✅ 已修到 60–62 行（屏幕内）✓ |
+| **启动变快 / 界面变干净** | ❌ **都没有实现** ✗ |
+
+### 七、下一步（按证据强度排序）
+
+1. **Data 卷搬到 eMMC**：`native-msdc-persist=2` 打开可写持久存储 ✓ 驱动已有 ✓
+   （"changed pages live in the store window only, never in RAM" ✓）这样 RAM 占用低，
+   才有机会用大得多的 Data 卷 ✓ 但**卷大小仍受种子限制** ✗ 需要种子/持久存储的接线 ✗
+2. **查崩溃循环的符号**：`bluetoothd` 79 次、`fairplayd` 77 次 ✓ BRK 地址已知 ✓
+   但需要对应二进制才能符号化 ✗（本地镜像里没有 ✓）
+3. **界面三写者**：给控制台/驱动/引导分配互不重叠的区域 ✗ 需要改 `native_gop_text` 的排版 ✓
+
+---

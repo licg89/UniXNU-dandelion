@@ -1,0 +1,26 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -563,6 +563,13 @@
+ }
+ #endif
+ 
++/*
++ * Read by the storage driver to draw progress on the panel.  Once the card clock is raised the eMMC
++ * console can no longer write, so after that point the framebuffer is the only channel that shows
++ * whether the boot is moving.
++ */
++volatile uint32_t dandelion_procs, dandelion_springboard, dandelion_backboardd;
++
+ static void
+ dandelion_beat(void *arg, wait_result_t wr)
+ {
+@@ -597,6 +604,9 @@
+ 		}
+ 		extern volatile uint64_t native_msdc_reads, native_msdc_writes, native_msdc_failures;
+ 		extern volatile uint64_t native_msdc_retries;
++		dandelion_procs = (unsigned)procs;
++		dandelion_springboard = (sbpid >= 0) ? (unsigned)sbpid : 0u;
++		dandelion_backboardd = (bbpid >= 0) ? (unsigned)bbpid : 0u;
+ 		printf("D4K beat %u: procs=%d pid1stat=%d sb=%d:%d bb=%d:%d | reads=%llu writes=%llu retries=%llu failures=%llu\n",
+ 		    round, procs, state, sbpid, sbstat, bbpid, bbstat,
+ 		    (unsigned long long)native_msdc_reads, (unsigned long long)native_msdc_writes,

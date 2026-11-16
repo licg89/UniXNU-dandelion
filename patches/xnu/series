@@ -81,3 +81,4 @@ dandelion-sr-probe.patch
 dandelion-image-probe.patch
 dandelion-exec-name.patch
 dandelion-beat-summary.patch
+dandelion-beat-panel.patch
