@@ -8750,3 +8750,69 @@ UniXNU 前期没有 GPU 驱动也能显示。逐页核对 unixnu.com 与主仓�
   sr21 原始镜像 `9f84a8f6` 已复跑验证中）
 
 ---
+
+## 0.154 2026-11-16 21:0x：CPU 提速的可行性核查（结论：官方无后端，不硬造）
+
+用户定下顺序："做 CPU 提速 + 官方参数，然后啃 link-stub / DMA"。逐项核实后**如实修正**：
+
+### 一、本板没有可用的 CPU 调频后端（硬写 = 造轮子 + 高风险）
+
+| 证据 | 出处 |
+| --- | --- |
+| `"mode": "opt-in lifecycle/publication/refusal instrument; **not a functional power backend**"`、`"runtime_qualified": false` | 主仓库 `scripts/build-platform-power.py` 自己写进 build-report.json |
+| `enableCPUCore(168/169)`、`disableCPUCore`、`enableCPUCluster`、`initCPUIdle`… 全部 `unavailable(slot)` → 一调用就 `panic` | `package/ShengPlatformPower.cpp` 全文 |
+| 文件头明确："No clocks, sleep, reset or secondary-CPU success is advertised" | 同上 |
+| `sheng_pmgr_run()` 默认 `mode=0` 直接 return | 同上；board.toml:240 也有注释 |
+| DTS 里 `cpu-map { status = "disabled" }` | `dts/dandelion.dts` |
+
+⇒ **官方在这块板上故意留桩、不实现调频** ✓ 属于"完全没有参考"的情形，但也没有本板 PLL/PMIC
+寄存器手册与原理图，**不具备安全实现条件** ✗ 结论：不写 MTK PLL 寄存器。
+
+### 二、官方参数在我们这个 profile 里多数无效（实测）
+
+`argcheck.sh` / `smp_deep.sh` 对组装后的 XNU 源码树逐一 grep `PE_parse_boot_argn`：
+
+| 官方参数 | 我们内核 | 处置 |
+| --- | --- | --- |
+| `boot-progress=<n>` | 只有 `sys_work_interval.c` 一处诊断读取 ✓ | 可保留但不要指望完整进度层 |
+| `boot-ui-focus=<name>` | **无实现** ✗ | 清掉 |
+| `disable-watchdogd=1` | **无实现** ✗ | 清掉；官方做法是 Data seed 里的 launchd disabled plist |
+| `log-display=1` | **无实现** ✗ | 清掉 |
+| `smp=1` | **无 `PE_parse_boot_argn("smp")` 实现**（仅 `sched_prim.c` 有字符串）✗ | 不能靠它开多核 |
+| `cpufreq=<n>` | 只有 `kern_mib.c` 的 sysctl 名 ✗ | 无效 |
+| `armcpu-*` | 无实现 ✗ | 无效 |
+
+⇒ "CPU 提速"**没有可复用的官方开关**；"官方参数"这一步实际该做的是**清理无效参数**，
+避免误以为开了诊断 ✓ 官方 `watchdogd` 的正规关法 = **Data seed 内的 launchd disabled plist**
+（merlinx 记录明写），列为后续工作项。
+
+### 三、DTS 现状（描述齐、驱动缺，别混淆）
+
+`dts/dandelion.dts`：8× Cortex-A53（4× `0x89267940`=2.3 GHz、4× `0x6b49d200`=1.8 GHz）、
+三张 `operating-points-v2` 表（0.6–2.2 GHz 配 `opp-microvolt`）、`mediatek,mtk-cci`、`cpu-idle-states`
+都在 ✓。这些是**硬件描述**，不是内核里的调频实现 ✗。
+
+### 四、link-stub / DMA 的现状（下一步的起点，已有现成工具）
+
+主仓库已有完整工具链，不是要从零造：
+
+| 工具 | 作用 |
+| --- | --- |
+| `scripts/build-dandelion-emmc.py` | **为这块板写的** eMMC host 构建脚本（复用内核的 `IOPlatformExpert.cpo.json` 编译记录 + `-force_load`）|
+| `scripts/build-storage-bindings.py` / `bind-by-vtable.py` / `derive-storage-symbols.py` / `prepare-storage-headers.py` / `audit-storage-interface.py` / `audit-target-kext-bindings.py` | 解决 IOStorageFamily 预链接 kext 的 vtable 绑定 |
+| `board.toml:107–137` 注释 | 明确写出卡点：168 个 vtable 槽能解析，**构造/析构/gMetaClass 这 4 个符号**在符号表里找不到 → 需要 link-stub archive |
+
+⇒ 下一步从这里接：**先跑 `--check`，再用现成 bindings 工具生成 stub**，把
+`build-dandelion-emmc.py` 从注释状态启用；目标是替换 PIO 轮询（§0.153 的慢因）。
+
+### 五、另一条重要结论：sr22/23/24 的失败是**构建产物差异**
+
+`boot-sr21-racefix.img`（`9f84a8f6`）原样复跑（`flashinfo-sr21re-20261116-203214.bin`）：
+9,282 行、51 beats（≈17 分钟）、`DISP UP` 完整、SpringBoard pid 27 存活 27/51 ✓
+⇒ 同一份字节能重现成功；sr22/23/24 是**同源码重建**后 `kernel.macho` hash 变化
+（`18f96949…` → `cb9440a5…`）导致的差异 ✗，不是设备/卷状态。
+对比产物：固件段 / trustcache / scratch-data / unixnu.toml / 驱动**全部相同** ✓，
+只有 `kernel.macho` 与 `kernel.macho.adt`（随机种子）不同 ✓ → 下一步应锁定 kernel 重建的
+非确定性来源（时间戳/路径/链接顺序），避免"重建即退化"。
+
+---
