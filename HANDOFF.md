@@ -8496,3 +8496,66 @@ IOCoreSurfaceRoot 缺失
 3. watchdogd 函数名仍缺（`off=0xab0c`，二进制不在本机镜像；可从设备侧 dd iOS 区域再按 brk 定位）
 
 ---
+
+## 0.150 ★★★★★ 2026-11-16 12:56：**显示栈起来了**（720x1600，backboardd 在驱动帧缓冲）
+
+### 一、修法：按类名等 surface 服务
+
+§0.149 的结论是"IOSurfaceRoot 类在（SURFCLASS 1）但 IOCoreSurfaceRoot 从不发布"。
+在 `DandelionLegacyDisplay.cpp` 里加了两件事：
+
+1. `IOCoreSurfaceRoot` 等不到时，**再用类名 `IOSurfaceRoot` 等 3 秒**，等到就直接用
+2. 仍失败则打印 `DISP SURFCLASS`（用 `OSMetaClass::getMetaClassWithName`，**不分配实例** ——
+   早先那版用 `allocClassWithName` + `release()`，同一次启动随后在 prelinked 代码里出现
+   `far=0x138` 的空指针 panic ✗，是付不起的代价）
+
+### 二、开机结果（sr18，`boot-sr18-surfpoll.img` `30ee898b`）
+
+```
+(21) DISP PROBE 1
+(22) DISP INIT 1
+(23) DISP SURF 0 F1            ← IOCoreSurfaceRoot **找到了**（类名回退生效）
+(23) DISP VID 7ec50000 720x1600
+(27) DISP ARMIO 1              ← provider 是真 AppleARMIODevice
+(25) DISP NUB A1 S1            ← nub attach/start 成功
+(24) DISP MAP 720x1600 7ec50000
+(27) DISP REG 1
+(26) DISP P1 A1 S1             ← probe/attach/start 全成功
+(28) DISP CLIENT 57 backboardd T0   ← **backboardd 打开帧缓冲**
+(29) DISP PM 1 0
+(30) DISP COPY 0 4608000       ← 全屏 4,608,000 字节 = 720*1600*4 ✓
+(31) DISP UP                   ← **显示起来**
+(100) CL#1 57 backboardd T0
+```
+
+**屏幕上出现 Apple logo 就是这个栈在工作的样子**（此前一直是彩色测试条 —— 那是 panic 后控制台接管）。
+
+### 三、SpringBoard 不再撞 CADisplay 断言
+
+| 项 | sr17 | sr18 |
+| --- | --- | --- |
+| SpringBoard 启动 | x2 | **x1** |
+| SpringBoard 退出 | x1（sig=5，FBSDisplayMonitor）| **0 次** ✓ |
+| SpringBoard trap | 有 | **无** ✓ |
+| 显示 | GOP FALLBACK | **DISP UP** ✓ |
+| 进程峰值 | — | **207**（`D4K beat 181: procs=207 pid1stat=2`）|
+| 日志 | 4,903 行 | **23,634 行** / 1,767 EXEC / 695 EXIT / 243 个可执行文件 |
+
+→ §0.148/§0.149 那条链（`IOCoreSurfaceRoot` 缺失 → 无显示器 → `[CADisplay displays]` 空 →
+FBSDisplayMonitor 断言 → SpringBoard 死）**已被切断** ✓
+
+### 四、仍然存在的崩溃（不阻塞系统，但要知道）
+
+- `watchdogd`：19 次启动全在同一代码点（`off=0xab0c`），`brk #1`
+- `liveactivitiesd`：SessionSyncEngine `+0x2e4f8`（`0x1c18f64f8`，与之前一致）
+- `gamed`：Foundation `LocaleCache.current`（`0x186e6cd2c`）
+- `IOMFB_FDR_Loader` 仍 exit status=1（不影响显示已起来这一事实）
+
+### 五、下一步
+
+1. **SpringBoard 现在活着但不显示锁屏** —— 看它此刻卡在哪个初始化（需要更长的日志窗口/或
+   在 SpringBoard 里加进度打印）
+2. `watchdogd` 的 0xab0c 仍无名（需设备侧二进制）
+3. 上面三个周期性崩溃值得逐个消掉，避免拖慢系统
+
+---
