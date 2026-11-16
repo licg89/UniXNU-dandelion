@@ -8816,3 +8816,69 @@ UniXNU 前期没有 GPU 驱动也能显示。逐页核对 unixnu.com 与主仓�
 非确定性来源（时间戳/路径/链接顺序），避免"重建即退化"。
 
 ---
+
+## 0.155 2026-11-16 21:0x：Data seed 里**已有**官方 disabled.plist（自我纠正）
+
+§0.154 说"官方 watchdogd 的正规关法 = Data seed 里的 launchd disabled plist，列为后续工作项"
+—— **这是错的** ✓ 逐字节核查后纠正：
+
+### 一、我们一直在用官方 seed，且它就是 `build-data-seed.py` 生成的
+
+```
+/root/work/dandelion-data-packed.dbr   1060960 B  sha feb3ea38f87b51f3…
+boot-slide.img 里的 scratch-data.img  1060960 B  sha feb3ea38f87b51f3…
+IDENTICAL: True
+```
+
+`DBRDISK1` 头（version=1, page=4096, expanded=268435456=256 MiB）✓，seed 内能找到：
+`disabled.plist`（2 处）、`disabled.501.plist`、`com.apple.watchdogd`、`com.apple.xpc.launchd`、
+`cores`（2 处）✓ —— 我先前用大写 `Disabled` grep 得到 -1 是**大小写误判** ✗
+
+### 二、`build-data-seed.py` 的 `SEED_FILES` 完全照 merlinx 实现（官方现成机制）
+
+```
+db/com.apple.xpc.launchd/disabled.plist:
+    com.apple.watchdogd / bluetoothd / cryptexd / PerfPowerServices /
+    liveactivitiesd / ScreenTimeAgent / dmd / UsageTrackingAgent = True
+mobile/Library/Preferences/com.apple.springboard.plist:
+    FBLaunchWatchdogScale=20.0, BKNoWatchdogs=True, SBDisable* ...
+com.apple.purplebuddy.plist: SetupDone=True, ForceNoBuddy=True ...
+backboardd.plist / .GlobalPreferences.plist:
+    CAEnableDeepFramebuffer / FramebufferCompression / IOSurfaceCompression = False
+EMPTY_DIRS = vm, keybags, mobile/tmp, tmp, run   ← /private/var/vm 保证 swap 能建
+```
+
+脚本注释明写来源："Preference and launchd files the **reference port (UniXNU-merlinx, MT6768)** ships"
+✓ 也就是说**官方机制早就接好了，不需要再做** ✓
+
+### 三、那 watchdogd 为什么还在崩？（留给下一步，不猜）
+
+日志 `com.apple.xpc.launchd ... boot-args = ... panic_on_crash_disabled=1 boot-progress=2
+boot-ui-focus=SpringBoard disable-watchdogd=1 kextlog=0xfff` 里，`disable-watchdogd=1` 是
+**我们内核没有 reader 的无效参数**（§0.154 已证）✗；`disabled.plist` 里 `com.apple.watchdogd=True`
+却没让 watchdogd 停止 ✗ → 可能是 Disabled 文件读取时机/路径（Data 卷挂载点）或 launchd
+"ondemand mode" 下的语义，需要查 launchd 的 overrides 加载，**不是造新机制** ✓
+
+### 四、本轮"CPU 提速 + 官方参数"的最终结论
+
+| 用户要求的项 | 实际能做的 | 判定 |
+| --- | --- | --- |
+| CPU 提速 | 无官方后端（PMGR 是 panic 桩、smp/cpufreq/armcpu-* 无 reader、merlinx 寄存器属 MT6768）| **不硬造** ✓ |
+| 官方参数 | board.toml 的 kernel_args 本身干净；无效参数都是我临时 `--kernel-arg` 加的 → **以后不再加** ✓ | 已明确 |
+| watchdogd | 官方 disabled.plist **已在 seed 里** ✓，剩下是 launchd 读取时机问题 | 不需要新机制 ✓ |
+| link-stub / DMA | `build-dandelion-emmc.py` + 全套 `*-bindings.py` 已存在，缺口是 4 个 vtable 符号 | **下一步从这里接** |
+
+⇒ **结论：在"用现成的"这条线上，本项目其实做得比我以为的好**；真正剩下的自造轮子是
+`NativeMsdc.cpp`（PIO）与 72 个诊断补丁，而它们的替代路径（link-stub + 官方诊断）官方都已备好 ✓
+
+### 五、完整冷备份（用户要求"记得备份现有成果"）
+
+`C:\aios-backup-20261116\`（12 GiB / 165 文件，`MANIFEST.txt` + `SHA256SUMS.txt`）：
+- `repo-device-D.tar.gz`、`repo-build-WSL.tar.gz`（**两个完整 git 仓库**，含全部提交、HANDOFF、porting.toml）
+- `repo-main-config.tar.gz`（主仓库输入/脚本/kits）
+- `assets/`（packed Data seed、merged trustcache、cdhashes、boot-slide.fw、`assets-symtab.tar.gz` 685 MB 符号表、shardmap）
+- `images/`（6 枚关键 boot.img + 8.81 GiB `userdata-signed.img`）
+- `logs/`（136 个 console/flashinfo/summary/brk 文件）
+- `office/`（公司那台手机的原始 boot + 主/备 GPT）
+
+---
