@@ -1,0 +1,93 @@
+name: resize-data-seed
+
+# The Data volume the port boots with is an APFS container carried in a DBRDISK1 seed.  It was created
+# at 256 MiB ("a RAM seed"), which iPadOS fills immediately: the boot logs 137 "No space left on
+# device" errors and SpringBoard never gets far enough to draw.  Growing the container needs APFS
+# tooling, which only macOS has, so this workflow does it on a runner: mount the small seed read-only,
+# create a larger container, copy the tree with ditto (it preserves ownership and flags), and pack the
+# result back into the same DBRDISK1 format.  scripts/build-data-seed.py does the same job from an IPSW
+# mount; this path exists because the seed already carries the port's own customisations.
+on:
+  workflow_dispatch:
+    inputs:
+      size_mib:
+        description: 'Data container size in MiB'
+        required: false
+        default: '4096'
+
+jobs:
+  resize:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unpack the seed
+        run: |
+          set -euo pipefail
+          python3 scripts/dbr-image.py unpack tests/data/dandelion-data-packed.dbr small.img
+          ls -l small.img
+          file small.img || true
+
+      - name: Create the larger container and copy the tree
+        run: |
+          set -euo pipefail
+          SIZE="${{ inputs.size_mib }}m"
+          # The new container has to exist before the copy, and it must be APFS so the Data volume the
+          # port mounts keeps its semantics.
+          hdiutil create -size "$SIZE" -fs APFS -volname OwnerData -type UDIF -ov big.dmg
+          # Raw (no partition table) container, exactly like the seed.
+          hdiutil attach -readonly -noverify small.img
+          SMALL="$(ls -d /Volumes/* | grep -v '^/Volumes/Macintosh' | head -1)"
+          echo "small volume: $SMALL"
+          hdiutil attach big.dmg
+          BIG=/Volumes/OwnerData
+          echo "big volume: $BIG"
+          sudo ditto -V "$SMALL/" "$BIG/"
+          echo "--- copied tree ---"
+          sudo ls -la "$BIG/private/var" | head -20
+          df -h "$BIG"
+          hdiutil detach "$BIG" || hdiutil detach -force "$BIG"
+          hdiutil detach "$SMALL" || hdiutil detach -force "$SMALL"
+
+      - name: Convert to a raw image
+        run: |
+          set -euo pipefail
+          hdiutil convert -format UDRW -o big.raw big.dmg
+          ls -l big.raw.dmg
+
+      - name: Trim the UDIF back to a bare container image
+        run: |
+          set -euo pipefail
+          # UDRW is still a UDIF wrapper; take the data fork out so the APFS container starts at 0,
+          # which is what DBRDISK1 carries.
+          python3 - <<'PY'
+          import plistlib, struct, pathlib
+          src = pathlib.Path('big.raw.dmg').read_bytes()
+          # UDIF trailer: 'koly' at the end, with dataForkOffset/dataForkLength.
+          assert src[-4:] == b'koly', src[-4:]
+          trailer = src[-512:]
+          offset, length = struct.unpack_from('>QQ', trailer, 0x18)
+          print('data fork offset', offset, 'length', length)
+          raw = src[offset:offset + length]
+          pathlib.Path('big.img').write_bytes(raw)
+          print('raw container', len(raw), 'bytes')
+          PY
+
+      - name: Pack it back into DBRDISK1
+        run: |
+          set -euo pipefail
+          python3 scripts/dbr-image.py pack big.img dandelion-data-4g.dbr
+          ls -l dandelion-data-4g.dbr
+          python3 - <<'PY'
+          import struct, pathlib
+          d = pathlib.Path('dandelion-data-4g.dbr').read_bytes()
+          magic, version, page, logical, count = struct.unpack_from('<8sIIQQ', d)
+          print(f'{magic!r} v{version} page={page} logical={logical} ({logical/1048576:.0f} MiB) extents={count} packed={len(d)} bytes')
+          assert magic == b'DBRDISK1' and logical == int("${{ inputs.size_mib }}") * 1024 * 1024
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dandelion-data-4g
+          path: dandelion-data-4g.dbr
+          if-no-files-found: error
