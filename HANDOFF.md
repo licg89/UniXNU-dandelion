@@ -9470,3 +9470,54 @@ sr32 日志：`verify 779654 len 4096 data 00000000 00000000 got 3df42b43 want a
 3. **界面三写者**：给控制台/驱动/引导分配互不重叠的区域 ✗ 需要改 `native_gop_text` 的排版 ✓
 
 ---
+
+## 0.165 2026-11-17 03:0x：因果链未能证实；当前可用资产与建议
+
+### 一、`disabled.plist` 那条链**没有证据支持，也没有被推翻** ✗
+
+在 sr30 的 21,039 行里搜 launchd 关于 disabled 的输出：
+
+- `disabled` 只匹配到 `panic-on-crash disabled via boot-arg` 和 `Tracing: disabled` ✗
+- launchd **不记录**它读取 `disabled.plist` 的过程 ✓ 所以日志无法证实/证伪 ✓
+- 文件路径是对的 ✓：`build-data-seed.py` 写 `db/com.apple.xpc.launchd/disabled.plist` ✓
+  = Data 根下的 `/private/var/db/com.apple.xpc.launchd/disabled.plist` ✓
+
+⇒ 这条链仍是**假设** ✓ 别再当结论用 ✓
+
+### 二、能确认的事实
+
+| 事实 | 证据 |
+| --- | --- |
+| 崩溃/陷入集中在少数服务 ✓ | xpcproxy 437、bluetoothd 158（EXIT 79）、fairplayd 154（EXIT 77）、liveactivitiesd 153、watchdogd 152 |
+| 这些 EXIT 贯穿全程 ✓ | 首条 EXIT 在 1622 行（fsck/mount 正常退出 ✓），崩溃类一直到 20982 行 ✓ |
+| Data 卷全程满 ✓ | ENOSPC 从 14314 行到 21040 行 ✓ |
+| 读盘总量 739k 次 ✓ | 按 64 KiB = 48 GB ✓ |
+
+### 三、当前可用镜像
+
+| 镜像 | sha | 性质 |
+| --- | --- | --- |
+| `boot-sr33-stable.img` | `db4ac67c` | ✅ **稳定基线**：原 256 MiB 种子 + 无 clockearly + 进度行 60–62（屏幕内）|
+| `boot-sr26-emmc-linked.img` | `af96f451` | ✅ 已验证：24 分钟、DISP UP、SpringBoard 0 崩溃、日志 11,816 行 |
+| `boot-sr30-progress.img` | `b7fa63fa` | ⚠️ 有 clockearly：日志最全（21,039 行）但有数据错误风险 ✗ |
+| `boot-sr32-bigdata.img` | `b2d1b233` | ❌ 4 GiB 种子不可用（RAM 展开 ✗）|
+| `boot-sr29-clockearly.img` | `0eee9436` | ⚠️ 有 clockearly，日志 263 行 ✗ |
+
+### 四、下一步的最高价值方向（按证据）
+
+1. **Data 卷搬 eMMC 并放大**：`native-msdc-persist=2`（现成 ✓）+ 让 Data 卷不再来自 RAM 种子 ✗
+   这是同时解决 ENOSPC 与内存限制的唯一路径 ✓ 但需要接线（种子/持久存储的卷大小）✗
+2. **给崩溃服务符号化**：BRK 偏移已在手 ✓（bluetoothd/fairplayd/xpcproxy 各自固定偏移 ✓）
+   需要对应二进制 ✗ 本地镜像没有 ✓ 可从 IPSW 提取（CI 已会下载 IPSW ✓ 可加一步导出）✓
+3. **界面三写者**：改 `native_gop_text` 排版，给控制台/驱动/引导分配不重叠区域 ✗
+
+### 五、今晚的教训（写给下一次）
+
+- **局部指标不能当整体** ✗ 我把"策略读快 45×"讲成"启动变快" ✗ 用户当场纠正 ✓
+- **改常量前先查它的物理约束** ✗ `kMaxBlocks 512`（256 KiB）实测无收益 ✓
+  `--size-mib 4096` 忘了 PackedRamdisk 会展开到逻辑大小 ✗
+- **提速要以正确性为界** ✗ `clockearly` 换来 45× 却引入读错数据 ✗
+- **先找现成的** ✓ `data-seed.yml` 已存在 ✓ 却先自己写了 `resize-data-seed.yml` ✗（已删）
+- **面板只有 66 行** ✗（1600 px / 24 px 字）行号超界什么都不会画 ✓
+
+---
