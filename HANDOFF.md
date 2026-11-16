@@ -8949,3 +8949,74 @@ boots stay stable"的取舍。
 - **方案 C**：先做别的（例如查 launchd 为何仍拉起 watchdogd 的 overrides 加载时机）
 
 ---
+
+## 0.157 2026-11-16 21:4x：link-stub 完成（A 方案），并纠正此前的多处误判
+
+用户方向："做 CPU 提速 + 官方参数，然后啃 link-stub / DMA"。按顺序执行后，
+**link-stub 这一项其实已经做完**，且过程中纠正了 3 处我自己的误判。
+
+### 一、三次自我纠正（都源于"没查实就下结论"）
+
+| 误判 | 事实 |
+| --- | --- |
+| §0.154 说"官方 watchdogd 的正规关法（Data seed disabled.plist）没用上" | **错**。seed 里 `disabled.plist`/`disabled.501.plist`/`com.apple.watchdogd`/`cores` 都在，`dandelion-data-packed.dbr` 与 boot-slide 里的 `scratch-data.img` **逐字节相同**（`feb3ea38…`）；只是我用大写 `Disabled` grep 得到 -1 ✗ |
+| §0.156 说 `build-dandelion-emmc.py` "找不到 kits/*/DandelionEmmc.cpp" | **错**。我是在**主仓库目录**直接跑它才报错；框架把它复制进 `tree/scripts/`，`ROOT=tree 根`，而 `tree/kits/dandelion/DandelionEmmc.cpp` **一直存在**（`package/` 软链）✓ 在 tree 里跑就 PASS ✓ |
+| board.toml:125–137 旧注释说"构造/析构/gMetaClass 4 个符号找不到、链接失败" | **过时**。`build/native-msdc-bindings/bindings.json` 已有 **18 个绑定符号**，含 `IOBlockStorageDeviceC2/D2/10gMetaClassE/__ZTV…` ✓ |
+
+### 二、link-stub 的真实缺口只有 1 个符号，已修
+
+`llvm-nm` 对 `libDandelionEmmc.a` 的 undefined 清单（15 个 `IOBlockStorageDevice*`，全部被
+`libStorageBindings.a` 覆盖）**外加**：
+
+```
+U __ZN9IOStorage8completeEP19IOStorageCompletioniy     ← IOStorage::complete() 静态辅助函数
+```
+
+`IOStorageFamily` 是 stripped 预链接 kext，该符号不在任何符号表 ✗
+**修法完全照抄已能链接的 `NativeMsdc.cpp:2007`**（不是造轮子）：
+
+```cpp
+completion->action(completion->target, completion->parameter, status,
+                   status == kIOReturnSuccess ? buffer->getLength() : 0);
+```
+
+`package/DandelionEmmc.cpp` 已改；两个检出同步；提交 `7402265`。
+
+### 三、验证证据（离线，肉眼可核对）
+
+```
+build-dandelion-emmc.py (in tree)  → PASS: libDandelionEmmc.a 258,592 B
+llvm-nm DandelionEmmc.o 的 U 行   → 15 个，全为 IOBlockStorageDevice*
+storage-bindings.S 的 .globl      → 18 个，覆盖那 15 个
+IOStorage8complete                → 已消失 ✓
+```
+
+`board.toml` 的旧注释已替换为验证过的事实，并把
+`"build-dandelion-emmc.py",` **从注释状态启用** ✓（两个检出同步）。
+`scripts/package.sh --check --os 17` → 74 patches / dandelion_defconfig / 21H461 ✓
+
+### 四、重要定性：link-stub 完成 ≠ 提速
+
+`package/DandelionEmmc.cpp` 文件头写："MediaTek MSDC0 eMMC host, **polled PIO**, for dandelion"
+⇒ 它和当前 `NativeMsdc.cpp` **同为 PIO**，链接它只是让这块板有一个 `IOBlockStorageDevice` host，
+**不会让读盘变快** ✓ 真正提速仍是 §0.156 的 DMA（方案 B）。
+
+### 五、DMA（方案 B）的现成资产与唯一缺的一步
+
+- 代码：`NativeMsdc.cpp` 的 `hostReadDma`/`DmaGpd`/`DmaBd`，由 `native-msdc-dma=1` 开启（默认 0）
+- 当前源码 = HANDOFF §0.115 **第 6 轮**版本（SA 最后写、空闲兜底、`dma trace gpd_info=…`）
+- `boot-dmaorder.img`（`bf24a59e`）等三枚旧镜像仍在 `D:\aios\out3\`
+- 11-10 的 `flashinfo-dmaorder-20261110-082350.bin` 只有 9,501 字节，结论
+  `DMA engine did not stop; transport quarantined` → 是**第 5 轮**结果；第 6 轮 §0.115 标"待测"
+- ⇒ **只差一次上机**：当前源码 + `--kernel-arg native-msdc-dma=1`，读 `dma trace gpd_info=…`：
+  bit0=1 → 引擎没取描述符（查 DMA_SA/DECSEN）；=0 → 卡在数据阶段（查中断/BD 长度）
+- ⚠️ 风险：DMA 挂起时控制台（同一张卡）一起静默，需断电；board.toml:185–193 记过取舍
+
+### 六、当前状态
+
+- 手机：家里那台在 **Android**（sr21 原镜像复跑成功后已刷回）✓
+- 完整冷备份：`C:\aios-backup-20261116\` 12 GiB / 165 文件 + SHA256SUMS ✓
+- 公司那台：已刷完整 UniXNU（sr20 镜像），暂不管 ✓
+- 正在跑：启用 eMMC 归档后的**完整构建**，验证内核链接能过 ✓
+
+---

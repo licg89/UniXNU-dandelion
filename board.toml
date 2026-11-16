@@ -119,22 +119,18 @@ patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches
   # dispatch table and copies it into the expected schema, hashing each object in place.
   #
   "write-transport-bindings.py",
+  # The eMMC host (package/DandelionEmmc.cpp, build-dandelion-emmc.py) now links:
+  # build-dandelion-emmc.py builds libDandelionEmmc.a from the board kit, and
+  # build/native-msdc-bindings/libStorageBindings.a supplies absolute addresses
+  # for the 15 IOBlockStorageDevice imports (ctor/dtor/gMetaClass/vtable included).
+  # The only other import, IOStorage::complete(), was replaced with the plain
+  # completion->action call that NativeMsdc.cpp already uses.  Verified offline
+  # with llvm-nm; see HANDOFF 0.157.
   #
-  # The storage bindings (bind-by-vtable.py) are held back with the window block
-  # devices: they resolve the 168 vtable-slot methods, but the base constructor,
-  # base destructor and gMetaClass are in no symbol table this tree has (the
-  # prelinked kernel's kext symbols are stripped, and the IPSW kernelcache carries
-  # only kernel exports), so the link still fails on those four.
+  # This driver is still polled PIO, so linking it does not by itself replace the
+  # slow NativeMsdc read path; it gives the board an IOBlockStorageDevice host.
   #
-  # The eMMC host (package/DandelionEmmc.cpp, build-dandelion-emmc.py) compiles and
-  # archives cleanly, but it cannot be linked yet: it subclasses
-  # IOBlockStorageDevice, and IOStorageFamily is a prelinked kext whose symbols do
-  # not exist at kernel link time (ld reports the whole vtable undefined).  Wiring
-  # it in needs a link-stub archive; until then the documented path is
-  # CONFIG_XNU_SOURCE_MOCKFS, which the defconfig header calls "a root to boot
-  # from before the eMMC driver exists".
-  #
-  # "build-dandelion-emmc.py",
+  "build-dandelion-emmc.py",
 ]
 
 [device_tree]
