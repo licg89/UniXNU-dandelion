@@ -12,6 +12,7 @@
 #include <kern/task.h>
 #include <kern/clock.h>
 #include <kern/thread_call.h>
+#include <kern/thread.h>
 #include <sys/proc.h>
 #include <pexpert/pexpert.h>
 #include <mach/kmod.h>
@@ -641,6 +642,32 @@ void native_legacy_display_probe(void) {
     native_legacy_display_checkpoint();
 }
 void native_legacy_display_late_probe(void);
+/*
+ * The surface service may simply arrive later than this hook does.  Poll for two minutes on a
+ * kernel thread and log the moment it appears, or that it never did: one boot then says whether the
+ * remaining fix is "wait for it" or something deeper, and the boot path is never blocked.
+ */
+static volatile uint32_t surfacePollState;
+static void surfacePollThread(void *, wait_result_t);
+static void surfacePollStart(void) {
+    if(surfacePollState)return;
+    surfacePollState=1;
+    thread_t pollThread=nullptr;
+    if(kernel_thread_start(surfacePollThread,nullptr,&pollThread)!=KERN_SUCCESS){surfacePollState=2;return;}
+    thread_deallocate(pollThread);
+}
+static void surfacePollThread(void *, wait_result_t) {
+    for(unsigned second=1;second<=120;second++){
+        IOSleep(1000);
+        OSDictionary *pollMatch=IOService::nameMatching("IOCoreSurfaceRoot");
+        IOService *pollSurface=pollMatch?IOService::waitForMatchingService(pollMatch,0):nullptr;
+        OSSafeReleaseNULL(pollMatch);
+        if(pollSurface){dline(23,"DISP SURFAPPEAR %u",second);OSSafeReleaseNULL(pollSurface);surfacePollState=3;return;}
+    }
+    dline(23,"DISP SURFNEVER");
+    surfacePollState=4;
+}
+
 void native_legacy_display_late_probe(void) {
     IOService *display=pendingLegacyDisplay;if(!display)return;pendingLegacyDisplay=nullptr;dline(21,"DISP LATE");
     native_legacy_surface_status=OSKextLoadKextWithIdentifier("com.apple.iokit.IOSurface");
@@ -661,14 +688,16 @@ void native_legacy_display_late_probe(void) {
     }
     if(!surface){
         /*
-         * Tell "the kext never loaded" apart from "the class is there but nothing published".
-         * A missing class means no wait of any length will help, and that calls for a different
-         * fix than a class that exists and simply never starts.
+         * Ask the metaclass registry instead of allocating an instance: whether the class exists
+         * separates "the kext never loaded" from "the class is there and nothing published", and it
+         * does so without constructing an object whose lifetime belongs to another kext.  Allocating
+         * and releasing one here was followed later in the same boot by a NULL dereference inside
+         * prelinked code, which is too high a price for a diagnostic number.
          */
-        OSObject *cls=OSMetaClass::allocClassWithName("IOSurfaceRoot");
-        native_legacy_surface_class=cls!=nullptr;
+        const OSSymbol *surfaceClassSymbol=OSSymbol::withCStringNoCopy("IOSurfaceRoot");
+        native_legacy_surface_class=(surfaceClassSymbol && OSMetaClass::getMetaClassWithName(surfaceClassSymbol))?1u:0u;
         dline(23,"DISP SURFCLASS %d",native_legacy_surface_class);
-        if(cls){cls->release();}
+        surfacePollStart();
     }
     native_legacy_surface_found=surface!=nullptr;dline(23,"DISP SURF %d F%d",native_legacy_surface_status,native_legacy_surface_found);OSSafeReleaseNULL(surface);OSSafeReleaseNULL(matching);
     PE_Video video={};
