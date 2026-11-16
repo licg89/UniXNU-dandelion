@@ -9111,3 +9111,71 @@ kernel.macho 内            : dandelion_emmc_probe / DandelionEmmc / DANDELION-E
 - 完整备份、两台设备（家里的 + 公司那台已刷完整 UniXNU）✓
 
 ---
+
+## 0.160 2026-11-16 22:1x/22:3x：`boot-sr26-emmc-linked.img` 上机结果
+
+### 一、结论：**链接新 eMMC host 不破坏启动** ✓，但 probe 从未被调用 ✓
+
+镜像 `boot-sr26-emmc-linked.img`（`af96f451…`）22:10:20 刷入，跑约 24 分钟后取日志：
+`flashinfo-sr26-20261116-221042.bin` / 11,816 行 / 849 KB ✓
+
+| 检查项 | 结果 |
+| --- | --- |
+| `DISP` 全链 | `SURF 0 F1 → MAP 720x1600 → NUB A1 S1 → P1 A1 S1 → ARMIO 1 → CLIENT 57 backboardd → COPY 4608000 → ` **DISP UP** ✓ |
+| SpringBoard | exec **1 次**、exit **0 次**、pid 27 存活 **44/63 beats**（≈21 分钟）✓ 与 sr21 一致 |
+| backboardd | pid 57 稳定存活 ✓ |
+| `NativeMsdc` | **9,384 条**日志、从 `controller 0x11230000 inherited` 到最后一条 read trace 全程服务 ✓ 根卷 `BSD root: disk5s1` 正常 |
+| **`DANDELION-EMMC`** | **0 条** ✗ → 新驱动的 probe 根本没跑 |
+| 冲突/panic | 无 ✓（因为 probe 没跑）|
+
+⇒ **link-stub 上机通过**：内核里带着 `DandelionEmmc`（`dandelion_emmc_probe` 符号存在 ✓，
+§0.159 已验证），启动行为与 sr21 一致，没有抢控制器、没有复位 ✓
+
+### 二、为什么 probe 没跑（又是过时注释）
+
+`patches/xnu/series:10–14`：
+
+```
+# dandelion-emmc.patch is held back with the driver itself: it calls
+# dandelion_emmc_probe(), which cannot link until IOStorageFamily's symbols are ...
+# dandelion-emmc.patch        ← 注释掉
+```
+
+那个"cannot link"的理由**今晚已被证伪**（§0.157/0.159）✓ 但补丁仍在注释状态 ✗
+⇒ 驱动链进去了、入口没接上。
+
+### 三、不能直接启用 probe（有实测依据的风险）
+
+`package/DandelionEmmc.cpp:dandelion_emmc_probe()` 全文：
+
+```cpp
+DandelionEmmc *device = new DandelionEmmc;
+if (!device->init(nullptr)) ...
+IOService *provider = IOService::getPlatform();
+device->attach(provider);
+device->start(provider);     // → fifoClear() + 写 kRegCfg，操作 0x11230000
+```
+
+**没有任何 guard** ✗ 它和 `NativeMsdc` 共用 MSDC0（`kMsdcBaseDefault 0x11230000`）✗
+`NativeMsdc.cpp:2500` 有 `"one controller only; %s ignored"` 的 `gHost.base` 守卫，
+而 `DandelionEmmc` 没有 → 直接启用 probe 大概率抢卡、重演 §0.115 的 DMA 静默挂死 ⚠️
+
+### 四、下一步的正确修法（不造轮子）
+
+若要让 `DandelionEmmc` 真正 probe，必须**先加与 `NativeMsdc` 一样的单控制器 guard**：
+1. 在 `dandelion_emmc_probe()` 开头检测 `NativeMsdc` 是否已占用（`gHost.base` / 全局标志，
+   或只读探测 `emmc@5230000` nub 是否已有 `NativeMsdc` 子对象）
+2. 已占用则**直接 return**，不打日志、不碰寄存器 ✓
+3. 再启用 `dandelion-emmc.patch`，并保留 `panic_on_crash_disabled=1` 与 sr21 参数集
+4. 上机验证：`DANDELION-EMMC` 出现但 `NativeMsdc` 仍在服务 → 两个 host 共存 ✓
+
+⚠️ 但要点醒：**这一步仍不提速**（`DandelionEmmc` 是 polled PIO）✓ 它只是验证"板子有
+第二个 IOBlockStorageDevice host 也不冲突"。真正的提速只有 DMA 那条（§0.156/0.115 第 6 轮）。
+
+### 五、今晚状态
+
+- 手机已刷回 **Android** ✓
+- 完整冷备份 `C:\aios-backup-20261116\` ✓（不含 sr26 日志，如需可补）
+- 两个检出工作区干净；`HANDOFF.md` §0.153–0.160 完整记录本轮"用现成的"全部结论 ✓
+
+---
