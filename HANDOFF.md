@@ -9521,3 +9521,63 @@ sr32 日志：`verify 779654 len 4096 data 00000000 00000000 got 3df42b43 want a
 - **面板只有 66 行** ✗（1600 px / 24 px 字）行号超界什么都不会画 ✓
 
 ---
+
+## 0.166 2026-11-17 03:2x：崩溃点**不在共享缓存里**，sr33 已刷入
+
+### 一、用仓库自带的 `scripts/brk-symbolize.py` 符号化 sr30 的 48 条 BRK
+
+命令（工具本来就存在 ✓ 我先前差点又自己写一个 ✗）：
+
+```
+python3 scripts/brk-symbolize.py out/console-sr30-20261117-014131.txt \
+    --cache-header /root/work/symtab/dyld_shared_cache_arm64 \
+    --symbols      /root/work/symtab/dyld_shared_cache_arm64.symbols
+```
+
+输出（每条都一致）：
+
+```
+image: outside the shared region (the process own Mach-O text)
+```
+
+⇒ **三个主要崩溃者（bluetoothd / fairplayd / privacyaccountingd）的 PC 落在它们自己的
+Mach-O 正文里** ✗ 不在 dyld 共享缓存里 ✓
+所以**共享缓存符号表帮不上忙** ✗ 要符号化必须从 IPSW 的 OS 卷里取出这三个二进制 ✓
+本地没有 APFS 工具 ✗（hdiutil/apfs-fuse/fsapfs 全无 ✓）⇒ 只能走 GitHub Actions（有 macOS ✓）
+本机有 `/root/work/21H461.ipsw` ✓ 所以 CI 里可以直接从它取，不必再下载 ✓
+
+### 二、sr33 已刷入并启动（02:48:49）
+
+`boot-sr33-stable.img` = `db4ac67c68a166747550d1a07579a42b8b9268a39800237ac90cbc26a3d916f5`
+
+内容：
+- 原 256 MiB Data 种子 ✓（4 GiB 不可行，见 0.164）
+- **无** `native-msdc-clockearly` ✓（有读错数据风险，见 0.164）
+- 进度行在 **60–62 行** ✓（面板只有 66 行，之前放到 127 行完全看不见 ✗）
+- 固件段与已验证的 sr26 逐字节相同 ✓
+
+预期面板（提频后日志停止时仍可见 ✓ 因为 `screen()` 不经过卡 ✓）：
+
+```
+（上半部分）跑码滚动
+（底部）RD <n> MB LBA <sector> P<procs> sb<springboard-pid> bb<backboardd-pid>
+        policy ok <ms>
+```
+
+### 三、早上的操作说明
+
+1. 手机现在停在 **UniXNU**（可能在 logo 或菜单）✓ 要回 Android：
+   长按电源 ~10 秒 → 电源 + 音量下 进 fastboot → 电脑上 `fastboot flash boot D:\aios\artifacts\boot_backup.img`
+2. 看面板底部那行 `sb27` 是否出现 ✓ 出现就说明 SpringBoard 起来了 ✓ 数字能看出进度 ✓
+
+### 四、遗留清单（按价值排序）
+
+| # | 事项 | 说明 |
+| --- | --- | --- |
+| 1 | 从 IPSW 取 bluetoothd/fairplayd/privacyaccountingd 并符号化 | 用 CI 的 macOS ✓ 输入已在 `/root/work/21H461.ipsw` ✓ 目标：知道它们崩在哪个函数 |
+| 2 | 让 `disabled.plist` 真正生效 | 目前是假设 ✗ launchd 不打印这部分 ✓ 可从 launchd 源码/`overrides.plist` 找正规做法 |
+| 3 | Data 卷搬到 eMMC 并放大 | `native-msdc-persist=2` 现成 ✓ 但卷大小仍受 RAM 种子限制 ✗ 需接线 |
+| 4 | 界面三写者分区 | 引导菜单 / 控制台跑码 / 驱动 `screen()` 抢同一块帧缓冲 ✗ |
+| 5 | 控制台在提频后仍能写 | `pe_serial.c` 不检查 `native_msdc_busy`、分频停在 260 ✗ |
+
+---
