@@ -8882,3 +8882,70 @@ boot-ui-focus=SpringBoard disable-watchdogd=1 kextlog=0xfff` 里，`disable-watc
 - `office/`（公司那台手机的原始 boot + 主/备 GPT）
 
 ---
+
+## 0.156 2026-11-16 21:1x：link-stub 与 DMA 的**现成资产**盘点（结论：无需写新代码）
+
+用户要求"然后啃 link-stub / DMA"。逐项查实后发现两者**代码/工具链都已存在**，
+真正缺的只是一次上机判定 ✓ 严格按"不造轮子"执行。
+
+### 一、link-stub：其实已经生成好了 ✓
+
+```
+build/native-msdc-bindings/libStorageBindings.a   (NativeMsdc.o + storage-bindings.o + verified_root*.o + xnu_crypto.o)
+build/native-msdc-bindings/bindings.json          (18 个绑定符号)
+```
+
+`build-storage-bindings.py` 从 **IPSW kernelcache 的 fileset 条目**里读出 IOStorageFamily
+符号表并映射到本板 prelink 计划的 extents ✓ 已解出（含 board.toml 注释说"找不到"的那几个）：
+
+```
+__ZN20IOBlockStorageDeviceC2EPK11OSMetaClass  0xfffffff00496f004   ← 构造
+__ZN20IOBlockStorageDeviceD2Ev                0xfffffff00496edb8   ← 析构
+__ZN20IOBlockStorageDevice10gMetaClassE       0xfffffff006add1d0   ← metaclass
+__ZTV20IOBlockStorageDevice                   0xfffffff005cb44c0   ← vtable
+```
+
+⇒ **link-stub 不是待办** ✓ board.toml:107–137 的注释是**旧结论**（写于 bindings 工具链完成之前）。
+
+### 二、`build-dandelion-emmc.py` 被注释掉的原因：源码路径错位，且它并不提速
+
+- 脚本要 `kits/*/DandelionEmmc.cpp`，实际源码在 `package/DandelionEmmc.cpp` → 直接跑报
+  "Expected one board kit with DandelionEmmc.cpp" ✓ 只是路径没接上
+- **但** `package/DandelionEmmc.cpp` 文件头写："MediaTek MSDC0 eMMC host, **polled PIO**"
+  （464 行、`kCfgPio`、CMD17/18 逐块读）⇒ **换它不会提速**，只是把 PIO 换一份实现 ✗
+- 所以 link-stub 的价值是"能链接"，不是"变快"；优先级让给 DMA ✓
+
+### 三、DMA：代码是现成的，缺一次上机判定（HANDOFF 0.115）
+
+| 事实 | 出处 |
+| --- | --- |
+| `hostReadDma` / `DmaGpd` / `DmaBd` / `MSDC_DMA_CFG/CTRL/SA` **已实现** | `package/NativeMsdc.cpp` |
+| `native-msdc-dma=1` 由 `bootArgument("native-msdc-dma", 1, 0)` 读取；**默认 0 = PIO** | 同文件:2497 |
+| 六轮推进记录完整（1 参数默认值反了 → 2 DECSEN → 3 启动顺序 → 4 停止检查错寄存器 → 5 引擎动但停不下来 → 6 SA 最后写 + 空闲兜底）| HANDOFF §0.115 |
+| 当前源码**就是第 6 轮版本**（SA 最后写、`dma trace gpd_info=…`、空闲兜底全在）| `NativeMsdc.cpp:354/448/468` |
+| 第 6 轮镜像 `boot-dmaorder.img` = `bf24a59e` 仍在 ✓ 三枚旧镜像都在 | `D:\aios\out3\` |
+| **11-10 那次上机日志也留着**：`flashinfo-dmaorder-20261110-082350.bin`，只有 9,501 字节，结论 `DMA engine did not stop; transport quarantined` → 是第 5 轮结果 | 本轮解码 |
+| §0.115 明写第 6 轮"**待测**"；trace 那行一旦读到就能一次分清：`gpd_info` bit0=1 引擎没取描述符（查 DMA_SA/DECSEN），=0 卡在数据阶段（查中断/BD 长度）| HANDOFF §0.115 |
+
+⇒ **不需要写新代码**：用当前源码 + `native-msdc-dma=1` 构建一枚镜像，跑一次，读 trace ✓
+⚠️ 风险：DMA 挂起时控制台（走同一张卡）一起静默，需断电；board.toml:185–193 记过"PIO only,
+boots stay stable"的取舍。
+
+### 四、今晚已完成的"用现成的"清理与固化
+
+1. `scripts/package.sh --check --os 17` 通过 ✓ **74 个补丁、配置 dandelion_defconfig、OS 21H461**
+2. 确认官方 Data seed 机制（`disabled.plist` 等）一直在用（§0.155 自我纠正）
+3. 确认 CPU 调频无官方后端、merlinx 寄存器不可照抄（§0.154）→ **不硬造**
+4. 确认 4 个无效官方参数（`boot-ui-focus` / `disable-watchdogd` / `log-display` / `cpufreq` 等）
+   是本内核无 reader → 以后不再用 `--kernel-arg` 加
+5. 完整冷备份 `C:\aios-backup-20261116\`（12 GiB / 165 文件 + SHA256SUMS）
+
+### 五、下一步（等用户决定，不擅自刷高风险镜像）
+
+- **方案 A（低成本）**：只补 link-stub 的路径错位，让 `build-dandelion-emmc.py` 能编译链接
+  → 验证"能链接"，但**不提速** ✓ 纯构建验证，不碰手机
+- **方案 B（真提速，高风险）**：当前源码 + `--kernel-arg native-msdc-dma=1` 构建并上机一次，
+  读 `dma trace gpd_info=…`；失败需断电 ✓
+- **方案 C**：先做别的（例如查 launchd 为何仍拉起 watchdogd 的 overrides 加载时机）
+
+---
