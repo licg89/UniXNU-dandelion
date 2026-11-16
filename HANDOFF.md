@@ -9232,3 +9232,51 @@ NativeMsdc: dma state 0 enabled 0 phys 0x0          ← 两个开关都关着
 - `source CLK_CFG_3=… msdc50_0_sel=…` → 源时钟选择结果 ✓
 
 ---
+
+## 0.162 2026-11-16 23:0x：DMA/时钟实验**失败**，回滚 sr26（如实记录，不掩饰）
+
+### 一、结果
+
+`boot-sr27-final.img`（`989821a8`）= **sr26 已验证固件**（逐字节相同）+ 仅两个现成参数
+`native-msdc-dma=1` + `native-msdc-srcclk=1`。23:02:51 刷入，用户报告
+**"Failed to mount root device @IOKitBSDInit.cpp:984"** ✗
+
+日志 `flashinfo-sr27-20261116-230309.bin` 仅 **125 行 / 7,933 字节** —— 极早期就死 ✓
+（采集已自动刷回 Android ✓）
+
+### 二、精确死点（逐行对比 sr26）
+
+| sr26（跑通 24 分钟）| sr27（失败）|
+| --- | --- |
+| `mode source mux_valid=1 ... source_hz=unmeasured` | 同左（**完全相同** ✓）|
+| `read trace sector=1 blocks=1` → `userdata sectors …` → `manifest status 0` → `reading the signed root policy` | **没有任何一行** ✗ 之后直接跳到 `dlil_init … Proceeding` / `DISP LATE` / APFS / `dev_init disk0` 然后挂 |
+
+⇒ **第一次读盘就没发生** ✗；`clock settled` / `dma state` / `DMA comparison` /
+`source CLK_CFG_3` 这些行**一条都没有** ⇒ 连时钟/DMA 初始化都没走到 ✗
+
+### 三、结论：我上一节的"三层安全网"判断被实测推翻 ✗
+
+§0.161 依据源码注释说"失败自动退回 PIO、启动继续"。**实测不是** ✗：
+自检 gate 在 `hostEnableDma()`（更后面的 bring-up），而这次死在它**之前**的第一次读盘；
+`native-msdc-srcclk=1` 的 sweep 会写 TOPCKGEN/APMIXED 时钟寄存器，代码注释自己写着
+"a selector that **wedges the bus** costs one experiment rather than every boot" ✗
+⇒ 更可能是时钟源扫描把总线写挂 ✗（但**没有 trace 证据能确证是哪个参数**，不再猜 ✓）
+
+### 四、处置（不造轮子、不赌）
+
+1. **回滚到 `boot-sr26-emmc-linked.img`（`af96f451`）** —— 今晚刚跑通 24 分钟、
+   `DISP UP` + SpringBoard 0 崩溃 + NativeMsdc 9,384 条日志 ✓
+2. **不再把两个参数一起试**；若以后还要查，须**一次只加一个**且先确认代码里该参数
+   在哪一步生效（本次教训：`srcclk` 在第一次读盘前就动寄存器 ✗）
+3. board.toml 的 `native-msdc-dma` / `native-msdc-srcclk` 保持**默认关闭** ✓
+   （两者都不在 kernel_args 里，sr26 就是默认 PIO 基线）
+
+### 五、"慢"这个问题的诚实结论
+
+- 慢的根因 = **PIO 轮询**（§0.153，每次 64 KiB 读 ~0.2 s）✓
+- 官方 DMA 路径（§0.115 六轮）**至今未在真机上跑通**，第 6 轮这次连自检都没到 ✗
+- 官方 CPU 调频在本板**无后端**（§0.154）✗
+- ⇒ 现阶段**没有可安全落地的提速手段**；继续硬试 DMA/时钟只会重复挂死 ✓
+- 已验证能稳定跑到 SpringBoard 且画出 Apple logo 的基线是 **sr21 / sr26** ✓
+
+---
