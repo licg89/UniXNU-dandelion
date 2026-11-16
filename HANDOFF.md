@@ -9063,3 +9063,51 @@ CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/native-msdc-bindings/
 4. `llvm-nm` 确认所有 undefined 都有绝对绑定 ✓
 
 ---
+
+## 0.159 2026-11-16 22:0x：link-stub 端到端验证通过（`boot-sr26-emmc-linked.img`）
+
+### 一、最终证据
+
+```
+configs/dandelion_defconfig : 两个归档都 -Wl,-force_load ✓
+package.sh --os 17         : build exit=0 / 239 s ✓
+kernel.macho 内            : dandelion_emmc_probe / DandelionEmmc / DANDELION-EMMC 全部存在 ✓
+镜像                      : D:\aios\out3\boot-sr26-emmc-linked.img
+                             63,688,704 B, sha af96f451cd2d06c17dc9ddcb504fc99dc7410abdfe063b093ed5bb01e8d736ca
+```
+
+⇒ **"归档编译成功但没链进内核"的问题已解决** ✓（§0.158 的 EXTRA_LD_ARCHIVES）
+⇒ link-stub 从"board.toml 旧注释说卡 4 个符号"变成"零缺口、已进内核" ✓
+
+### 二、本轮改动汇总（全部在两个检出同步，均用官方现成机制）
+
+| 文件 | 改动 |
+| --- | --- |
+| `package/DandelionEmmc.cpp` | `IOStorage::complete()` → `completion->action(...)`（照抄 `NativeMsdc.cpp:2007`）✓ |
+| `board.toml` | 启用 `"build-dandelion-emmc.py"`，把过时注释改为验证过的事实 ✓ |
+| `configs/dandelion_defconfig` | `CONFIG_XNU_EXTRA_LD_ARCHIVES` 同时 force-load 两个归档 ✓ |
+| `HANDOFF.md` | §0.153–0.159（官方对照、纠正、备份、link-stub 全流程）✓ |
+| `C:\aios-backup-20261116\` | 12 GiB / 165 文件 / SHA256SUMS 完整冷备份 ✓ |
+
+未改任何官方脚本（`build-dandelion-emmc.py` / `build-storage-bindings.py` / `kernel.py` /
+`build-xnu-4k-baseline.sh` 全部原样）✓ 符合"不造轮子"✓
+
+### 三、诚实的定性（不要误读）
+
+- **`boot-sr26` 只是"链接验证"镜像**：`DandelionEmmc` 是 **polled PIO**，和 `NativeMsdc` 一样慢 ✗
+  它让这块板有了 `IOBlockStorageDevice` host，但**不会提速** ✓
+- **没有上机验证**：本轮全部是离线构建/符号核对；上机效果未知（该驱动是否会与现有
+  `NativeMsdc` 抢控制器、是否会改变启动，需实测）⚠️
+- **真正提速仍是 DMA（方案 B）**：`native-msdc-dma=1` + 读 `dma trace gpd_info=…`
+  （HANDOFF §0.115 第 6 轮，唯一待测项），风险是挂死需断电 ⚠️
+
+### 四、会话成果回顾（避免丢失）
+
+- `Compromised Data` 根因：`DarwinBoot.c:678` packed ramdisk 与 ADT 声明不符 ✓
+- 显示链：`IOCoreSurfaceRoot` 竞态 → 20 s 等待 + `SURFRETRY` → `DISP UP`（720x1600，
+  backboardd client 57，全屏拷贝）✓
+- **sr21：SpringBoard 从 26 次崩溃变为 0 次崩溃、44 分钟存活**，Apple logo 由用户态画出 ✓
+- 官方 Data seed（`disabled.plist` 等）一直在用 ✓；merlinx 同代 MTK 无 GPU 也能出锁屏 ✓
+- 完整备份、两台设备（家里的 + 公司那台已刷完整 UniXNU）✓
+
+---
