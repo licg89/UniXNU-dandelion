@@ -127,6 +127,10 @@ constexpr unsigned kTransferBytes = kMaxBlocks * kSector;
 // line buffered while a transfer is in flight.
 extern "C" volatile uint32_t native_msdc_busy = 0;
 
+// Published by the beat thread in bsd_init.c.  Drawn on the panel so progress is visible after the
+// eMMC console stops being usable (it cannot write once the card clock is raised).
+extern "C" volatile uint32_t dandelion_procs, dandelion_springboard, dandelion_backboardd;
+
 // dandelion: with native-msdc-area=<MiB> the iOS data area lives in the last N MiB of
 // userdata, so the Android filesystem in front of it can still mount between tests.
 // Everything the driver reads -- manifest, windows, policy region -- is then relative to
@@ -639,7 +643,9 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
       const uint64_t n = __atomic_add_fetch (&shown, 1, __ATOMIC_RELAXED);
       // Each increment is 400 reads; a read moves at most kMaxBlocks sectors, so the megabyte figure
       // is a floor, not an estimate that can overshoot.
-      screen (22, "RD %llu MB LBA %llu", (unsigned long long)(n * 4), (unsigned long long)sector);
+      screen (60, "RD %llu MB LBA %llu P%u sb%u bb%u", (unsigned long long)(n * 4),
+              (unsigned long long)sector, dandelion_procs, dandelion_springboard,
+              dandelion_backboardd);
     }
   }
   for (unsigned attempt = 0; attempt < attempts; attempt++) {
@@ -1797,6 +1803,7 @@ const char *loadPolicy (void)
   gPolicy.storageBytes = tableBytes + keyBytes;
   uint8_t *region = reinterpret_cast<uint8_t *> (storage);
   IOLog ("NativeMsdc: reading the signed root policy, %llu bytes at userdata +%llu\n", header.totalBytes, start);
+  screen (61, "policy %llu MB", (unsigned long long)(header.totalBytes / (1024 * 1024)));
   uint64_t began = mach_absolute_time ();
   uint64_t sectors = (header.totalBytes + kSector - 1) / kSector;
   for (uint64_t done = 0; done < sectors;) {
@@ -1810,6 +1817,7 @@ const char *loadPolicy (void)
   }
   uint64_t elapsed = 0;
   absolutetime_to_nanoseconds (mach_absolute_time () - began, &elapsed);
+  screen (61, "policy ok %llu ms", elapsed / 1000000ULL);
   // The header is taken from the copy that the envelopes are opened from, and must describe the same region.
   policyDigest (region, digest);
   status = parsePolicyHeader (region, digest, available, gPolicy.header);
@@ -2233,6 +2241,9 @@ static uint64_t gFbFont[95] = {
 static volatile uint32_t *gFbBase = nullptr;
 static IOMemoryMap *gFbMap = nullptr;
 static uint32_t gFbRow = 0, gFbWidth = 0, gFbHeight = 0;
+// The bottom of the panel belongs to the driver's progress lines (screen()), so the scrolling console
+// wraps above it instead of over it: six 12-pixel rows.
+static constexpr uint32_t kProgressStripPx = 6 * (12 * 2);   // six rows at scale 2
 static uint32_t gFbX = 0, gFbY = 0;
 
 void fbConsoleWrite (const void *data, size_t length);
@@ -2276,7 +2287,7 @@ void fbConsolePut (char c)
     if (c == '\n') return;
   }
   if (c == '\r') { gFbX = 0; return; }
-  if (gFbY + ch > gFbHeight) {                              // wrap to the top once the screen is full
+  if (gFbY + ch > gFbHeight - kProgressStripPx) {            // wrap above the progress strip
     gFbY = 0;
     gFbX = 0;
   }
@@ -2523,7 +2534,7 @@ bool NativeMsdc::start (IOService *provider)
     // then failed, which is why it stays behind an argument rather than becoming the default.
     if (bootArgument ("native-msdc-clockearly", 1, 0)) {
       IOLog ("NativeMsdc: raising the clock before the root policy read\n");
-      screen (40, "clock early");
+      screen (62, "clock early");
       hostRaiseClock ();
     }
     if (!startRoot (root == 2, &why)) fail (why);
