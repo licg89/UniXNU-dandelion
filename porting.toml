@@ -122,11 +122,15 @@ findings = [
   "The synthetic IOMobileFramebufferLegacy reaches start() and publishes the panel; the firmware GOP framebuffer is at 0x7EC50000, stride 2944, 720x1600, 32 bpp.",
   "native_gop_text was a stub. It now renders a 6x10 font white-on-black into the GOP framebuffer, scale 2 at >=600 px wide, which made boot progress visible while the console was silent.",
   "IOMFB_FDR_Loader exits 1, so the userland display service is not up; backboardd and SpringBoard fail later in that chain.",
-  "SpringBoard dies in FrontBoardServices -[FBSDisplayMonitor _initWithBookendObserver:transformer:] + 0x47c with the assertion text 'failed to find the main CADisplay': QuartzCore has no main display to hand back, because the userland display service never came up.",
+  "SpringBoard died in FrontBoardServices -[FBSDisplayMonitor _initWithBookendObserver:transformer:] + 0x47c with the assertion text 'failed to find the main CADisplay': QuartzCore had no main display to hand back while the display service never came up.",
+  "The gate was the surface service, not the framebuffer: the shim now waits for IOCoreSurfaceRoot and then for the class name IOSurfaceRoot, which answered (DISP SURF 0 F1). The class exists in the kernel; only the service was missing.",
+  "With the surface in hand the chain runs to completion: DISP MAP 720x1600 0x7EC50000, DISP NUB A1 S1, DISP P1 A1 S1, DISP ARMIO 1 (a real AppleARMIODevice provider), DISP CLIENT 57 backboardd T0, DISP COPY 0 4608000 (720x1600x4), DISP UP.",
+  "SpringBoard then starts once and never exits across a 23,634-line boot that reaches 207 processes, so the CADisplay assertion no longer fires and the panel shows the Apple boot logo drawn through this stack.",
+  "The kernel image carries only two IOSurface symbols (gIOSurfaceIdentifier, gIOSurfaceTag), and the released DarwinBoot refuses staged kexts, so matching the class name at runtime is the working route rather than shipping IOSurface as a bundle.",
 ]
 completion = ["A known frame appears with correct geometry and colors, then userland presentation and backlight controls work."]
-limits = ["No userland presentation yet: IOMFB_FDR_Loader fails, QuartzCore has no CADisplay, and SpringBoard aborts in FBSDisplayMonitor before compositing.", "No backlight or brightness control."]
-next_action = ["Establish why IOMFB_FDR_Loader exits 1; that is the gate in front of backboardd and the reason FrontBoardServices cannot find a main CADisplay."]
+limits = ["Userland presentation works but no lock screen appears: the panel shows the Apple boot logo while SpringBoard stays alive, and the board selects no GPU component (no IOGPU or IOAccelerator driver), while the documented GPU reference covers Adreno only.", "No backlight or brightness control: the kernel carries the AppleARMBacklight strings but no service publishes them.", "IOMFB_FDR_Loader still exits 1; the display works regardless."]
+next_action = ["Read sr20's beat line (sb=<pid>:<stat> bb=<pid>:<stat>) to see whether SpringBoard stays alive over hours and where it stops.", "Establish whether the lock screen requires a renderer on this OS; if it does, GPU is the gate and PowerVR GE8320 has no documented backend."]
 evidence = [
   "DANDELION-DISP UP / virtual bool IOMobileFramebufferLegacy::start(IOService *)",
   "DARWINBOOT: video base=0x7EC50000 display=1 row=2944 width=720 height=1600 depth=32",
@@ -134,6 +138,10 @@ evidence = [
   "DANDELION-EXIT: pid=85 comm=IOMFB_FDR_Loader ppid=1 rv=0x100 sig=0 status=1",
   "DANDELION-BRK: pid=113 comm=SpringBoard pc=0x1bf04b2ec lr=0x1bf04b2ec comment=0x0 fits slide 0x1fc6c000, unslid 0x19f3df2ec = FrontBoardServices + 0x1e2ec",
   "The trap block's format CFString decodes to 'failed to find the main CADisplay' (33 characters, flags 0x7C8), next to 'failed to find the symbol for CADisplay' and the QuartzCore soft-link paths",
+  "sr18 console: DANDELION-DISP(23) DISP SURF 0 F1, DISP MAP 720x1600 7ec50000, DISP NUB A1 S1, DISP P1 A1 S1, DISP ARMIO 1, DISP CLIENT 57 backboardd T0, DISP COPY 0 4608000, DISP UP",
+  "sr18 console: one DANDELION-EXEC for SpringBoard and no exit for it, across 23,634 lines and D4K beat 181 procs=207 pid1stat=2",
+  "IMG_5976.JPG / IMG_5978.JPG: the panel shows the Apple boot logo instead of colour bars, which is this stack drawing",
+  "Disassembly of +[CADisplay mainDisplay] -> ensure_displays() -> query_displays() -> __CASGetDisplays in the cached QuartzCore shows the display list is a server round trip, not a local IOKit enumeration",
 ]
 
 [[area]]
@@ -159,17 +167,23 @@ id = "gpu"
 status = "planned"
 components = []
 paths = ["package/*Gpu*", "package/*Gmu*", "package/*Adreno*", "scripts/*adreno*", "scripts/*gpu*", "scripts/*metal*", "scripts/*turnip*", "scripts/*air*"]
-inputs = ["Identify the gpu hardware, resources and existing component interfaces for this board."]
-configuration = ["Record the board.toml fields, DTS properties and defconfig values used for gpu."]
-procedure = ["Follow the gpu stage in the porting guide and record the actual commands."]
-findings = ["Collect the first gpu observation, its cause when established, and the resulting implementation decision."]
+inputs = ["GPU identity comes from Android getprop (Mali-G72 MP1 on MT6762G); registers, firmware, power domains, clocks and SMMU stream IDs are not collected."]
+configuration = ["No GPU component is selected in board.toml and no gpu-* boot argument is passed."]
+procedure = ["Follow the GPU stage in the porting guide once a backend exists; the documented reference covers Adreno 740 on SM8550 only."]
+findings = [
+  "The display does not need a GPU on this port: presentation goes through the GOP presenter and a CPU copy (DISP COPY 0 4608000), which is why the panel comes up with no graphics stack at all.",
+  "The kernel carries IOGPU, IOAccelerator and AGXAccelerator strings from the prelinked Apple kexts, while no GPU component is selected here, so nothing publishes an accelerator to userland.",
+  "The rendered UI is the gap that remains: SpringBoard stays alive with the display up but nothing composites, and the documented GPU path (Metal -> AdrenoMetal -> metal2vulkan -> Turnip -> Adreno740) is specific to Adreno.",
+]
 completion = ["GPU submissions complete, mapping/fence handling is correct, a known image renders, and the selected Metal client presents it."]
-limits = ["Hardware inputs and implementation are pending for this example board."]
-next_action = ["Inventory the required gpu inputs before implementation."]
+limits = ["No GPU backend and no Metal; components.toml offers only Adreno740, so this board needs a new component or a board-side driver.", "Every UI-rendering result is blocked on that, not on the display."]
+next_action = ["Establish from the OS side whether SpringBoard requires a renderer before it presents a lock screen, which decides whether GPU work is the next gate or a later one."]
 evidence = [
   "getprop reports Mali-G72 MP1 on MT6762G",
   "components.toml offers exactly one GPU component, Adreno740 (hardware: Adreno 740, SM8550) - there is no Mali or panfrost component to select",
   "So the GPU path needs a new component or a board-side driver; it cannot be satisfied by an existing selection, and milestone 5's display/input work does not depend on it",
+  "sr18 console: DISP COPY 0 4608000 completes and the panel shows the boot logo, with no IOGPU, IOAccelerator or Metal line anywhere in 23,634 lines",
+  "kernel.macho strings: IOGPU 272, IOAccelerator 3, AGXAccelerator 3, IOMobileGraphicsFamily 6",
 ]
 
 [[area]]
@@ -241,6 +255,8 @@ findings = [
   "Console bytes come back through the flashinfo partition; collect_cycle.ps1 pulls the 16 MiB block after Android is restored.",
   "DANDELION-EXIT names every exiting process with ppid, raw status and signal; DANDELION-ABORT records the os_reason namespace and code for aborts.",
   "Reversed buildArgument(name, maximum, fallback) arguments are a silent trap: the DMA engine never enabled because maximum and fallback were swapped.",
+  "The console now carries process names (DANDELION-EXEC from vnode_getname), the display stages (DANDELION-DISP, previously panel only), the containing image of every trap (DANDELION-TEXT) and SpringBoard/backboardd liveness in the beat line; scripts/analyze-console.py turns one capture into processes, display stages, probe answers and a beat timeline.",
+  "Two of this board's own diagnostics panicked the kernel before they were fixed: copyinstr of a user string in abort_with_payload, and a copyin in the exit path. Both read kernel data only now.",
 ]
 completion = ["Each claimed milestone has a reproducible command, a matching image revision and an accessible result."]
 limits = ["The os_log_fault kcd text is still unreachable from the console."]
@@ -249,6 +265,8 @@ evidence = [
   "DANDELION-EXIT: pid=6 comm=launchd ppid=1 rv=0x1 sig=1 status=-1",
   "DANDELION-ABORT: pid=... ns=2 code=5",
   "IMG_5933.JPG / IMG_5942.JPG: panel crash report with frames and pages=0x3aec5",
+  "The documented diagnostic arguments boot-ui-focus, disable-watchdogd and log-display have no reader in this kernel (only boot-progress does), so passing them changes nothing and their silence is not a failure.",
+  "sr15/sr18 captures: 4,903 and 23,634 console lines recovered through the flashinfo window, decoded with tools/ddnlog.py and summarized by scripts/analyze-console.py",
 ]
 
 [[area]]
@@ -268,14 +286,20 @@ findings = [
   "Every one of those aborts carries namespace 2 subcode 0x5, which reason_private.h names OS_REASON_LIBSYSTEM_CODE_OS_LOG_FAULT, and the kcd buffer holds 116 bytes whose only string is 'exc handler'. launchd then reports 'Process[N] crashed: <name>. Too many corpses being created.'",
   "The split is clean: services that register a Mach exception port (watchdogd, SpringBoard, liveactivitiesd) abort, and services that do not (fsck, keybagd, fairplayd, usermanagerd, DumpPanic) all run to completion.",
   "Symbolised from kernel.macho, the abort path is handle_breakpoint -> sleh_synchronous -> postsig_locked -> exit_with_reason: the process executed a brk trap, it did not fault.",
+  "backboardd does appear once the exec trace carries a name: one DANDELION-EXEC with comm=backboardd and no exit for it, in the same boot where it opens the framebuffer as display client 57.",
+  "SpringBoard stops aborting once the display service is up: one exec, no exit, no breakpoint record, across a 23,634-line boot that reaches 207 live processes (D4K beat 181 procs=207 pid1stat=2).",
+  "The services still aborting are watchdogd (19 launches, all at the same code offsets), liveactivitiesd (SessionSyncEngine + 0x2e4f8) and gamed (Foundation + 0x4cd2c); none of them stops the boot any more.",
 ]
-completion = ["launchd exec passes; the dyld cache registers; Early boot complete is reached; SpringBoard starts."]
-limits = ["SpringBoard and the watchdog daemon abort on an exception-handler failure before anything is presented; backboardd does not appear in the exec trace; no UI is drawn.", "The full fault format string is not in the exit reason (the buffer is 116 bytes), so the firehose has to be tapped to read it."]
-next_action = ["Tap FAULT-type os_log entries in libkern/os/log_queue.c, or compare task_set_exception_ports against a working port, to decide whether the handler fails to register or fails to be used."]
+completion = ["launchd exec passes; the dyld cache registers; Early boot complete is reached; SpringBoard starts and stays alive with the display service up."]
+limits = ["SpringBoard stays alive but no lock screen appears: the display service is up and the panel shows the Apple boot logo, while no GPU component is selected on this board.", "watchdogd, liveactivitiesd and gamed still abort on an exception-handler failure; the boot tolerates it and no longer panics with panic_on_crash_disabled=1.", "The full fault format string is not in the exit reason (the buffer is 116 bytes), so the firehose has to be tapped to read it."]
+next_action = ["Read the sr20 beat line (sb=<pid>:<stat> bb=<pid>:<stat>) to see how long SpringBoard stays alive and where it stops.", "Decide whether the lock screen needs a renderer on this OS; if it does, the GPU area is the gate and this board has no backend."]
 evidence = [
   "DANDELION-EXIT: pid=26 comm=SpringBoard ppid=1 rv=0x5 sig=5 status=-1",
   "DANDELION-REASON: pid=52 comm=watchdogd text=...exc handler......",
   "DANDELION-HEX: pid=52 0009a253...6578632068616e646c6572... (kcdata, 116 bytes, one string)",
   "Process[119] crashed: liveactivitiesd. Too many corpses being created.",
   "vm_page_bootstrap: 241347 free pages / D4K beat 31: procs=84",
+  "sr18 console: DANDELION-EXEC: pid 27 comm=SpringBoard with no matching exit, and D4K beat 181 procs=207 pid1stat=2",
+  "sr18 console: DANDELION-EXEC comm=backboardd once, and DANDELION-DISP(28): DISP CLIENT 57 backboardd T0",
+  "IMG_5978.JPG: the panel shows the Apple boot logo while the boot continues, instead of colour bars after a panic",
 ]

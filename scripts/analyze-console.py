@@ -82,8 +82,37 @@ def main():
         for line, msg in sorted(seen.items(), key=lambda kv: int(kv[0])):
             print('   (%2s) %s' % (line, msg[:110]))
 
-    # --- probes --------------------------------------------------------------
-    ais = AI.findall(text)
+    # --- beat timeline -------------------------------------------------------
+    BEAT = re.compile(r'D4K beat (\d+): procs=(\d+) pid1stat=(-?\d+)'
+                      r'(?: sb=(-?\d+):(-?\d+) bb=(-?\d+):(-?\d+))?')
+    beats = BEAT.findall(text)
+    print('\n== beat timeline')
+    if not beats:
+        print('   none: the beat diagnostic is not in this image')
+    else:
+        print('   %-5s %6s %8s %10s %10s' % ('beat', 'procs', 'pid1stat', 'springboard', 'backboardd'))
+        prev = None
+        shown = 0
+        for rec in beats:
+            n = int(rec[0])
+            procs = int(rec[1])
+            pid1 = int(rec[2])
+            sb = ('%s:%s' % (rec[3], rec[4])) if rec[3] else '-'
+            bb = ('%s:%s' % (rec[5], rec[6])) if rec[5] else '-'
+            interesting = (prev is None or n % 15 == 0 or sb != prev[2] or bb != prev[3]
+                           or abs(procs - prev[1]) > 40)
+            if interesting:
+                print('   %-5d %6d %8d %10s %10s' % (n, procs, pid1, sb, bb))
+                shown += 1
+            prev = (n, procs, sb, bb)
+        print('   (%d beats, %d shown)' % (len(beats), shown))
+        alive = [r for r in beats if r[3] and r[3] != '-1']
+        if alive:
+            print('   springboard seen in %d of %d beats, pid %s..%s'
+                  % (len(alive), len(beats), alive[0][3], alive[-1][3]))
+        else:
+            print('   springboard never appears in a beat')
+
     print('\n== all_image_info_addr probe')
     if not ais:
         print('   none in this log')
