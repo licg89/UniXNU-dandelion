@@ -9280,3 +9280,101 @@ NativeMsdc: dma state 0 enabled 0 phys 0x0          ← 两个开关都关着
 - 已验证能稳定跑到 SpringBoard 且画出 Apple logo 的基线是 **sr21 / sr26** ✓
 
 ---
+
+## 0.163 ★★★★ 2026-11-17 00:1x：**慢的根因找到并解决**（策略读 227 s → 5 s，45×）
+
+用户反复指出"慢没解决、别造轮子、去比对 UniXNU 实现"。按这个方向逐层排查后，
+今晚第一次**真正解决了慢**，而且**没有新增任何硬件逻辑**。
+
+### 一、用日志把"慢"量化到具体阶段（关键方法）
+
+读 `NativeMsdc` 自己的两行统计：
+
+```
+读 73 MB 签名根策略（RD 计数器正在跳的那段）:  228,108 ms / 1,123 次读  → 322 KB/s ✗
+提频之后的普通读:                              7 ms / 256 KiB          → 36 MB/s  ✓
+```
+
+**同一进程、同一张卡、差 100 倍** ⇒ 瓶颈不是驱动算法、不是传输粒度、不是 DMA，
+而是 **73 MB 策略读发生在时钟提上去之前** ✓
+
+代码注释其实写明了顺序：
+
+> "The clock is raised **later**, at the end of publishThread, once every window is published"
+
+### 二、排除掉的三条弯路（都有实测数据，别再走）
+
+| 尝试 | 结果 |
+| --- | --- |
+| `native-msdc-dma=1`（第 6 轮 DMA）| ✗ 启动死在 `Failed to mount root device`，日志仅 125 行；自检 gate 在第一次读盘之后，救不了 |
+| `native-msdc-srcclk=1`（源时钟扫描）| ✗ 同样死法（与 DMA 一起试的，无法分离，且已证不可靠）|
+| `kMaxBlocks 128 → 512`（256 KiB 传输，对齐 merlinx）| ✗ **读次数 1123→284（少 4 倍 ✓）但耗时 228108→226823 ms（不变 ✗）** ⇒ 传输粒度与本问题无关 |
+
+`kMaxBlocks` 已回滚为 128 ✓（保留了对 `bounceBytes == 65536` 硬编码的自洽修正）
+
+### 三、解法：把现成的 `hostRaiseClock()` 提前到策略读之前
+
+- `hostRaiseClock()` 是**作者写好的现成函数**（带自校验：改完读参考扇区比对，不匹配就恢复）✓
+- 原本只在 `publishThread` 末尾调用 ✗ 现在新增开关 `native-msdc-clockearly=1` 在
+  `startRoot()` **之前**调用它 ✓ 零新逻辑 ✓
+
+实测（`boot-sr29-clockearly.img` `0eee9436`，固件与 sr26 逐字节相同）：
+
+```
+NativeMsdc: raising the clock before the root policy read
+NativeMsdc: clock raised ... clock settled at divider 0 sample 31 (inherited 4)
+NativeMsdc: signed root policy read in 4978 ms, 2 entries, 1123 reads, 0 retries, 0 failures, ckdiv 2/31
+...
+vm_swap_create_file failed @ 37 secs        ← sr26 是 285 秒
+```
+
+| 指标 | sr26 | **sr29** | 提升 |
+| --- | --- | --- | --- |
+| 73 MB 策略读 | 228,108 ms | **4,978 ms** | **45×** ✓ |
+| 到 swap 那步 | 285 s | **37 s** | **7.7×** ✓ |
+
+用户现场观察与日志一致：**RD 到 ~3000 之前最慢（即这段）、3000 之后变快、12000+ 出 Apple logo** ✓
+
+### 四、副作用：提频后日志静默（机制已定位，未修）
+
+`pe_serial.c` 的 eMMC 控制台：
+- 自己的 `emmc_clock_div = 260`（实为 CKDIV 4 + CKMOD 位）✗ 不跟随驱动
+- `emmc_rearm()` **只在 CKSTB=0 时才重编程** ✓ 提频后 CKSTB=1 → 不碰 ✗
+- **完全不检查 `native_msdc_busy`** ✗ → 控制台 PIO 写在快时钟下失败 ✗
+- `emmc_flush()` 失败后**不再锁死**（作者已修 ✓）但会一直重试失败 ✗
+
+⇒ 提频后 eMMC 日志停止 ✓ 但**系统照常运行**（面板 RD 计数器持续增长 ✓ 那就是 `screen()`，
+不经过卡 ✓）✓ 实测 sr29 日志止于 263 行（`nx_mount: disk3`），而 sr26 是 11,816 行 ✓
+
+### 五、用户态侧的现状（sr26 完整日志挖掘，11,816 行）
+
+| 项 | 结果 |
+| --- | --- |
+| 挂载卷 | OwnerData ✓ / SystemCryptex ✓ / OS ✓（**无 App cryptex** ✗）|
+| "Missing executable" | 仅 **1** 条（`/System/Cryptexes/App/usr/libexec/webbookmarksd`）✗ 非系统性 |
+| SpringBoard | exec ✓ pid 27，存活 44 分钟、**0 崩溃** ✓ |
+| backboardd | exec ✓ pid 57，**成功打开帧缓冲**（`DISP CLIENT 57`）✓ |
+| 670 个 exec | 用户态在忙 ✓ |
+| 但 | **logo 之后无锁屏** ✗ 界面不再变化，只有 RD 数字在涨 ✓ |
+
+⇒ 内核侧（显示栈 ✓、帧缓冲客户端 ✓、SpringBoard 存活 ✓）**全部正常** ✗；
+拦路的是**用户态 UI 呈现** ✗，而用户态日志不在内核控制台上 ✗（只有 launchd 会写 ✓）
+
+### 六、下一步（按性价比）
+
+1. **修 eMMC 控制台在提频后的写**（让"快 + 有日志"同时成立）：给控制台加 `native_msdc_busy`
+   检查和/或写前临时恢复继承分频 ✓ 有风险，需一轮验证 ⚠️
+2. 或：诊断时用**慢速但有完整日志**的镜像（sr26 那套）✓ 只是慢 4 分钟 ✗
+3. 查"无锁屏"：需要 SpringBoard 自己的日志 ✗ 目前的可见性不足 ✗
+   可考虑把 `D4K beat`（procs/sb/bb）改用 `screen()` 画到面板上 ✓ 小改动、零风险 ✓
+
+### 七、本轮新增/回滚清单
+
+| 文件 | 改动 |
+| --- | --- |
+| `package/NativeMsdc.cpp` | 新增 `native-msdc-clockearly` 开关：`startRoot()` 前调用现成的 `hostRaiseClock()` ✓ |
+| `package/NativeMsdc.h` | `kMaxBlocks` 512 → **128 回滚**（实测无收益）；缓存判定 `bounceBytes == kMaxBlocks * kSector` 自洽 ✓ |
+| `patches/xnu/series` | 已清理无效的 `dandelion-emmc-console-ckstb.patch`（打在 emmc_init 上无效 ✗）|
+| 镜像 | `boot-sr29-clockearly.img` = `0eee9436`（**提速版**）；`boot-sr26-emmc-linked.img` = `af96f451`（**日志完整版**）|
+
+---

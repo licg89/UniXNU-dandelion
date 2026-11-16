@@ -85,6 +85,7 @@ constexpr BusMode decodeBusMode (uint32_t cfg, uint32_t sdc, uint8_t timing)
 // ---- eMMC ---------------------------------------------------------------------------------------------------------
 constexpr unsigned kSector = 512;
 constexpr unsigned kMaxBlocks = 128;               // one command moves at most 64 KiB
+                                                    // (256 KiB measured no faster in sr28)
 constexpr uint32_t kRca = 1;                       // the relative card address LK assigns to the eMMC
 constexpr uint32_t kStatusArgument = kRca << 16;   // CMD13 SEND_STATUS
 // SWITCH (CMD6), write byte, EXT_CSD[32] FLUSH_CACHE = 1.
@@ -551,7 +552,10 @@ static inline VerifiedReadResult verifiedReadWindow (Ops &ops, uint64_t windowBy
     ops.unlock ();
     return { ops.ioError (), 0 };
   }
-  const bool caching = cache && key && key->eligible && key->windowBytes == windowBytes && bounceBytes == 65536;
+  // bounceBytes is the driver's transfer buffer, kMaxBlocks * kSector.  Comparing against a literal
+  // 65536 here silently disabled caching as soon as the transfer size changed.
+  const bool caching = cache && key && key->eligible && key->windowBytes == windowBytes &&
+      bounceBytes == uint64_t (kMaxBlocks) * kSector;
   if (cache && (!caching || !cache->matches (*key) || cache->storage != bounce)) cache->invalidate ();
   while (remaining) {
     uint64_t position = start + result.done;

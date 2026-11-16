@@ -2515,6 +2515,17 @@ bool NativeMsdc::start (IOService *provider)
 #if NATIVE_MSDC_BLOCK_DEVICES
   else if (root) {
     gVerifyWindows = bootArgument ("native-msdc-verify", 1, 0) == 1;
+    // The signed root policy this call reads is 73 MB, and it runs at the inherited clock: measured
+    // 226823 ms in sr28 and 228108 ms in sr26, against 7 ms per 256 KiB once hostRaiseClock() has
+    // run later in publishThread.  Raising the clock before that read is the single largest win
+    // available on this board, so it is offered as its own experiment: the author's note says doing
+    // it during bring-up silenced the console (written through this same card) and the root mount
+    // then failed, which is why it stays behind an argument rather than becoming the default.
+    if (bootArgument ("native-msdc-clockearly", 1, 0)) {
+      IOLog ("NativeMsdc: raising the clock before the root policy read\n");
+      screen (40, "clock early");
+      hostRaiseClock ();
+    }
     if (!startRoot (root == 2, &why)) fail (why);
   }
 #else
