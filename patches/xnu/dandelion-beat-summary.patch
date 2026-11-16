@@ -1,0 +1,38 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -572,9 +572,23 @@
+ 		struct timespec pause = { .tv_sec = 20, .tv_nsec = 0 };
+ 		msleep((caddr_t)&dandelion_beat, NULL, PWAIT, "d4k-beat", &pause);
+ 		int procs = 0, state = -1;
++		int sbpid = -1, sbstat = -1, bbpid = -1, bbstat = -1;
+ 		proc_t walk;
+ 		proc_list_lock();
+-		LIST_FOREACH(walk, &allproc, p_list) { procs++; }
++		LIST_FOREACH(walk, &allproc, p_list) {
++			procs++;
++			/*
++			 * Name the two processes the bring-up turns on.  A count of live processes says
++			 * nothing about whether the one that draws is still there, and an unattended run of
++			 * hours is exactly when that has to be readable from the log afterwards.
++			 */
++			if (sbpid < 0 && strncmp(walk->p_comm, "SpringBoard", sizeof(walk->p_comm)) == 0) {
++				sbpid = walk->p_pid; sbstat = walk->p_stat;
++			}
++			if (bbpid < 0 && strncmp(walk->p_comm, "backboardd", sizeof(walk->p_comm)) == 0) {
++				bbpid = walk->p_pid; bbstat = walk->p_stat;
++			}
++		}
+ 		proc_list_unlock();
+ 		proc_t p1 = proc_find(1);
+ 		if (p1 != PROC_NULL) {
+@@ -583,8 +597,8 @@
+ 		}
+ 		extern volatile uint64_t native_msdc_reads, native_msdc_writes, native_msdc_failures;
+ 		extern volatile uint64_t native_msdc_retries;
+-		printf("D4K beat %u: procs=%d pid1stat=%d | reads=%llu writes=%llu retries=%llu failures=%llu\n",
+-		    round, procs, state,
++		printf("D4K beat %u: procs=%d pid1stat=%d sb=%d:%d bb=%d:%d | reads=%llu writes=%llu retries=%llu failures=%llu\n",
++		    round, procs, state, sbpid, sbstat, bbpid, bbstat,
+ 		    (unsigned long long)native_msdc_reads, (unsigned long long)native_msdc_writes,
+ 		    (unsigned long long)native_msdc_retries, (unsigned long long)native_msdc_failures);
+ 	}

@@ -8559,3 +8559,47 @@ FBSDisplayMonitor 断言 → SpringBoard 死）**已被切断** ✓
 3. 上面三个周期性崩溃值得逐个消掉，避免拖慢系统
 
 ---
+
+## 0.151 2026-11-16 14:30：对照官方文档（unixnu.com/zh）后的校正
+
+用户要求"多看看官方参考，别跑偏"。逐页读了 `/zh/reference/`、`/zh/drivers/xnu-drivers`、
+`/zh/drivers/kexts`、`/zh/porting/bring-up`、`/zh/reference/troubleshooting`、`/zh/xnu/boot-arguments`。
+结论：**我们有几件事一直自己造轮子，官方有现成机制**。
+
+### 一、官方有、我们没用的参数（已在 sr20 里启用）
+
+| 官方参数 | 官方说明 | 我们的问题 |
+| --- | --- | --- |
+| `boot-progress=2` | 启动进度显示级别；bring-up 阶段 7 明确写"用 `boot-progress=2` 查看最后完成的检查点" | 我们自己写了 `D4K beat` 心跳 ✗ |
+| `boot-ui-focus=<name>` | 选择启动 UI trace 的进程；故障排查表"**用户态显示断言** → 检查显示驱动和 **focus 参数**" | 我们正是用户态显示断言这一类 ✗ |
+| `disable-watchdogd=1` | 停止 watchdog daemon | 我们用的是 `panic_on_crash_disabled=1`（那是 launchd 的 panic 策略，不是停 watchdogd）✗ |
+| `kextlog=0xfff` | kext 载入细节 | 我们靠 shim 自己打印 ✗ |
+| `offline-legacy-gop=1`、`offline-legacy-phase=<n>` | 显示细节 | 我们已在用 ✓ |
+
+### 二、两条结构性校正
+
+1. **内置 XNU 驱动**的正当写法是：编译进内核的 C++ IOKit 类 + 定义在 `iokit/KernelConfigTables.cpp`
+   里的 personality（`IOClass`/`IOProviderClass`/`IONameMatch`/`IOProbeScore`）+ `start()` 里
+   `registerService()`，静态库经 `[kernel] archives` 与 `-force_load` 链入。
+   → 我们的显示 shim 走的是"绑定 Apple 预链接类 `IOMobileFramebufferLegacy` + 手工造
+   `AppleARMIODevice` nub + 手工 probe/attach/start"的变通路线。**能用（显示已 UP），但不是文档路线**；
+   若后续要长期维护，应按上述结构重写。
+
+2. **kext 包**：文档明确"发布版 DarwinBoot 接受内核、ADT sidecar、trust cache 和可选 ramdisk，
+   **拒绝携带暂存 kext 的请求**"。
+   → 所以 IOSurface 不可能靠 kext bundle 塞进内核 ✓ 我们最后用"按类名 `IOSurfaceRoot` 匹配
+   surface 服务"解决，方向是对的 ✓
+
+### 三、对照 bring-up 阶段表，我们现在在阶段 7
+
+阶段 7（用户态）的目标：`launchd` 运行、Data 卷挂载、**显示服务有输出**、启动进度层记录检查点。
+
+我们已达到：launchd ✓、Data 卷 ✓、**显示服务有输出（`DISP UP`、backboardd 作 client 57 打开帧缓冲）** ✓
+未达到：**启动进度层 / 锁屏** ✗ → 这正是 sr20 要问的问题，用官方参数问。
+
+### 四、sr20（`boot-sr20-progress.img` `5ac73a4f`）
+
+= sr18（显示已通）+ `dandelion-beat-summary.patch`（心跳带 `sb=<pid>:<stat> bb=<pid>:<stat>`）
++ 四个官方参数。已于 14:34:56 刷入并开始长跑（采集窗口到 20:35）。
+
+---
