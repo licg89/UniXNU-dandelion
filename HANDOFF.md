@@ -8603,3 +8603,59 @@ FBSDisplayMonitor 断言 → SpringBoard 死）**已被切断** ✓
 + 四个官方参数。已于 14:34:56 刷入并开始长跑（采集窗口到 20:35）。
 
 ---
+
+## 0.152 ★★★★★ 2026-11-16 18:37：显示竞态修好，**SpringBoard 稳定存活不再崩**
+
+### 一、修法（sr21，`boot-sr21-racefix.img` `9f84a8f6`）
+
+1. `IOCoreSurfaceRoot` 等待 **5 s → 20 s**，类名回退 **3 s → 10 s**
+2. 轮询线程发现服务迟到时，**重跑 late probe**（把已 park 的显示对象取回），标记 `DISP SURFRETRY`
+
+### 二、开机结果
+
+```
+(23) DISP SURF 0 F1      ← 20 秒窗口内就到了，SURFRETRY 甚至没用上
+(24) DISP MAP 720x1600 7ec50000
+(25) DISP NUB A1 S1
+(26) DISP P1 A1 S1
+(27) DISP ARMIO 1
+(28) DISP CLIENT 57 backboardd T0
+(30) DISP COPY 0 4608000
+(31) DISP UP
+```
+
+### 三、SpringBoard 从"每 20 秒崩一次"变为"44 分钟不崩"
+
+| 指标 | sr20（18:37 前）| **sr21** |
+| --- | --- | --- |
+| SpringBoard exec / exit | 26 / **26（sig=5）** | 1 / **0** |
+| 心跳存活率 | 19 / 564 | **131 / 150** |
+| 存活 pid | 27 → 3587（反复重启）| **26 → 26** |
+| xpcproxy 启动次数 | 3,818 | **712** |
+| `FBSDisplayMonitor` CADisplay 断言 | 每次都撞 | **完全消失** |
+
+⇒ **"显示起来 → CADisplay 存在 → SpringBoard 不崩"这条因果被双向验证了** ✓
+
+### 四、日志量/耗时的量化（回答"为什么要跑那么久"）
+
+- `D4K beat` 每 20 秒一条；**launchd → SpringBoard 约 beat 19 ≈ 6 分 20 秒**，backboardd ≈ beat 26
+- 控制台窗口 14.68 MB，实测增长约 **4.7 MB/小时** ⇒ **超过 ~3 小时开头日志就被覆盖**
+  （sr20 跑了 3.1 小时，写满 99.997%，开头丢失）
+- sr20 三小时读盘 **>40 GB**（`RD` 计数器）= 崩溃-重启循环里重复映射 dyld 缓存，非真正启动
+- 结论：**每轮 10–20 分钟足够**；跑久反而有害
+
+### 五、仍存在但不阻塞
+
+`watchdogd`（18 次，`off=0xab0c`）、`liveactivitiesd`（18 次，`0x1c18f64f8`）、
+`privacyaccountingd`（17 次）—— 位置与历史一致，系统容忍 ✓
+
+### 六、下一步
+
+屏幕上仍是 **logo + 控制台文字**。怀疑端口的文字控制台持续覆盖帧缓冲，把 SpringBoard 的绘制
+盖掉了。下一枚镜像：
+
+1. 关闭控制台对帧缓冲的覆盖（用端口既有开关，不新造）
+2. 关闭 `NativeMsdc` 的逐读刷屏（`NativeMsdc: read trace ...` 每读一行，既拖慢启动又挤占日志）
+3. 目标：判断 SpringBoard 是否真的在画 UI
+
+---
