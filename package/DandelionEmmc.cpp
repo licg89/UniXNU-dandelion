@@ -433,9 +433,14 @@ IOReturn DandelionEmmc::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 bloc
                                          IOStorageAttributes *attributes, IOStorageCompletion *completion)
 {
 	IOReturn status = doSyncReadWrite(buffer, block, nblocks);
-	if (completion != nullptr) {
-		IOStorageCompletion done = *completion;
-		IOStorage::complete(&done, status, buffer->getLength());
+	if (completion != nullptr && completion->action != nullptr) {
+		/*
+		 * Same contract as IOStorage::complete(), without importing that static helper:
+		 * IOStorageFamily is a stripped prelinked kext here, so the symbol is not available at
+		 * kernel link time.  NativeMsdc.cpp (which does link) calls action directly.
+		 */
+		completion->action(completion->target, completion->parameter, status,
+		                   status == kIOReturnSuccess ? buffer->getLength() : 0);
 	}
 	return status;
 }
