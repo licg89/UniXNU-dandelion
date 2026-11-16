@@ -8659,3 +8659,94 @@ FBSDisplayMonitor 断言 → SpringBoard 死）**已被切断** ✓
 3. 目标：判断 SpringBoard 是否真的在画 UI
 
 ---
+
+## 0.153 2026-11-16 20:5x：对照 UniXNU 官方后的方向校正（用户要求"别造轮子"）
+
+用户指出：我们是**参考 UniXNU 的移植项目**，能不自己造轮子的一定不要造；并问为什么这么慢、
+UniXNU 前期没有 GPU 驱动也能显示。逐页核对 unixnu.com 与主仓库本地资料后，结论如下。
+
+### 一、"慢"的根因（有数据，不是猜测）
+
+| 一侧 | 实现 | 实测/文档 |
+| --- | --- | --- |
+| 我们 | `package/NativeMsdc.cpp`，**PIO 轮询** | 每次 64 KiB 读 `drain≈53204`（≈1.2 MB/s）✗ |
+| 官方 UFS | `ShengUfs`：32 命令队列 + 零拷贝 DMA + 中断完成 | 1 MiB 顺序读 **2.2–3.7 GB/s**，`/zh/porting/ufs#performance` 要求"不低于主线 Linux" ✗ 差 3 个数量级 |
+| 同代参考 | merlinx（MT6768，同一份 iPadOS 17.7.11 21H461）| 记录里把 **"CPU/CCI PLL boost + fast eMMC PIO"** 列为实现项/下一步 ✓ 即同代 eMMC 也用 PIO，但做了 CPU 提速 |
+
+- `board.toml:185` **已经记录过**：`native-msdc-dma` 经六轮调试后刻意关闭（引擎不取描述符、
+  `GPD.HWO` 保持 1、`MSDC_CFG` 回到 PIO）✗ 所以慢是已知取舍，不是新问题。
+- 时间大头是**读 3.7 GB dyld 共享缓存**（约 6 分 20 秒才到 SpringBoard，beat 19）。
+- 对照：Android 1 分钟起，是因为它读打包的 boot.img；我们走 APFS + 逐进程 exec ✓
+
+### 二、merlinx 证明"没有 GPU 也能出 UI"（用户是对的，我此前判断错了）
+
+`/zh/devices/merlinx` 记录：
+
+> "UniXNU boots iPadOS 17.7.11 21H461 from p33 through UEFI, **native eMMC** and a Data seed,
+> reaches launchd and **draws the Lock Screen and Dock**"，
+> "**Userland Metal/GPU composition is not implemented**; SpringBoard renders through the legacy provider"，
+> 且 `IOMFB_FDR_Loader exit 1` **仍然有锁屏** ✓
+
+⇒ 我们一直把 `IOMFB_FDR_Loader exit 1` 和"没有 GPU"当拦路石是**误判** ✗
+⇒ GPU 只是把 UI 变快，不是让它存在 ✓（已在 §0.151 修正，这里由官方设备记录二次证实）
+
+### 三、逐条清点"我们自己造的轮子"
+
+| 我们做的 | 官方现成机制 | 判定 |
+| --- | --- | --- |
+| `NativeMsdc.cpp`（board.toml 注释：vendored `mouseos/NativeMsdc`）| 社区组件 **`NativeEmmc`**（Dracen-W，merlinx 用）| ⚠️ 半官方，见第四节 |
+| `make_ios_partition.ps1` 自造 GPT 切 `ios` 分区 | 官方 `/zh/porting/dual-system-partition` + 组件的窗口发布 | ✗ 轮子 |
+| 72 个 `dandelion-*` 探针补丁 | 官方 `boot-progress=2` / `log-display=1` / `disable-jobs` / `boot-ui-focus` | ✗ 大半是轮子；且**我们内核根本没实现**后三/四个参数（实测 `argcheck.sh`：`boot-ui-focus`、`disable-watchdogd`、`log-display` 无 reader） |
+| `panic_on_crash_disabled=1` 内核参数 | **launchd disabled plist（写在 Data seed 里）** ← merlinx 明确用这个关 watchdogd | ✗ 走错层 |
+| `DANDELION-BRK/SR/IMG/TEXT` + 离线符号化全家桶 | 官方无对应机制 | ✅ 这块没法复用（诊断缺口），但**数量过多**，且其中两个曾把内核 panic（`copyinstr` in abort path / exit path） |
+| `GopFramebuffer` 显示组件 | 官方组件 ✓ | ✅ 用对了 |
+| trust cache / payload / ADT / DarwinBoot | 官方流程 ✓ | ✅ 用对了 |
+
+### 四、但官方**明确不允许**直接搬 `NativeEmmc`（重要，别再跑偏）
+
+主仓库 `docs/.vitepress/device-records/gta4l-gta4lunix.toml` 里的权威静态审计
+（`docs/native-emmc-reference-audit.md`，针对 `Dracen-W/NativeEmmc` @ `4980f107…`）：
+
+> "a host-only static review of a **MediaTek MT6768 MSDC driver** … its register map, command
+> encoding, FIFO path and **hardcoded userdata LBA are not transferable** … records a completion gap,
+> no R1 card-status check, no window content-hash verification, and a **source/license mismatch**
+> … **No code was imported, built or run**, and the repository documents no hardware result."
+
+`docs/zh/drivers/community-native-emmc.zh.md` 也只有一句："仓库存在。**未记录真机结果**。"
+
+⇒ 可复用的是**设计要点**（`IOBlockStorageDevice` 形状、fail-closed manifest、精确一次 IOMedia
+匹配、写拒绝、全局控制器锁、分阶段启动参数），**不是代码** ✓
+
+### 五、主仓库其实为这块板准备了 eMMC 构建脚本（此前没用上）
+
+`scripts/build-dandelion-emmc.py` 存在 ✓，但 `board.toml:129–137` 把它**注释掉**并写明原因：
+
+> "The eMMC host (package/DandelionEmmc.cpp, build-dandelion-emmc.py) compiles and archives
+> cleanly, but it cannot be linked yet: it subclasses IOBlockStorageDevice, and IOStorageFamily is
+> a prelinked kext whose symbols do not exist at kernel link time … Wiring it in needs a
+> **link-stub archive**; until then the documented path is `CONFIG_XNU_SOURCE_MOCKFS`."
+
+⇒ 官方给出的根治方向是 **link-stub archive**，不是继续调 PIO ✓
+
+### 六、下一步工作项（按"用现成的"排序，不再自造）
+
+1. **CPU/CCI 提速**（见效最快）：merlinx 记录写明 MT6768 提 2.0/1.7 GHz 需要
+   `VSRAM_PROC11/12` + `VPROC11/12` 经 pwrap WACS2(0xc20)，再写 `ARMPLL_L_CON1`(0x20c) /
+   `ARMPLL_LL_CON1`(0x21c)。本板同代 MTK，参照主仓库平台电源脚本 ✓
+2. **watchdogd 改用 Data seed 内的 launchd disabled plist**（官方做法 ✓，弃用内核参数）
+3. **补 `/private/var/cores` 到 Data seed**（`build-data-seed.py` 的 SEED_FILES；coredump 一直报 error 2 ✗）
+4. **评估 `build-dandelion-emmc.py` + link-stub**（官方已点明缺什么 ✓），目标替换 PIO 轮询
+5. 清理：把 72 个补丁里纯诊断、且官方有对应机制的部分逐步撤掉（改动前先跑
+   `scripts/package.sh --check --os 17` 与 `porting-record.py check`）
+
+### 七、本次会话已确认的成果（不要丢）
+
+- `Compromised Data` 根因 = ADT 声明 packed 但 ramdisk 未打包（`DarwinBoot.c:678`）
+- 显示链：`IOCoreSurfaceRoot` 晚到 → 20 s 等待 + `SURFRETRY` 重跑 → `DISP UP`（720x1600、
+  backboardd client 57、全屏拷贝）
+- **sr21 上 SpringBoard 从"26 次崩溃"变为"0 次崩溃、44 分钟存活"** ✓
+- Apple logo 由用户态画出 ✓（说明渲染通路通）
+- 剩余已知问题：sr22/23/24 重建产物偶发"launchd 后无 exec、5 分钟复位"（与设备/卷状态相关，
+  sr21 原始镜像 `9f84a8f6` 已复跑验证中）
+
+---
