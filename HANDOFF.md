@@ -8425,3 +8425,74 @@ DANDELION-TEXT: pid=52 comm=watchdogd pc=0x100691b0c base=0x100687000 off=0xab0c
 ③ `DANDELION-AI` 的 copyin 结论（决定 watchdogd 基址走哪条路）
 
 ---
+
+## 0.149 ★★★ 2026-11-16 12:0x：显示链断点锁定到 **IOCoreSurfaceRoot**
+
+### 一、本次上机（sr15，跑了约 3 小时 20 分）
+
+| 项 | 值 |
+| --- | --- |
+| 日志 | **58,040 行 / 8,342,279 字节**（迄今最深）|
+| 进程 | `DANDELION-EXEC` **4,702** 条，210 个不同可执行文件 |
+| 退出 | **2,203** 条；`xpcproxy` 2,326 次、`bluetoothd` 1,025、`fairplayd` 1,007 |
+| BRK | 93 条（watchdogd 25、privacyaccountingd 22、SpringBoard 26、liveactivitiesd 20）|
+| slide | `0x10bbc000`，`sr_slide` 与 BRK slide 一致 ✓；`DANDELION-AI` 93/93 `copyin=0` ✓ |
+| **backboardd** | **起来了 x1** ✓（此前一直"看不到"，是因为没有进程名探针）|
+
+SpringBoard/liveactivitiesd 的 unslid 依旧是 `0x19f3df2ec` / `0x1c18f64f8` ✓（第 5 次独立互证）
+
+### 二、显示栈的日志（第一次拿到）
+
+```
+DANDELION-DISP(21): DISP PROBE 1          preModLoad 成功
+DANDELION-DISP(21): DISP PROBE 2          GOP 帧缓冲有效（地址/宽高/32bpp 全过）
+DANDELION-DISP(22): DISP INIT 1           IOMobileFramebufferLegacy::init() = **1 = 成功**
+DANDELION-DISP(21): DISP LATE             phase=4 → 显示对象延后到 late 阶段
+DANDELION-DISP(23): DISP SURF 0 F0        IOSurface kext 加载=0(成功)，**IOCoreSurfaceRoot 未找到**
+DANDELION-DISP(21): GOP FALLBACK FALLBACK 退回 GOP 画图
+```
+
+`dline()` 以前只画面板，这次改成同时写内核 console 才看得到 ✓（§0.148 的改动）
+
+### 三、三个不要误判的点
+
+1. **`init()` 返回 1 = 成功**（IOKit 惯例）。反汇编 `IOMobileFramebufferLegacy::init(OSDictionary*)`
+   @ `0xfffffff005786e20`（在 `__PLK_TEXT_EXEC`）确认：它先 `blr` 调 super::init，然后 `and w9, w0, #1`
+   作为返回值 —— 所以 `DISP INIT 1` 是好消息 ✓
+2. `offline-legacy-phase=4` 让 shim **主动延后**（`pendingLegacyDisplay`），所以 probe/attach/start 不在
+   这里发生，而在 `DISP LATE` 之后 ✓
+3. 于是整条链只剩**一个**断点：`DISP SURF` 的第二个数 `F0` = `waitForMatchingService(IOCoreSurfaceRoot, 5s)`
+   返回空 ✗
+
+### 四、IOCoreSurfaceRoot 为什么是空的
+
+```
+kernel.macho 里 IOSurface/CoreSurface 的符号总数：2
+   gIOSurfaceIdentifier, gIOSurfaceTag
+```
+（之前统计到 610 处 "IOSurface" 字符串是别的代码引用，不是实现 —— 曾据此误判，已纠正）
+
+日志里有 `KextLog: Loading FileSet KC(s)` ✓ 说明 kext 是按 FileSet KC 运行时加载的，
+`OSKextLoadKextWithIdentifier("com.apple.iokit.IOSurface")` 返回 0（成功）但服务始终没出现 ⇒
+**IOSurface kext 没有成功 start 并发布 IOCoreSurfaceRoot** ✗
+
+### 五、结论（因果链完整）
+
+```
+IOCoreSurfaceRoot 缺失
+  → 显示 shim 不建立 surface/显示对象（GOP FALLBACK）
+  → backboardd 虽然起来，但没有任何显示器可发布
+  → [CADisplay displays] 返回空数组（§0.148 的 CASGetDisplays 服务端往返）
+  → FBSDisplayMonitor 断言 "failed to find the main CADisplay"
+  → SpringBoard 死
+```
+
+### 六、下一步工作项（按顺序）
+
+1. **让 IOSurface 发布 IOCoreSurfaceRoot**：查 IOSurfaceRoot 的 start 依赖（多半是
+   IOMemoryDescriptor/DMA 或 `IOBufferMemoryDescriptor` 相关的端口缺失），必要时给 shim 直接
+   `allocClassWithName("IOSurfaceRoot")` 并手工 start（和 `AppleARMIODevice` 同样的做法）
+2. 修掉 abort 诊断的 copyinstr（已完成，`boot-sr16-noabortcopy.img` `e63e8a76`，未上机）
+3. watchdogd 函数名仍缺（`off=0xab0c`，二进制不在本机镜像；可从设备侧 dd iOS 区域再按 brk 定位）
+
+---
