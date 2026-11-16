@@ -1,6 +1,6 @@
 --- a/bsd/kern/kern_exit.c
 +++ b/bsd/kern/kern_exit.c
-@@ -1362,9 +1362,38 @@
+@@ -1362,9 +1362,25 @@
  abort_with_payload_internal(proc_t p,
      uint32_t reason_namespace, uint64_t reason_code,
      user_addr_t payload, uint32_t payload_size,
@@ -8,32 +8,19 @@
      uint32_t internal_flags)
  {
 +	/*
-+	 * Board diagnostic: a userland service that aborts leaves only "sig=5" in the exit trace.
-+	 * libsystem's os_log_fault passes the encoded log message as the payload, and its first
-+	 * bytes are usually the format string itself, so printing whatever is printable turns
-+	 * "namespace 2 subcode 0x5" into the sentence the subsystem actually logged.
++	 * Board diagnostic: a service that aborts would otherwise leave only "sig=5" in the exit trace.
++	 *
++	 * Only numbers are printed.  This runs while the kernel is delivering the abort, and reading
++	 * user memory here (copyinstr of reason_string, then copyin of the payload) has produced a
++	 * kernel data abort on this board twice, which turns a diagnosable crash into a panic -- the
++	 * opposite of what the diagnostic is for.  The process name and the exception numbers are
++	 * already enough to tell one abort from another, and DANDELION-REASON still carries the
++	 * payload text from the exit path, where copyin does work.
 +	 */
 +	{
-+		char why[96];
-+		size_t n = 0;
-+		char bytes[128];
-+		if (reason_string != USER_ADDR_NULL &&
-+		    copyinstr(reason_string, why, sizeof(why), NULL) == 0) {
-+			n = strlen(why);
-+			printf("DANDELION-ABORT: pid=%d comm=%s ns=%u code=%llu str=%s\n",
-+			    proc_getpid(p), p->p_comm, reason_namespace, reason_code, why);
-+		} else {
-+			if (payload != USER_ADDR_NULL && payload_size > 0 &&
-+			    copyin(payload, bytes, MIN(payload_size, sizeof(bytes) - 1)) == 0) {
-+				for (size_t i = 0; i < MIN(payload_size, sizeof(bytes) - 1); i++) {
-+					char c = bytes[i];
-+					why[n++] = (c >= 0x20 && c < 0x7f) ? c : '.';
-+				}
-+			}
-+			why[n] = 0;
-+			printf("DANDELION-ABORT: pid=%d comm=%s ns=%u code=%llu payload=%u text=%s\n",
-+			    proc_getpid(p), p->p_comm, reason_namespace, reason_code, payload_size, why);
-+		}
++		printf("DANDELION-ABORT: pid=%d comm=%s ns=%u code=%llu payload=%u reason_string=%p\n",
++		    proc_getpid(p), p->p_comm, reason_namespace, reason_code, payload_size,
++		    (void *)reason_string);
 +	}
 +
  	os_reason_t exit_reason = OS_REASON_NULL;

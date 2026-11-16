@@ -154,6 +154,33 @@ def disasm(image, info, span=0x40):
     return [l.rstrip() for l in out.splitlines() if ':\t' in l]
 
 
+_MACHO_CACHE = {}
+
+
+def scan_machos_cached(image):
+    """Parse every Mach-O once per image and reuse it.
+
+    find_by_text_offset() used to rescan and reparse the whole image for every log record, which on a
+    9.4 GB device image means minutes per record.
+    """
+    key = str(image)
+    if key in _MACHO_CACHE:
+        return _MACHO_CACHE[key]
+    size = pathlib.Path(image).stat().st_size
+    found = []
+    with open(image, 'rb') as fh:
+        for file_off in scan_machos(image):
+            if file_off + 32 > size:
+                continue
+            info = parse_macho(fh, file_off, size)
+            if info is None or info['cputype'] != 0x0100000c:
+                continue
+            found.append(info)
+    _MACHO_CACHE[key] = found
+    print('indexed %d Mach-O files in %s' % (len(found), image), flush=True)
+    return found
+
+
 def find_by_text_offset(image, text_offset, base, comment, limit=6):
     """Find the Mach-O the kernel's DANDELION-TEXT record describes.
 
@@ -162,22 +189,16 @@ def find_by_text_offset(image, text_offset, base, comment, limit=6):
     that base.  The second condition is what rejects cache dylibs, whose vmaddr already sits above
     the app region and would need a negative slide.
     """
-    size = pathlib.Path(image).stat().st_size
     hits = []
     with open(image, 'rb') as fh:
-        for file_off in scan_machos(image):
-            if file_off + 32 > size:
-                continue
-            info = parse_macho(fh, file_off, size)
-            if info is None or info['cputype'] != 0x0100000c:
-                continue
+        for info in scan_machos_cached(image):
             vmaddr, _vmsize, text_fileoff, filesize = info['text']
             if filesize < text_offset + 4:
                 continue
             slide = (base - vmaddr) & 0xffffffffffffffff
             if not (0 <= slide < MAX_SLIDE and slide % GRANULE == 0):
                 continue
-            fh.seek(file_off + text_fileoff + text_offset)
+            fh.seek(info['file_off'] + text_fileoff + text_offset)
             word = fh.read(4)
             if len(word) < 4:
                 continue
