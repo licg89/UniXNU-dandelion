@@ -129,8 +129,8 @@ findings = [
   "The kernel image carries only two IOSurface symbols (gIOSurfaceIdentifier, gIOSurfaceTag), and the released DarwinBoot refuses staged kexts, so matching the class name at runtime is the working route rather than shipping IOSurface as a bundle.",
 ]
 completion = ["A known frame appears with correct geometry and colors, then userland presentation and backlight controls work."]
-limits = ["Userland presentation works but no lock screen appears: the panel shows the Apple boot logo while SpringBoard stays alive, and the board selects no GPU component (no IOGPU or IOAccelerator driver), while the documented GPU reference covers Adreno only.", "No backlight or brightness control: the kernel carries the AppleARMBacklight strings but no service publishes them.", "IOMFB_FDR_Loader still exits 1; the display works regardless."]
-next_action = ["Read sr20's beat line (sb=<pid>:<stat> bb=<pid>:<stat>) to see whether SpringBoard stays alive over hours and where it stops.", "Establish whether the lock screen requires a renderer on this OS; if it does, GPU is the gate and PowerVR GE8320 has no documented backend."]
+limits = ["Userland presentation works but no lock screen appears yet: the panel shows the Apple boot logo while SpringBoard stays alive. This is not a GPU gate; the reference project reached a working UI before it had a GPU driver, with presentation staying on the CPU copy path.", "No backlight or brightness control: the kernel carries the AppleARMBacklight strings but no service publishes them.", "IOMFB_FDR_Loader still exits 1; the display works regardless."]
+next_action = ["Read sr20's beat line (sb=<pid>:<stat> bb=<pid>:<stat>) to see whether SpringBoard stays alive over hours and where it stops.", "Establish what SpringBoard does after it stops aborting: the readout is the beat line that reports its pid and state, not a GPU experiment."]
 evidence = [
   "DANDELION-DISP UP / virtual bool IOMobileFramebufferLegacy::start(IOService *)",
   "DARWINBOOT: video base=0x7EC50000 display=1 row=2944 width=720 height=1600 depth=32",
@@ -173,11 +173,12 @@ procedure = ["Follow the GPU stage in the porting guide once a backend exists; t
 findings = [
   "The display does not need a GPU on this port: presentation goes through the GOP presenter and a CPU copy (DISP COPY 0 4608000), which is why the panel comes up with no graphics stack at all.",
   "The kernel carries IOGPU, IOAccelerator and AGXAccelerator strings from the prelinked Apple kexts, while no GPU component is selected here, so nothing publishes an accelerator to userland.",
-  "The rendered UI is the gap that remains: SpringBoard stays alive with the display up but nothing composites, and the documented GPU path (Metal -> AdrenoMetal -> metal2vulkan -> Turnip -> Adreno740) is specific to Adreno.",
+  "A UI does not need this backend to appear: the reference project reached a working desktop before the GPU path existed, presenting through the CPU copy at a low frame rate, and it tunes userland rendering per job (FORCE_SOFTWARE_RENDERER, CI_ENABLE_METAL_GPU) rather than by adding a GPU.",
+  "So the missing lock screen is a userland-state question first: the GPU is what turns a slow UI fast, not what lets it exist.",
 ]
 completion = ["GPU submissions complete, mapping/fence handling is correct, a known image renders, and the selected Metal client presents it."]
-limits = ["No GPU backend and no Metal; components.toml offers only Adreno740, so this board needs a new component or a board-side driver.", "Every UI-rendering result is blocked on that, not on the display."]
-next_action = ["Establish from the OS side whether SpringBoard requires a renderer before it presents a lock screen, which decides whether GPU work is the next gate or a later one."]
+limits = ["No GPU backend and no Metal; components.toml offers only Adreno740, so this board needs a new component or a board-side driver.", "UI results are not blocked on that: presentation stays on the CPU copy path and only frame rate suffers."]
+next_action = ["Leave the GPU alone until a UI exists on the CPU path; read what SpringBoard does after it stops aborting before selecting any graphics work."]
 evidence = [
   "getprop reports Mali-G72 MP1 on MT6762G",
   "components.toml offers exactly one GPU component, Adreno740 (hardware: Adreno 740, SM8550) - there is no Mali or panfrost component to select",
@@ -292,7 +293,7 @@ findings = [
 ]
 completion = ["launchd exec passes; the dyld cache registers; Early boot complete is reached; SpringBoard starts and stays alive with the display service up."]
 limits = ["SpringBoard stays alive but no lock screen appears: the display service is up and the panel shows the Apple boot logo, while no GPU component is selected on this board.", "watchdogd, liveactivitiesd and gamed still abort on an exception-handler failure; the boot tolerates it and no longer panics with panic_on_crash_disabled=1.", "The full fault format string is not in the exit reason (the buffer is 116 bytes), so the firehose has to be tapped to read it."]
-next_action = ["Read the sr20 beat line (sb=<pid>:<stat> bb=<pid>:<stat>) to see how long SpringBoard stays alive and where it stops.", "Decide whether the lock screen needs a renderer on this OS; if it does, the GPU area is the gate and this board has no backend."]
+next_action = ["Read the sr20 beat line (sb=<pid>:<stat> bb=<pid>:<stat>) to see how long SpringBoard stays alive and where it stops.", "Read the sr20 beats to see whether SpringBoard stays alive over hours and where it stops; the reference project produced a UI on the CPU copy path, so look for the userland blocker before any graphics work."]
 evidence = [
   "DANDELION-EXIT: pid=26 comm=SpringBoard ppid=1 rv=0x5 sig=5 status=-1",
   "DANDELION-REASON: pid=52 comm=watchdogd text=...exc handler......",
