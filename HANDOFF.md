@@ -9020,3 +9020,46 @@ IOStorage8complete                → 已消失 ✓
 - 正在跑：启用 eMMC 归档后的**完整构建**，验证内核链接能过 ✓
 
 ---
+
+## 0.158 2026-11-16 22:0x：归档"编译成功"≠"链进内核"（EXTRA_LD_ARCHIVES 才是开关）
+
+### 一、现象
+
+启用 `build-dandelion-emmc.py` 后完整构建 **exit=0** ✓，但 `strings kernel.macho` 找不到
+`dandelion_emmc_probe` / `DandelionEmmc` / `DANDELION-EMMC` ✗ ⇒ 归档被链接器丢弃了 ✗
+
+这正是 HANDOFF §0.115 里 **AppleKeyStoreState** 遇到过的同一个坑："组件能编、归档也生成了，
+但**链接命令里没有这个归档**，符号仍 undefined" ✓
+
+### 二、机制（官方，已查实）
+
+- `scripts/unixnu/kernel.py:build_archives()` 只负责**生成**归档，不决定链接参数 ✓
+- `scripts/build-xnu-4k-baseline.sh:798`：
+  `KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES ${XNU_EXTRA_LD_ARCHIVES:-}"` →
+  由 `EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=...")` 传给链接 ✓
+- `configs/dandelion_defconfig:88` 原本只挂了 `libStorageBindings.a`：
+  ```
+  CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/native-msdc-bindings/libStorageBindings.a"
+  ```
+  而下面那行 `libDandelionEmmc.a` **是注释掉的**，注释还写着"linking it fails:
+  IOBlockStorageDevice's vtable … undefined" ✗ —— **过时结论**（§0.157 已证：15 个 import
+  全被 bindings 覆盖，`IOStorage::complete` 已用 `completion->action` 替代）✓
+
+### 三、修法（纯配置，未改任何官方脚本）
+
+`configs/dandelion_defconfig` 里把两个归档都 `-force_load`：
+
+```
+CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/native-msdc-bindings/libStorageBindings.a -Wl,-force_load,{tree}/build/dandelion-emmc/libDandelionEmmc.a"
+```
+
+两个检出同步 ✓ 注释同步改为验证过的事实 ✓
+
+### 四、核对清单（以后每次加归档都要走）
+
+1. `board.toml [kernel] archives` 里有生成脚本 ✓
+2. `defconfig` 的 `CONFIG_XNU_EXTRA_LD_ARCHIVES` 里有 `-Wl,-force_load,<归档>` ✓
+3. 构建后 **在 kernel.macho 里搜得到该驱动的符号**（不能只看 exit=0）✓
+4. `llvm-nm` 确认所有 undefined 都有绝对绑定 ✓
+
+---

@@ -85,13 +85,13 @@ CONFIG_XNU_SHENG_PMGR=y
 # the IOStorageFamily methods it inherits: those symbols live in the prelinked
 # kext, so a link without them fails on the whole vtable.  scripts/bind-by-vtable.py
 # pairs the driver's vtable slots with the base vtable in our own kernel.
-CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/native-msdc-bindings/libStorageBindings.a"
-#
-# The older hand-written driver would go here:
-#   CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/dandelion-emmc/libDandelionEmmc.a"
-# but linking it fails: IOBlockStorageDevice's vtable and every method of it are
-# undefined at kernel link time, because IOStorageFamily is a prelinked kext.
-# See board.toml [kernel] archives for the note and the two ways forward.
+# Both archives are force-loaded: libStorageBindings.a carries the absolute
+# IOStorageFamily addresses (vtable, ctor/dtor/gMetaClass, 15 methods) and
+# libDandelionEmmc.a carries the board's IOBlockStorageDevice host.  The older
+# note claiming the latter cannot link was wrong -- the only unresolved import
+# was IOStorage::complete(), a static helper, now replaced by the plain
+# completion->action call that NativeMsdc.cpp already uses (HANDOFF 0.157).
+CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/native-msdc-bindings/libStorageBindings.a -Wl,-force_load,{tree}/build/dandelion-emmc/libDandelionEmmc.a"
 #
 # The OS fragment sets this to y; the defconfig is applied last, so n wins.
 # Without it vfs_conf.o is compiled with -DMOCKFS=1 and references symbols the
