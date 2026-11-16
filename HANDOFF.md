@@ -9179,3 +9179,56 @@ device->start(provider);     // → fifoClear() + 写 kRegCfg，操作 0x1123000
 - 两个检出工作区干净；`HANDOFF.md` §0.153–0.160 完整记录本轮"用现成的"全部结论 ✓
 
 ---
+
+## 0.161 2026-11-16 22:5x：DMA 上机前的风险重估（旧结论过时）
+
+§0.156 说"DMA 挂起会整机静默、需断电"—— **那是 §0.115 第 5 轮 `poisoned` 的旧行为** ✗
+逐行读当前 `NativeMsdc.cpp`（第 6 轮）后纠正：
+
+### 一、当前代码自带三层安全网（都是现成的，非本轮新增）
+
+1. **自检 gate**：`hostEnableDma()` 用 PIO 读 4 块（sector 0x40）、DMA 读同 4 块、
+   `memcmp` 比对；只有完全一致才 `gHost.dmaEnabled=true`，否则
+   `native_msdc_dma=2` + `IOLog("DMA comparison with PIO failed, PIO kept")` ✓
+2. **失败回退**：`hostReadDma()` 头部注释明写 "A failed transfer no longer quarantines
+   anything: it puts the controller back in PIO, stops the card and returns an error, so the
+   caller falls back to the path that works and **the boot continues**" ✓
+   `!stopped` 分支：`wr(kDmaCfg, ... & ~DECSEN)`、`wr(kMsdcCfg, ... | kCfgPio)`、
+   `gHost.dmaEnabled=false`、`native_msdc_dma=2`、返回 `kIOReturnNotReady` ✓
+3. **不再屏蔽控制台**：旧的 `BusyGuard`（`native_msdc_busy`）已删除，注释写
+   "A failed experiment must not be able to silence the machine" ✓
+
+⇒ 启用 DMA **不会**让机器变砖；最坏是自检失败、自动退回 PIO，启动照常 ✓
+
+### 二、两个现成开关（都不需要写新代码）
+
+| 参数 | 现成实现 | 判定行 |
+| --- | --- | --- |
+| `native-msdc-dma=1` | `bootArgument("native-msdc-dma",1,0)` → `hostBringUp(..., dma==1)` → `hostEnableDma()` → `hostReadDma()` | `NativeMsdc: dma state <n> enabled <n> phys 0x…`、`DMA comparison with PIO …`、`dma arm/start/trace gpd_info=…` |
+| `native-msdc-srcclk=1` | `bootArgument("native-msdc-srcclk",1,0)` → 扫 MSDC0 源时钟 parent（TOPCKGEN CLK_CFG_3、APMIXED MSDCPLL），失败恢复原值 | `NativeMsdc: source CLK_CFG_3=… msdc50_0_sel=…` |
+
+代码注释还指出慢的另一半原因：**MSDC0 源时钟选到了最慢 parent**（"CLK_CFG_0 [13:11] reads
+0 -- the slowest parent … Raising the divider was never going to help beyond the fastest division
+of a slow parent"）✓ 所以这两个开关一起试是有依据的 ✓
+
+### 三、基线证据（sr26 / sr21 日志）
+
+```
+NativeMsdc: clock settled at divider 0 sample 31 (inherited 4)
+NativeMsdc: dma state 0 enabled 0 phys 0x0          ← 两个开关都关着
+```
+
+⇒ DMA 未启用，这正是 PIO 慢的基线 ✓
+
+### 四、`boot-sr27-dma.img`（本轮构建）
+
+= sr26 已验证基线（含 link-stub）+ 仅两个 `--kernel-arg`：
+`native-msdc-dma=1` + `native-msdc-srcclk=1`（`panic_on_crash_disabled=1` 保留）✓
+**零代码改动** ✓ 固件段仍与 boot-slide 逐字节相同 ✓
+
+上机后要读的三行：
+- `DMA comparison with PIO passed` → DMA 生效，看 `read timing` 的 drain 是否下降 ✓
+- `failed, PIO kept` → 自检没过，看 `dma trace gpd_info=` bit0 定性（§0.115）✓
+- `source CLK_CFG_3=… msdc50_0_sel=…` → 源时钟选择结果 ✓
+
+---
