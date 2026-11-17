@@ -9968,3 +9968,72 @@ springboard seen in 29 of 52 beats, pid 27
 2. 或让内核**读 `/private/var/log/`** 并打到控制台 ✗ 工作量更大 ✓
 
 ---
+
+## 0.173 2026-11-17 21:1x：sr38 UI focus sampler 结果——SpringBoard/backboardd 在 IPC 等待，不是忙循环
+
+### 一、诊断补丁来源与范围
+
+sr38 使用了 merlinx 已验证的 `sleh.c` focus sampler 思路，但只保留最小观察功能：
+- 目标进程：SpringBoard、backboardd、lsd
+- 每 4 秒读取一个线程的 `PC/LR/x16`
+- 输出 `DANDELION-FOCUS` 到内核日志
+- 不写 framebuffer、不改 display lifecycle、不改存储
+- 现有 `DANDELION-EXEC/EXIT` 只负责记录目标 PID 生命周期
+
+没有直接搬 merlinx 的 zzyd/zzzd/zzze 整套 patch，因为它们与 dandelion 现有 patch 基线冲突，且只做诊断、不修显示生命周期。
+
+### 二、sr38 实测焦点地址
+
+最常见记录：
+
+```
+SpringBoard (157 次): pc=0x1d8bbc970 lr=0x1ea9a7f5c x16=0x220
+SpringBoard (157 次): pc=0x1d8bbcb58 lr=0x1d8bc0224 x16=0xfffffffffffffff2
+backboardd  (123 次): pc=0x1d8bbcb58 lr=0x1d8bc0224 x16=0xfffffffffffffff2
+lsd         (157 次): pc=0x1d8bbcb58 lr=0x1d8bc0224 x16=0xfffffffffffffff2
+```
+
+用本地 21H461 dyld shared cache 做 image 映射：
+
+```
+0x1d8bbc970 - slide(0xd43c000) = 0x1cb780970  in libsystem_kernel.dylib
+0x1d8bbcb58 - slide(0xd43c000) = 0x1cb780b58  in libsystem_kernel.dylib
+0x1d8bc0224 - slide(0xd43c000) = 0x1cb784224  in libsystem_kernel.dylib
+```
+
+反汇编显示这些地址处在系统调用 wrapper / syscall stub 区域；`x16` 的 `-14`/`-47` 是 syscall 编号。
+结合寄存器保存位置与 `mach_msg`/IPC 相关 wrapper，结论是：
+
+⇒ **SpringBoard/backboardd/lsd 都在等待内核 IPC/消息，不是在用户态死循环烧 CPU** ✓
+⇒ 之前的“producer 停止提交”仍然成立，但现在更精确：**producer 在等待某个服务端消息/回调** ✗
+⇒ 不能继续归咎于 PIO 读慢、Data 卷、display registration、vsync 或 AKS ✓
+
+### 三、当前因果链的边界
+
+已经证实：
+
+- GopFramebuffer lifecycle 正常：surface F1、AppleARMIODevice、NUB、REG、P1/A1/S1、DISP UP ✓
+- backboardd 是正确的 IOMFB client（SpringBoard 不应直接成为 client）✓
+- 7 个 CPU-copy frame 均 `VAL 1 R0`、`COPY 0`、`RET`，没有 reject/failure/deadlock ✓
+- SpringBoard、backboardd 长时间存活 ✓
+- sr34/sr36 Data 卷 512 MiB，ENOSPC 0 ✓
+- AKS 链入并 `AKS UP` ✓
+- sr38 focus 采样显示目标进程处于 IPC 等待 ✓
+
+仍未证实：
+
+- 等待的具体 Mach service/port 是谁；
+- 是 FrontBoard/BackBoard 内部服务、MobileGestalt、PerfPowerServices 还是某个缺失的硬件服务；
+- merlinx 的 Mali/board glue 是否提供了该服务的响应路径（只能作为配置差异，不能直接推断）。
+
+### 四、下一步建议
+
+1. **在 kext/XNU 侧采样 Mach wait 的等待对象**（需要从 `thread_t` 读取 wait_event/IPC port，放在 `sleh.c`，不能放 `bsd_init.c`）✓
+2. 或从 `mach_msg`/IPC 服务端已有入口加低频诊断，记录目标进程的 message server/return code ✓
+3. 对比 merlinx 的 board-specific Mali/Metal/addon 配置，但不能把 MaliG52/MT6768 OVL 寄存器直接搬到 MT6765/Mali-G72 ✓
+
+sr38 的镜像和日志：
+- 镜像：`boot-sr38-sbthr.img`（构建成功并刷入）
+- 日志：`console-sr38-20261117-202943.txt`
+
+---

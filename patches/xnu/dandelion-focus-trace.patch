@@ -1,0 +1,135 @@
+--- /tmp/focus.exec.pre	2026-11-17 20:12:16.937508762 +0800
++++ b/bsd/kern/kern_exec.c	2026-11-17 20:12:57.617601390 +0800
+@@ -8756,6 +8756,10 @@
+ 			printf("DANDELION-EXEC: pid %d comm=%s (policy answer %d)\n",
+ 			    proc_getpid(p), exe_name != NULL ? exe_name : "?", imgp->ip_mac_return);
+ 			if (exe_name != NULL) {
++				extern void native_diag_focus_note(int, const char *);
++				extern void native_diag_focus_start(void);
++				native_diag_focus_note(proc_getpid(p), exe_name);
++				native_diag_focus_start();
+ 				vnode_putname(exe_name);
+ 			}
+ 			imgp->ip_mac_return = 0;
+--- /tmp/focus.exit.pre	2026-11-17 20:12:16.961508997 +0800
++++ b/bsd/kern/kern_exit.c	2026-11-17 20:12:57.617721191 +0800
+@@ -1653,6 +1653,8 @@
+ 	    proc_getpid(p), p->p_comm, p->p_ppid, rv,
+ 	    WIFSIGNALED(rv) ? WTERMSIG(rv) : 0,
+ 	    WIFEXITED(rv) ? WEXITSTATUS(rv) : -1);
++	extern void native_diag_focus_exit(int, const char *);
++	native_diag_focus_exit(proc_getpid(p), p->p_comm);
+ 
+ /**/
+ /*
+--- /tmp/focus.sleh.pre	2026-11-17 20:12:17.021509586 +0800
++++ b/osfmk/arm64/sleh.c	2026-11-17 20:20:52.971828778 +0800
+@@ -43,6 +43,8 @@
+ #include <kern/socd_client.h>
+ #include <kern/task.h>
+ #include <kern/thread.h>
++#include <kern/clock.h>
++#include <kern/thread_call.h>
+ #include <kern/zalloc_internal.h>
+ #include <mach/exception.h>
+ #include <mach/arm/traps.h>
+@@ -2428,3 +2430,99 @@
+ SYSCTL_TEST_REGISTER(recoverable_kernel_trap, recoverable_kernel_trap_test);
+ 
+ #endif
++
++
++/*
++ * Minimal UI focus sampler, adapted from the merlinx owner-diag UI trace.  The dandelion display
++ * path already proves that backboardd submits and retires the first frames, then submissions stop
++ * while SpringBoard stays alive.  Its own unified log never reaches this console, so sample the
++ * current thread PC/LR/x16 from the kernel side.  This is diagnostic only: it never writes the
++ * framebuffer and never changes display or storage behavior.
++ */
++extern proc_t proc_find(int pid);
++extern task_t proc_task(proc_t p);
++extern void proc_rele(proc_t p);
++
++static thread_call_t dandelion_focus_call;
++static int dandelion_focus_pid[3];
++static char dandelion_focus_name[3][20];
++static boolean_t dandelion_focus_started;
++
++static int
++ dandelion_focus_slot(const char *name)
++{
++	if (!name) return -1;
++	if (!strncmp(name, "SpringBoard", 20)) return 0;
++	if (!strncmp(name, "backboardd", 20)) return 1;
++	if (!strncmp(name, "lsd", 20)) return 2;
++	return -1;
++}
++
++void
++native_diag_focus_note(int pid, const char *name)
++{
++	int slot = dandelion_focus_slot(name);
++	if (slot >= 0) {
++		dandelion_focus_pid[slot] = pid;
++		strlcpy(dandelion_focus_name[slot], name, sizeof(dandelion_focus_name[slot]));
++	}
++}
++
++void
++native_diag_focus_exit(int pid, const char *name)
++{
++	int slot = dandelion_focus_slot(name);
++	if (slot >= 0 && dandelion_focus_pid[slot] == pid)
++		dandelion_focus_pid[slot] = 0;
++}
++
++static void
++dandelion_focus_sample(thread_call_param_t, thread_call_param_t)
++{
++	for (unsigned i = 0; i < 3; i++) {
++		int pid = dandelion_focus_pid[i];
++		if (pid <= 0) continue;
++		proc_t p = proc_find(pid);
++		if (!p) continue;
++		task_t task = proc_task(p);
++		thread_t thread = THREAD_NULL;
++		if (task) {
++			task_lock(task);
++			queue_iterate(&task->threads, thread, thread_t, task_threads) {
++				thread_reference(thread);
++				break;
++			}
++			task_unlock(task);
++		}
++		if (thread != THREAD_NULL) {
++			arm_thread_state64_t state = {};
++			mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
++			if (machine_thread_get_state(thread, ARM_THREAD_STATE64,
++			    (thread_state_t)&state, &count) == KERN_SUCCESS) {
++				printf("DANDELION-FOCUS: pid=%d comm=%s pc=%#llx lr=%#llx x16=%#llx\\n",
++				    pid, dandelion_focus_name[i], (unsigned long long)state.pc,
++				    (unsigned long long)state.lr, (unsigned long long)state.x[16]);
++			}
++			thread_deallocate(thread);
++		}
++		proc_rele(p);
++	}
++	if (dandelion_focus_call) {
++		uint64_t deadline = 0;
++		clock_interval_to_deadline(4, (uint32_t)NSEC_PER_SEC, &deadline);
++		thread_call_enter_delayed(dandelion_focus_call, deadline);
++	}
++}
++
++void
++native_diag_focus_start(void)
++{
++	if (dandelion_focus_started) return;
++	dandelion_focus_started = TRUE;
++	dandelion_focus_call = thread_call_allocate(dandelion_focus_sample, NULL);
++	if (dandelion_focus_call) {
++		uint64_t deadline = 0;
++		clock_interval_to_deadline(1, (uint32_t)NSEC_PER_SEC, &deadline);
++		thread_call_enter_delayed(dandelion_focus_call, deadline);
++	}
++}
