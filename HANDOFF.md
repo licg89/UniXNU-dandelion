@@ -9581,3 +9581,78 @@ Mach-O 正文里** ✗ 不在 dyld 共享缓存里 ✓
 | 5 | 控制台在提频后仍能写 | `pe_serial.c` 不检查 `native_msdc_busy`、分频停在 260 ✗ |
 
 ---
+
+## 0.167 2026-11-17 12:5x：★★★ Data 卷问题解决；vsync 机制被找到并成功启动
+
+### 一、sr34（512 MiB Data 卷）：**ENOSPC 彻底消失** ✓✓
+
+| 指标 | sr33（256 MiB）| **sr34（512 MiB）** |
+| --- | --- | --- |
+| `No space left on device` | **6,111** ✗ | **0** ✓✓✓ |
+| `launchd.log` 写失败 | 28,902 ✗ | **1** ✓✓ |
+| Data 卷块数 | 65,536（256 MiB）| **131,072（512 MiB）** ✓ 种子生效 |
+| 日志总量 | 115,563 行（窗口写满 ✗）| 26,633 行（11% ✓）|
+| 系统终态 | procs=176 sb=27 bb=57 静止 | procs=197 sb=27 bb=57 静止 ✓ |
+
+⇒ **磁盘满这条线彻底解决了** ✓ 512 MiB 是安全上限（RAM 展开，启动时 3.8 GiB 空闲 ✓）
+
+### 二、崩溃的真相：**不是崩溃，是干净退出** ✓
+
+```
+DANDELION-EXIT: pid=2563 comm=bluetoothd  rv=0 sig=0 status=0    ← 正常退出 ✓
+DANDELION-EXIT: pid=2564 comm=fairplayd.A2 rv=0 sig=0 status=0   ← 正常退出 ✓
+```
+
+它们启动 → 找不到硬件 → **干净退出** ✓ → launchd 按 KeepAlive 又拉起 ✓ → 无害循环 ✓
+**不是故障** ✗ 之前把它们当"崩溃循环"是误读 ✓
+
+### 三、★★ 关键发现：我们的 vsync 机制存在但从未启用
+
+比对 merlinx（同代 MTK、同一份 21H461、**能出锁屏** ✓）的 kernel_args ✓ 发现：
+merlinx 传 `sheng-vsync=60` ✓ **我们从没传过** ✗
+
+而 `package/DandelionLegacyDisplay.cpp` 里有一整套 vsync 观测：
+- `native_legacy_vsync_notify` 绑定原始发送函数 ✓
+- `vsyncEvents[6]`（sent/arms/idle/late/start/refresh）✓
+- 看门狗线程每 2 s 打 `DISP(32) VS s.. a.. i.. l.. n..` ✓
+- `native_legacy_vsync_observed()` 在 event 4 时启动看门狗 ✓
+
+**实证（sr35，加 `sheng-vsync=60`）**：
+
+```
+DANDELION-DISP(31): DISP VSYNC 4 60        ← event 4 = 启动成功，60 Hz ✓✓（之前从无此行 ✗）
+DANDELION-DISP(32): VS s0 a0 i0 l0 n0      ← 但 sent=0：一条 vsync 都没发出 ✗
+```
+
+⇒ **参数有效、时钟启动了，但发送端不产生事件** ✗ ✓ 这是"7 帧后不再画"的机制所在 ✓
+（sr34 的最后显示阶段是 `DISP(31) DISP FRAME 7` ✓ 只画了 7 帧 ✗）
+
+### 四、sr35 的失败（未定因）
+
+```
+NativeMsdc: verify 10556 len 4096 ... got 16899be4 want 12df6896   ← 读回错数据 ✗
+Still waiting for root device                                      ← 根卷挂不上 ✗
+```
+
+两种可能 ✗ **无法区分**：
+1. `sheng-vsync=60` 的 60 Hz 中断负载干扰轮询式存储 ✗
+2. 已知的**重建不确定性** ✗（HANDOFF 0.154 记录过：同源码重建，kernel.macho 不同，
+   有时根卷挂不上 ✓ sr22/sr23/sr24/sr27/sr32 都出现过 ✗）
+
+⇒ **一次失败不足以判定 vsync 有害** ✗ 下一步应**原样重刷同一枚 sr35** ✓
+（不重建 ✓ 若这次能挂根卷 ⇒ 就是不确定性 ✓ 若能，说明 vsync 可用 ✓✓）
+
+### 五、当前状态
+
+- 手机已回滚到 **sr34**（今晚最佳：512 MiB ✓ 无 vsync ✗）12:52 启动 ✓
+- vsync 参数已从 board.toml 移除 ✓（避免默认带上 ✗）
+- 镜像：`boot-sr34-data512.img` = `1e114c14…`（最佳）、`boot-sr35-vsync.img` = `85fd3c4c…`（待复验）
+
+### 六、下一步（按价值）
+
+1. **原样重刷 sr35** ✓ 区分"vsync 有害"与"重建不确定性" ✓ 零成本 ✓
+2. 若 vsync 可用 ✓：查**为什么 sent=0** ✗ —— 发送端在原始 `NativeLegacyDisplay` 里 ✓
+   需要找到它的 vsync 源（显示中断/定时器）✗ 以及我们的 shim 是否使能了它 ✓
+3. 若 vsync 有害 ✓：先只加 vsync 不加 clockearly/其它 ✓ 单独验证 ✓
+
+---
