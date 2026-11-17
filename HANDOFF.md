@@ -10392,3 +10392,58 @@ UUID `420A12EB-24B8-445B-899F-05E77163FE4F` 已写回 defconfig ✓
 - 之前"种子不是原因"（0.171/0.176/0.178）的结论**作废**，因为用的是空种子 ✗
 
 ---
+
+## 0.181 2026-11-18 02:1x：★★ 方法纠正 —— 以 **UniXNU 主分支** 为准，不再拿 merlinx 当基准
+
+用户指出：merlinx 分支并不完善，有问题应优先参考 UniXNU 主分支。复核后确认这条批评成立 ✓
+
+### 一、merlinx 自己承认不完善
+
+`UniXNU-merlinx/porting.toml` display 区：
+
+```
+"No userland display provider or renderer is implemented. IOMFB_FDR_loader fails before GPU display handoff."
+```
+
+⇒ 拿它当"标准答案"推出的结论反复错：最小种子、disabled.plist、锁屏、Data 目录等 ✗
+
+### 二、主分支的权威机制（我们一层都没接）
+
+| 主分支 | 位置 | 我们 |
+| --- | --- | --- |
+| `--skip-setup` → `seed-data-skip-setup.py` 正规跳 Setup | `docs/guide/skip-setup.md`, `scripts/unixnu/cli.py:36`, `payload.py:118-121` | ✗ board.toml 没有 `[payload] skip_setup_tool`，也没用 `--skip-setup` |
+| `sheng-disable-jobs=com.apple.identityservicesd,...` 精确禁服务 | `docs/guide/skip-setup.md:86-92` | ✗ kernel_args 里没有；文档明确警告"Keep the services the userland needs" |
+| `zzz-boot-progress.patch` 的 `sheng_boot_watchdog_policy`（BootProgress 携带 launchd job policy）| `patches/xnu/zzz-boot-progress.patch:215-217` | ✗ 我们的 series 没有该 patch |
+| Data seed = **OS 的 private/var 全量复制** + 少量偏好 | `prepare-owner-data-fixture.py`（"from the supplied OS's initial var tree"）| ✓ 我们的 `build-data-seed.py` 就是照它做的（39 文件）✓ |
+
+⇒ **sr42 用的 CI 种子（39 文件、含 OS private/var）才是符合主分支的** ✓
+⇒ 我之前想加 `--no-copy-var`（只留 12 plist）是被 merlinx 带偏 ✗ **已撤销** ✓
+⇒ 手工往种子塞 `disabled.plist`（禁 watchdogd/bluetoothd/liveactivitiesd/PerfPowerServices）也是 merlinx 做法 ✗
+  sr42 实测：它消掉了 corpse 风暴，但 `backboardd` 也没起来、0 帧 ✗ 说明禁得过宽 ✗
+
+### 三、主分支 `seed-data-skip-setup.py` 的偏好清单（对照）
+
+```
+com.apple.purplebuddy          SetupDone, SetupFinishedAllSteps, SetupVersion 11, daemonizeNeedsToRun
+com.apple.purplebuddy.notbackedup  6 个 mini-buddy 标志 false + SilentICDPUpgrade
+com.apple.managedconfiguration.notbackedup  LockdownActivationIndicatesCloudConfigurationAvailable false
+com.apple.springboard          BKNoWatchdogs, FBLaunchWatchdogExceptions{purplebuddy:100}, MCForceShowCloudConfigurationUI false
+com.apple.migration           LastSystemVersion=21H461, DMUserDataDisposition
+(+ --no-auto-dim 三项)
+containers/{Bundle,Data/System,Shared/SystemGroup,Temp}
+```
+
+我们多出来的（来自 merlinx，非主分支）：`FBLaunchWatchdogScale 20.0`、`com.apple.frontboard.plist`、
+`backboardd.plist` 的 `CAEnable*Compression=False`、`SetupState/ForceNoBuddy` 等。
+
+### 四、下一步（按主分支）
+
+1. 接 `[payload] skip_setup_tool = "scripts/seed-data-skip-setup.py"` + `--skip-setup` ✓
+2. 接 `sheng-disable-jobs` 精确列表（不使用自制 disabled.plist）✓
+3. 评估 `zzz-boot-progress.patch` / `sheng_boot_watchdog_policy` 能否按主分支接入 ✓
+4. 保留 CI 种子（符合主分支的 OS private/var 复制）✓
+
+**原则**：以后以 `docs/`、主分支 `scripts/`、主分支 `patches/` 为准；
+merlinx 只作为"同代硬件寄存器"参考，不作为完整性基准 ✓
+
+---
