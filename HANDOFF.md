@@ -10503,3 +10503,47 @@ merlinx 只作为"同代硬件寄存器"参考，不作为完整性基准 ✓
 - **方法原则**：以主分支 `docs/` + `scripts/` + `patches/` 为准；merlinx 仅作同代硬件寄存器参考 ✓
 
 ---
+
+## 0.183 2026-11-18 02:5x：修正默认分支坑；sr43 用主分支种子
+
+### 一、两次 CI 白跑的原因
+
+- 仓库默认分支是 **`main`** ✓，我们一直 `git push origin HEAD` 推到 **`master`** ✗
+- `gh workflow run data-seed.yml` 默认跑 `main` 的旧提交 `2654e274` ✗
+  ⇒ 前两次 CI 产物仍是**旧 SEED_FILES**，不是对齐主分支的版本 ✗
+- 已修正：`git push origin master:main` 快进 `main` → `bbb22dc` ✓
+  并验证 `origin/main:scripts/build-data-seed.py` 含 `identityservicesd` ✓
+
+### 二、主分支种子（CI run `44150566205`，main 分支）
+
+```
+volume_uuid = 47000E8A-66EF-4308-AEAD-1130B31752AB
+size_mib    = 512
+files       = 39   （OS private/var 全量，主分支 prepare-owner-data-fixture.py 做法 ✓）
+seed_files  = 7
+```
+
+解包 DBRDISK1 逐项验证 ✓：
+
+| 存在 | 不存在（merlinx 杂质已清）|
+| --- | --- |
+| `identityservicesd` `com.apple.watchdogd` `com.apple.bluetoothd` `coreduetd` | `FBLaunchWatchdogScale` |
+| `SetupDone` `BKNoWatchdogs` `LastSystemVersion` | `CAEnableDeepFramebuffer` `SetupState` `ForceNoBuddy` `com.apple.frontboard` |
+
+### 三、sr43
+
+- defconfig UUID → `47000E8A-...` ✓
+- `--data-ramdisk /root/work/dandelion-data-main.dbr` ✓
+- 保留 `dandelion-data-visibility.patch`（只读探针，下轮验证 `disabled=0`）✓
+- 固件段仍与 sr26 逐字节相同 ✓
+
+判据：`disabled=0` + corpse 0 + **`backboardd` 出现** + `DISP FRAME/COPY` > 0 ✓
+
+### 四、方法原则（用户纠正后确立）
+
+- **以 UniXNU 主分支 `docs/` + `scripts/` + `patches/` 为准** ✓
+- merlinx 仅作同代硬件寄存器参考 ✗ 不作为完整性基准
+- 每次比对**产物镜像**，不比配置文件 spec（空种子教训）✓
+- 推送前确认默认分支 ✓
+
+---
