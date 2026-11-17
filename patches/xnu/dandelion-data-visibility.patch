@@ -1,0 +1,22 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8242,6 +8242,19 @@
+ #if defined(XNU_OWNER_DATA_MOUNT) && XNU_OWNER_DATA_MOUNT
+ 	int data_error = native_owner_data_prepare(p, (user_addr_t)scratch_addr);
+ 	if (data_error) panic("offline scratch Data mount failed: %d", data_error);
++	/*
++	 * Read-only probe: is the seed's launchd state actually visible at the path launchd reads?
++	 * The seed writes db/com.apple.xpc.launchd/disabled.plist relative to the Data root; if this
++	 * lookup fails, the disabled plist cannot possibly be honoured and watchdogd keeps respawning.
++	 */
++	{
++		vnode_t dvp = NULLVP;
++		int de = vnode_lookup("/private/var/db/com.apple.xpc.launchd/disabled.plist", 0, &dvp, vfs_context_current());
++		printf("DANDELION-DATA: mount=%d stage=%d dev=%d seed=%llu disabled=%d\n",
++		    (int)native_owner_data_status, (int)native_owner_data_stage,
++		    (int)native_owner_data_device, (unsigned long long)native_owner_data_seed_size, de);
++		if (!de && dvp != NULLVP) vnode_put(dvp);
++	}
+ #endif
+ #if CONFIG_MEMORYSTATUS
+ 	(void) memorystatus_init_at_boot_snapshot();

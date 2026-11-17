@@ -10270,3 +10270,64 @@ SetupState=SetupUsingAssistant, ForceNoBuddy=true,
 - 已排除清单：DMA / srcclk / 传输粒度 / clockearly / vsync / 最小种子 / PAN / AKS / 时钟 / 读损坏 / 种子配置 / 控制台自改分频
 
 ---
+
+## 0.179 2026-11-18 01:0x：排除"EPHEMERAL DATA"误读；直接探测 disabled.plist 可见性
+
+### 一、又一条差点误判的线索
+
+日志中一直有：
+
+```
+mount: data volume missing, but not required in env: 0
+****** DEVICE HAS EPHEMERAL DATA VOLUME, SKIP INIT ****
+```
+
+一度怀疑它导致 `disabled.plist` 失效。复核后排除 ✗：
+
+- 该行从 sr11 到 sr40 **每一轮都有 2 次**，包括已验证 SpringBoard 稳定存活的 sr21 ✓
+- merlinx 的设备记录把 "Data remains ephemeral" 写作**正常状态** ✓
+  且在同一条记录里 "Original launchd early boot complete and SpringBoard PID26 observed" ✓
+- 我们的 `native_owner_data_prepare()` 失败会直接 `panic("offline scratch Data mount failed")` ✓
+  系统从未 panic ⇒ **Data 卷挂载成功** ✓
+
+⇒ EPHEMERAL 不是故障 ✓ 不要据此改挂载 ✗
+
+### 二、真正未验证的点
+
+`native_owner_data_status` / `stage` / `device` / `seed_size` 都是 volatile，**从来没打印过** ✓
+`disabled.plist` 是否真的出现在 `/private/var/db/com.apple.xpc.launchd/` 也**从来没验证过** ✗
+
+merlinx 的 `porting.toml` 明确说：
+
+> "The macOS-generated Data seed mounts read-write and **disables watchdogd through the launchd disabled plist**."
+
+而我们 watchdogd 仍在反复 `sig=5` 崩溃、`Too many corpses being created` ✗
+⇒ 这是**可验证、可修**的具体差异 ✓
+
+### 三、sr41：零风险只读探测
+
+`dandelion-data-visibility.patch` 在 `native_owner_data_prepare()` 成功后立即：
+
+```
+vnode_lookup("/private/var/db/com.apple.xpc.launchd/disabled.plist")
+printf("DANDELION-DATA: mount=%d stage=%d dev=%d seed=%llu disabled=%d")
+```
+
+判据：
+
+| `disabled=` | 结论 |
+| --- | --- |
+| `0` | seed 文件可见 ✓ → launchd 没读它是别的原因（plist 格式/读取时机）|
+| `2` (ENOENT) | seed 文件**根本没出现在该路径** ✗ → 修复挂载/联合视图即可 ✓✓ |
+| 其它 | 权限/类型问题 |
+
+只做 `vnode_lookup` + `printf` ✓ 不写任何文件 ✓ 不改挂载 ✓
+
+### 四、今晚（11-18 凌晨）的进度
+
+- 已排除：时钟/读损坏（sr40）✓、EPHEMERAL 误读 ✓、种子配置与 merlinx 逐项相同 ✓
+- 已确认：跨 4 轮不变量 `frontboardd exec=0`、`runningboardd exec=1`、6–7 帧、SpringBoard 4 线程全等 ✓
+- 正在验证：disabled.plist 的可见性 ✓
+- 备份 218 文件 / 13 GiB；两个仓库均干净 ✓
+
+---
