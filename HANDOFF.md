@@ -10158,3 +10158,52 @@ next_action = ["Trace IOMFB_FDR_loader exit 1 and add the userland display and G
 ⇒ 前四项可交付 ✓ 后四项中"锁屏"属**未解研究问题** ✗ 不是配置差异 ✓
 
 ---
+
+## 0.177 2026-11-17 23:1x：控制台分频补丁**失败并已撤销**；panic 屏给出关键能力
+
+### 一、sr39 的失败
+
+sr39 = sr38 诊断基线 + `dandelion-console-divider.patch`（让控制台按自己的分频写、写完恢复驱动设置）。
+
+结果：**panic** ✗ 屏幕（panic screen 正常工作 ✓）显示：
+
+```
+initproc failed to start -- exit reason
+namespace 6 subcode 0x1 description: Library not loaded: /usr/lib/libSystem.B.dylib
+  Referenced from: <4B525992-8C69-315E-A51A-CC9433E45B51> /sbin/launchd
+  Reason: tried: '/usr/lib/libSystem.B.dylib' (no such file, no dyld cache)
+pages=0x3afa8 free=0x34bf7
+```
+
+**"no dyld cache"** ⇒ dyld 共享缓存没挂上 ✗ ⇒ launchd 起不来 ✗
+
+最可能原因 ✓：该补丁在每次控制台写时直接改 `MSDC_CFG` 的 CKDIV ✗ 而控制台与存储驱动共用 MSDC0 且**没有 busy 协调** ✗
+⇒ 与驱动传输/时钟状态冲突 ✗ ⇒ 读盘损坏 ✗ ⇒ 共享缓存读取失败 ✓
+（也不排除重建不确定性 ✗ 但补丁本身风险独立成立 ✓）
+
+**已撤销** ✓ `dandelion-console-divider.patch` 从两个检出移除 ✗ series 回到 **76 个补丁** ✓ `--check` 通过 ✓
+
+### 二、意外收获：panic 屏能显示用户态 abort 原因 ✓
+
+这张 panic screen 打出了 **os_reason 的完整描述** ✓：
+
+- `namespace 6 subcode 0x1`
+- `Library not loaded: /usr/lib/libSystem.B.dylib`
+- `Referenced from: /sbin/launchd`
+- `Reason: tried: ... (no such file, no dyld cache)`
+
+⇒ 这是**目前唯一能看到用户态失败原因**的通道 ✓（内核控制台没有 ✓）
+⇒ 后续任何 `initproc`/关键进程失败都能这样读出来 ✓
+
+### 三、结论与状态
+
+| 项 | 结果 |
+| --- | --- |
+| 控制台提频后存活 | ❌ **补丁有害**，已撤销 ✗ |
+| panic 屏诊断能力 | ✅ 有效，能读 abort 原因 ✓ |
+| 恢复可用状态 | 回刷 **sr38 all-threads**（`601f6fb9`）即可 ✓ |
+
+**教训**：控制台与存储共用控制器时，任何绕过驱动的寄存器改写都会破坏一致性 ✗
+安全方向是让驱动**通知**控制台，而不是控制台自己改分频 ✗
+
+---
