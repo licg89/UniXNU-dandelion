@@ -91,7 +91,7 @@ CONFIG_XNU_SHENG_PMGR=y
 # note claiming the latter cannot link was wrong -- the only unresolved import
 # was IOStorage::complete(), a static helper, now replaced by the plain
 # completion->action call that NativeMsdc.cpp already uses (HANDOFF 0.157).
-CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/native-msdc-bindings/libStorageBindings.a -Wl,-force_load,{tree}/build/dandelion-emmc/libDandelionEmmc.a"
+CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/native-msdc-bindings/libStorageBindings.a -Wl,-force_load,{tree}/build/dandelion-emmc/libDandelionEmmc.a -Wl,-force_load,{tree}/build/apple-key-store-state/libAppleKeyStoreState.a"
 #
 # The OS fragment sets this to y; the defconfig is applied last, so n wins.
 # Without it vfs_conf.o is compiled with -DMOCKFS=1 and references symbols the

@@ -944,9 +944,3 @@ native_gop_redraw_ring (void)
  * not name libAppleKeyStoreState.a, so the symbol stays undefined (HANDOFF 0.115).  The stub keeps
  * the link honest and returns nothing; the caller above treats that as "no key store yet".
  */
-class IOService;
-extern "C" IOService *
-native_keyevents_allocate (void)
-{
-  return nullptr;
-}

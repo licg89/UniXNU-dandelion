@@ -9890,3 +9890,81 @@ merlinx 的 MT6768 是 A75/A55（ARMv8.2 ✓）所以能开 ✓ ⇒ **正确禁�
 - 旧种子仍在 `/root/work/dandelion-data-512.dbr` ✓ 可随时回滚 ✓
 
 ---
+
+## 0.172 2026-11-17 19:3x：**AppleKeyStoreState 链入并启动**（`AKS UP`）；诊断补丁失败后撤销
+
+### 一、sr37：把那个"因为链不上而被回滚"的组件接回来了 ✓
+
+`board.toml` 原本写着：
+
+> "AppleKeyStoreState was tried here and then reverted: the component builds, its object defines
+> native_keyevents_allocate, but the framework's link **does not name libAppleKeyStoreState.a**, so the
+> symbol stays undefined and the link fails."
+
+这与本会话已修好的 eMMC host **是同一个坑** ✓ 于是用同样的三步修好 ✓：
+1. `[components] include` 加 `"AppleKeyStoreState"` ✓
+2. `[kernel] archives` 加 `build-arm-driver.py AppleKeyStoreState` ✓
+3. `CONFIG_XNU_EXTRA_LD_ARCHIVES` 加 `-Wl,-force_load,{tree}/build/apple-key-store-state/libAppleKeyStoreState.a` ✓
+4. 删掉 `DandelionLegacyDisplay.cpp` 里 `native_keyevents_allocate()` 的空桩 ✓（否则重复定义 ✗）
+
+**构建 exit=0 ✓** 实测日志：
+
+```
+DANDELION-DISP(100): AKS UP          ←✓✓ 密钥库真的起来了
+DANDELION-DISP(28): DISP CLIENT 85 IOMFB_FDR_Loader T0
+beat 45: procs=135  sb=27:2  bb=57:2
+distinct executables: 186, EXEC 545 次
+springboard seen in 29 of 52 beats, pid 27
+```
+
+⇒ **密钥库从"空桩返回 nullptr"变成"真的启动"** ✓ 这是本会话第三个真实修复 ✓
+（`sheng-aks=1` 一直传着 ✓ 但此前没有实现 ✗）
+
+**但界面仍停在 Apple logo** ✗ ⇒ 缺密钥库**不是**元凶 ✗
+
+### 二、诊断补丁：4 次构建失败，已撤销 ✗
+
+目标：在 `D4K beat` 里报告 SpringBoard 的线程数与 CPU 时间 ✓ 判断"卡住空转"还是"阻塞等待" ✓
+
+失败原因（逐条实测）✗：
+| 尝试 | 错误 |
+| --- | --- |
+| `sbproc->task` + 线程队列 | `struct proc` 无 `task` 成员 ✗；`struct task`/`thread` 定义不完整 ✗ |
+| 改用 `proc_get_task_raw()` | `task_lock` 未声明 ✗、`TH_WAIT` 未声明 ✗（bsd 层看到的是**导出头**，拿不到 osfmk 私有定义 ✗）|
+| 改用 `proc_pidinfo(PROC_PIDTASKINFO)` | 缺 `sys/proc_info.h` ✗ |
+| 补上头文件后 | `proc_pidinfo` **是 `proc_info.c` 里的 static 函数** ✗ 根本调不到 ✓ |
+
+⇒ **bsd_init.c 无法访问 osfmk 内部结构** ✗ 这条路要换位置（kext 侧或导出符号 ✗）而不是补几行 ✓
+`patches/xnu/dandelion-sbthreads.patch` 已删除 ✓ series 回到 **75 个补丁** ✓ `--check` 通过 ✓
+
+### 三、今天累计排除的（都有数据，别再走）
+
+| 方向 | 结论 |
+| --- | --- |
+| DMA / 源时钟扫描 | 根卷挂不上 ✗ |
+| 传输粒度 256 KiB | 读次数少 4 倍但耗时不变 ✗ |
+| `clockearly` | 读回错数据 ✗ |
+| `sheng-vsync=60` | 2/2 随机读损坏 ✗ 与轮询存储不兼容 |
+| 最小种子（merlinx 式）| 挂上了 ✓ ENOSPC 0 ✓ 但界面仍不出 ✗ |
+| `CONFIG_XNU_NATIVE_PAN` | 需 ARMv8.1 ✗ 我们是 A53/ARMv8.0 ✓ |
+| 缺密钥库 | `AKS UP` ✓ 但界面仍不出 ✗ |
+
+### 四、今天真正解决的四件事 ✓
+
+| # | 成果 | 证据 |
+| --- | --- | --- |
+| 1 | **Data 卷 ENOSPC 6111 → 0** | sr34/sr36 实测 ✓ |
+| 2 | **link-stub**：eMMC host 链入内核 | 符号验证 ✓ |
+| 3 | **AppleKeyStoreState 链入并启动** | `AKS UP` ✓ |
+| 4 | 本机可建/校验 APFS 种子（mkapfs + apfsck）| 最小种子构建 ✓ |
+
+### 五、唯一剩下的问题与它需要的工具
+
+**SpringBoard 活着、backboardd 活着、显示栈就绪、密钥库就绪，但界面不出** ✗
+
+要往下走，必须先看到**用户态内部状态** ✗ 而内核控制台没有任何 SpringBoard 输出 ✓（三次实测 1 万–11.5 万行，一条都没有 ✓）
+可行的下一步**不是补几行 printf** ✗：
+1. 把诊断放进 **kext**（能看 osfmk 私有结构 ✓）并在其中调用可导出的 BSD 接口 ✗ 需先确认哪些符号在 prelinked 里可解析 ✗
+2. 或让内核**读 `/private/var/log/`** 并打到控制台 ✗ 工作量更大 ✓
+
+---
