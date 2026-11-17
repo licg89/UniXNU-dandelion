@@ -1,5 +1,5 @@
 --- /tmp/focus.exec.pre	2026-11-17 20:12:16.937508762 +0800
-+++ b/bsd/kern/kern_exec.c	2026-11-17 20:21:10.055801816 +0800
++++ b/bsd/kern/kern_exec.c	2026-11-17 21:17:33.355361040 +0800
 @@ -8756,6 +8756,10 @@
  			printf("DANDELION-EXEC: pid %d comm=%s (policy answer %d)\n",
  			    proc_getpid(p), exe_name != NULL ? exe_name : "?", imgp->ip_mac_return);
@@ -12,7 +12,7 @@
  			}
  			imgp->ip_mac_return = 0;
 --- /tmp/focus.exit.pre	2026-11-17 20:12:16.961508997 +0800
-+++ b/bsd/kern/kern_exit.c	2026-11-17 20:21:10.055913117 +0800
++++ b/bsd/kern/kern_exit.c	2026-11-17 21:17:33.355480641 +0800
 @@ -1653,6 +1653,8 @@
  	    proc_getpid(p), p->p_comm, p->p_ppid, rv,
  	    WIFSIGNALED(rv) ? WTERMSIG(rv) : 0,
@@ -23,7 +23,7 @@
  /**/
  /*
 --- /tmp/focus.sleh.pre	2026-11-17 20:12:17.021509586 +0800
-+++ b/osfmk/arm64/sleh.c	2026-11-17 21:16:49.633538303 +0800
++++ b/osfmk/arm64/sleh.c	2026-11-17 21:59:16.028466542 +0800
 @@ -43,6 +43,8 @@
  #include <kern/socd_client.h>
  #include <kern/task.h>
@@ -33,7 +33,7 @@
  #include <kern/zalloc_internal.h>
  #include <mach/exception.h>
  #include <mach/arm/traps.h>
-@@ -2428,3 +2430,101 @@
+@@ -2428,3 +2430,128 @@
  SYSCTL_TEST_REGISTER(recoverable_kernel_trap, recoverable_kernel_trap_test);
  
  #endif
@@ -92,28 +92,55 @@
 +		proc_t p = proc_find(pid);
 +		if (!p) continue;
 +		task_t task = proc_task(p);
-+		thread_t thread = THREAD_NULL;
++		thread_t wait_thread = THREAD_NULL, run_thread = THREAD_NULL;
++		int total = 0, waiting = 0, runnable = 0, other = 0;
++		uint64_t wait_event = 0;
 +		if (task) {
 +			task_lock(task);
-+			queue_iterate(&task->threads, thread, thread_t, task_threads) {
-+				thread_reference(thread);
-+				break;
++			thread_t th;
++			queue_iterate(&task->threads, th, thread_t, task_threads) {
++				int state = th->state;
++				total++;
++				if (state & TH_WAIT) {
++					waiting++;
++					if (wait_thread == THREAD_NULL) {
++						thread_reference(th);
++						wait_thread = th;
++						wait_event = (uint64_t)th->wait_event;
++					}
++				} else if (state & TH_RUN) {
++					runnable++;
++					if (run_thread == THREAD_NULL) {
++						thread_reference(th);
++						run_thread = th;
++					}
++				} else {
++					other++;
++				}
 +			}
 +			task_unlock(task);
 +		}
-+		if (thread != THREAD_NULL) {
++		uint64_t wait_pc = 0, run_pc = 0;
++		if (wait_thread != THREAD_NULL) {
 +			arm_thread_state64_t state = {};
 +			mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
-+			if (machine_thread_get_state(thread, ARM_THREAD_STATE64,
-+			    (thread_state_t)&state, &count) == KERN_SUCCESS) {
-+				printf("DANDELION-FOCUS: pid=%d comm=%s state=%x wait=%#llx pc=%#llx lr=%#llx x16=%#llx\n",
-+				    pid, dandelion_focus_name[i], thread->state,
-+				    (unsigned long long)thread->wait_event,
-+				    (unsigned long long)state.pc, (unsigned long long)state.lr,
-+				    (unsigned long long)state.x[16]);
-+			}
-+			thread_deallocate(thread);
++			if (machine_thread_get_state(wait_thread, ARM_THREAD_STATE64,
++			    (thread_state_t)&state, &count) == KERN_SUCCESS)
++				wait_pc = state.pc;
++			thread_deallocate(wait_thread);
 +		}
++		if (run_thread != THREAD_NULL) {
++			arm_thread_state64_t state = {};
++			mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
++			if (machine_thread_get_state(run_thread, ARM_THREAD_STATE64,
++			    (thread_state_t)&state, &count) == KERN_SUCCESS)
++				run_pc = state.pc;
++			thread_deallocate(run_thread);
++		}
++		printf("DANDELION-FOCUS: pid=%d comm=%s total=%d wait=%d run=%d other=%d event=%#llx waitpc=%#llx runpc=%#llx\n",
++		    pid, dandelion_focus_name[i], total, waiting, runnable, other,
++		    (unsigned long long)wait_event, (unsigned long long)wait_pc,
++		    (unsigned long long)run_pc);
 +		proc_rele(p);
 +	}
 +	if (dandelion_focus_call) {

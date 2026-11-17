@@ -10073,3 +10073,35 @@ TH_RUN  = 0x04
 sr38 wait-state 镜像保持为诊断资产；日常回滚使用 `boot-sr37-aks.img` 或 `boot-sr34-data512.img`。
 
 ---
+
+## 0.175 2026-11-17 22:4x：全线程摘要——不是全进程死锁，backboardd 有 Accessibility 等待线程
+
+### sr38 all-thread 结果
+
+```
+SpringBoard: total=4  wait=3  run=1  other=0
+backboardd:  total=16 wait=15 run=1 other=0
+lsd:        total=2  wait=2  run=0 other=0
+```
+
+代表性地址（shared-region slide `0x138c0000`）：
+
+```
+SpringBoard waitpc = 0x1cb780970  -> libsystem_kernel syscall wrapper
+SpringBoard runpc  = 0x1cb7808e8  -> libsystem_kernel syscall wrapper
+lsd waitpc         = 0x1cb780b58  -> mach_msg2_trap
+backboardd runpc  = 0x1cb7808e8  -> libsystem_kernel syscall wrapper
+backboardd waitpc = 0x193e6a060  -> /usr/lib/libAccessibility.dylib + 0x1a060
+```
+
+### 结论
+
+- 不是 SpringBoard 整个进程死锁：它还有 1 个 runnable 线程 ✓
+- 不是 backboardd 整个进程死锁：16 个线程中有 1 个 runnable ✓
+- lsd 两个线程都在 Mach IPC wait ✓
+- backboardd 的代表性等待线程落在 **libAccessibility.dylib**，不是 GopFramebuffer 或 eMMC ✓
+- SpringBoard/backboardd 的其他代表线程仍在 libsystem_kernel IPC wrapper ✓
+
+这把问题进一步收窄到用户态服务依赖/Accessibility/PerfPowerServices 等 IPC 链，不支持继续修改显示 client、vsync 或存储。sr38 的诊断只读观察，不改变行为；后续应从 `PerfPowerServices`、`IOMFB_FDR_Loader`、Accessibility 相关服务的启动/退出状态继续比对。
+
+---
