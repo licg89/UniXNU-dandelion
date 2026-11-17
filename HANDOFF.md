@@ -9768,3 +9768,59 @@ board.toml 已把 `sheng-vsync` 移出默认参数 ✓（实验时用 `--kernel-
   （若为 Data role ✗ iOS APFS 会 panic ✗，我们没 panic ✓ 说明可能是 none ✓ 但仍建议核实 ✓）
 
 ---
+
+## 0.170 2026-11-17 13:5x：**定论 —— `sheng-vsync` 与轮询存储确定不兼容** ✗（2/2）
+
+### 一、同一枚镜像连续两次失败，排除"重建不确定性"
+
+`boot-sr35-vsync.img`（`85fd3c4c`）**没有重建**，原样重刷两次：
+
+| 次数 | 结果 | 读校验 |
+| --- | --- | --- |
+| 第 1 次（12:33）| `Failed to mount root device` ✗ | `got 16899be4 want 12df6896` ✗ |
+| 第 2 次（13:11）| `Failed to mount root device` ✗ | `got **d6ad93fe** want 12df6896` ✗ |
+
+⇒ 同一二进制、两次都失败、**错误值不同** ✓ = **随机读损坏** ✗✓
+⇒ 不是重建不确定性 ✗（0.154 记录的那种情况是"编译产物不同" ✓ 这里产物相同 ✓）
+
+### 二、机制
+
+```
+DANDELION-DISP(31): DISP VSYNC 4 60        ← 60 Hz 刷新定时器真的启动了 ✓
+NativeMsdc: verify 10556 ... got <随机> want 12df6896   ← 紧随其后就是读损坏 ✗
+Still waiting for root device              ← 根卷因此挂不上 ✗
+```
+
+`GopFramebuffer/NativeLegacyDisplay.cpp` 的注释写明：GOP 扫描没有 vblank 中断，所以用
+**工作循环上的 IOTimerEventSource 以 `sheng-vsync` 的频率代替** ✓ 60 Hz 定时器在我们的
+**PIO 轮询**存储读期间持续触发 ✗ 扰乱了 FIFO 排空时序 ✗ → 读回错误数据 ✓
+
+### 三、结论与前提
+
+- **`sheng-vsync` 目前不能用** ✗ 已从默认参数移除 ✓（0.167）
+- 要用它，前提是把存储从 **PIO 轮询**换成**中断驱动/DMA** ✗ —— 那是大工程 ✓
+- 而且 **vsync 本来也不是卡 logo 的原因** ✓（0.168：`armed=0`，没有任何客户端注册过 ✗）
+
+⇒ 两条线都关闭 ✓：vsync 既不能用、也不解决问题 ✓
+
+### 四、当前最佳配置
+
+`boot-sr34-data512.img`（`1e114c14`）13:59:42 恢复运行 ✓
+
+| 项 | 状态 |
+| --- | --- |
+| Data 卷 512 MiB | ✓ ENOSPC 0 次 ✓ |
+| 根卷挂载 | ✓ 正常 |
+| 进程 / SpringBoard / backboardd | 197 / pid 27 存活 ✓ / pid 57 存活 ✓ |
+| 界面 | ✗ 仍停 Apple logo（backboardd 提交 7 帧后停止 ✗）|
+| vsync | ✗ 移除（会破坏存储 ✓）|
+
+### 五、剩余唯一问题与下一步
+
+**"SpringBoard 为什么不出第一帧"** ✗ 内核控制台看不到它的日志 ✗（11.5 万行里一条没有 ✓）
+
+下次的两条路：
+1. 比对 merlinx 的 userland 配置（seed 内容/role/plist ✓ 零风险 ✓ 之前这招屡次奏效 ✓）
+2. 加一个诊断补丁打印 SpringBoard 的线程状态（能看出是否阻塞 ✗ 但说不出原因 ✓）
+
+---
