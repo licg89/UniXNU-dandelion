@@ -77,40 +77,45 @@ SKIP_DIRS = ('staged_system_apps',)
 # Assistant keeps purplebuddy in front of SpringBoard, and backboardd asks for framebuffer
 # features this board does not implement. Entries are (path, uid, gid, mode, plist content).
 SEED_FILES = (
+    #
+    # UniXNU main (docs/guide/skip-setup.md, scripts/seed-data-skip-setup.py) is the authority.
+    # The Data seed carries the OS private/var tree plus exactly these preference files; the job
+    # policy itself belongs to BootProgress (sheng-disable-watchdogd / sheng-disable-jobs), which
+    # writes /private/var/db/com.apple.xpc.launchd/disabled.plist at boot.  We still provide that
+    # plist in the seed because this board does not link BootProgress yet, but only with the jobs the
+    # main-branch guide says block the first boot -- no display/render services.
+    #
     ('db/com.apple.xpc.launchd/disabled.plist', 0, 0, 0o644, {
+        'com.apple.identityservicesd': True,
+        'com.apple.locationd': True,
+        'com.apple.CommCenter': True,
+        'com.apple.iconservices.iconservicesagent': True,
         'com.apple.watchdogd': True,
         'com.apple.bluetoothd': True,
-        'com.apple.cryptexd': True,
-        'com.apple.PerfPowerServices': True,
-        'com.apple.liveactivitiesd': True,
-        'com.apple.ScreenTimeAgent': True,
-        'com.apple.dmd': True,
-        'com.apple.UsageTrackingAgent': True,
+        'com.apple.coreduetd': True,
     }),
     ('db/com.apple.xpc.launchd/disabled.501.plist', 0, 0, 0o644, {
         'com.apple.ScreenTimeAgent': True,
         'com.apple.dmd': True,
         'com.apple.UsageTrackingAgent': True,
-        'com.apple.cryptexd': True,
+    }),
+    ('mobile/Library/Preferences/com.apple.migration.plist', 501, 501, 0o600, {
+        'LastSystemVersion': '21H461',
+        'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': '21H461'},
     }),
     ('mobile/Library/Preferences/com.apple.springboard.plist', 501, 501, 0o600, {
-        'FBLaunchWatchdogScale': 20.0,
         'BKNoWatchdogs': True,
         'FBLaunchWatchdogExceptions': {'com.apple.purplebuddy': 100.0},
         'MCForceShowCloudConfigurationUI': False,
+        # main's --no-auto-dim: a board without input would turn the display off after ~30 s.
         'SBDisableAutoDim': True,
         'SBDontDimOrLockOnAC': True,
         'SBDisableIdleSleep': True,
-    }),
-    ('mobile/Library/Preferences/com.apple.frontboard.plist', 501, 501, 0o600, {
-        'FBLaunchWatchdogScale': 20.0,
     }),
     ('mobile/Library/Preferences/com.apple.purplebuddy.plist', 501, 501, 0o600, {
         'SetupDone': True,
         'SetupFinishedAllSteps': True,
         'SetupVersion': 11,
-        'SetupState': 'SetupUsingAssistant',
-        'ForceNoBuddy': True,
         'daemonizeNeedsToRun': False,
     }),
     ('mobile/Library/Preferences/com.apple.purplebuddy.notbackedup.plist', 501, 501, 0o600, {
@@ -123,36 +128,10 @@ SEED_FILES = (
         'SilentICDPUpgrade': False,
     }),
     ('mobile/Library/Preferences/com.apple.managedconfiguration.notbackedup.plist',
-     501, 501, 0o600, {
-         'LockdownActivationIndicatesCloudConfigurationAvailable': False,
-     }),
-    ('mobile/Library/Preferences/com.apple.migration.plist', 501, 501, 0o600, {
-        'LastSystemVersion': '21H461',
-        'DMLastMigrationResults': {'success': True, 'buildVersion': '21H461'},
-        'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': '21H461'},
-    }),
-    ('mobile/Library/Preferences/backboardd.plist', 501, 501, 0o644, {
-        'CAEnableDeepFramebuffer': False,
-        'CAEnableFramebufferCompression': False,
-        'CAEnableIOSurfaceCompression': False,
-    }),
-    ('mobile/Library/Preferences/.GlobalPreferences.plist', 501, 501, 0o644, {
-        'CAEnableDeepFramebuffer': False,
-        'CAEnableFramebufferCompression': False,
-        'CAEnableIOSurfaceCompression': False,
-    }),
-    ('root/Library/Preferences/backboardd.plist', 0, 0, 0o644, {
-        'CAEnableDeepFramebuffer': False,
-        'CAEnableFramebufferCompression': False,
-        'CAEnableIOSurfaceCompression': False,
-    }),
-    ('root/Library/Preferences/.GlobalPreferences.plist', 0, 0, 0o644, {
-        'CAEnableDeepFramebuffer': False,
-        'CAEnableFramebufferCompression': False,
-        'CAEnableIOSurfaceCompression': False,
+        501, 501, 0o600, {
+        'LockdownActivationIndicatesCloudConfigurationAvailable': False,
     }),
 )
-
 
 def write_seed_files(root: Path) -> int:
     """Write SEED_FILES under root; returns how many were written."""
