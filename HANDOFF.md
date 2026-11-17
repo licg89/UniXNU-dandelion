@@ -9656,3 +9656,69 @@ Still waiting for root device                                      ← 根卷挂
 3. 若 vsync 有害 ✓：先只加 vsync 不加 clockearly/其它 ✓ 单独验证 ✓
 
 ---
+
+## 0.168 2026-11-17 13:2x：vsync 被**排除**（否定结果，重要）
+
+### 一、`GopFramebuffer` 组件的源码注释把机制写得很清楚
+
+`drivers/GopFramebuffer/NativeLegacyDisplay.cpp:89–93`：
+
+> Display refresh tick (boot-arg `sheng-vsync=<Hz>`, 0 or absent: off). The original family sends the
+> compositor's vsync message (type 5) through `native_legacy_vsync_notify`, the unchanged original
+> sender, but only a platform subclass calls it from the panel's vblank and **that subclass is not
+> part of this port: without it the render server never saw a vsync**. The GOP scanout has no vblank
+> interrupt, so **a work-loop timer stands in for it while at least one client has vsync
+> notifications enabled**. Events: **0 armed, 1 sent, 2 idle (no client), 3 late, 4 started**,
+> 5 refresh properties reported at that rate.
+
+### 二、对照 sr35 的实测日志（加 `sheng-vsync=60`）
+
+```
+DANDELION-DISP(31): DISP VSYNC 4 60        ← event 4 = started ✓ 与注释完全对应
+DANDELION-DISP(32): VS s0 a0 i0 l0 n0      ← s=sent=0 ✗  a=armed=0 ✗  i=idle=0 ✗
+```
+
+`s0 a0 i0` 三者全 0 ⇒ **没有任何客户端注册过 vsync** ✗ ⇒ 定时器根本没有被 arm ✓
+⇒ **vsync 不是"卡在 logo"的原因** ✗✓ **这条线排除** ✓
+
+（sr35 的根卷失败也与 vsync 无关的另一种解释仍然成立：重建不确定性 ✓ 见 0.167）
+
+### 三、真凶收窄到：**backboardd 提交 7 帧后自己停了**
+
+日志里每个 swap 都有返回：
+
+```
+DANDELION-DISP(30): DISP COPY 0 4608000
+DANDELION-DISP(30): DISP RET 6/6 F6 S57:backbo C5/73:PerfPo
+DANDELION-DISP(31): DISP FRAME 7 K0        ← 第 7 帧之后再无任何 swap ✗
+```
+
+- 提交方是 pid 57（backboardd ✓），客户端 pid 73（PerfPowerServices ✓）
+- 7 帧后**再无提交** ✗ ⇒ 不是显示驱动拒绝 ✗ 而是**没人再来提交** ✗
+- SpringBoard（pid 27）活着 ✓、backboardd（pid 57）活着 ✓、197 个进程 ✓、系统静止 ✓
+
+⇒ 下一步要回答的是**"SpringBoard 为什么不出第一帧"** ✗ 而它的日志**不在内核控制台** ✗
+（实测 11.5 万行 sr33 日志里，SpringBoard/FrontBoard/backboardd/CoreAnimation 关键词**一条都没有** ✗）
+
+### 四、可见性手段还剩什么（供下次决策）
+
+| 手段 | 说明 | 成本 |
+| --- | --- | --- |
+| 内核补丁周期性读 `/private/var/log/` 并打到控制台 | 需要 vnode 层代码 ✗ 风险中 | 中 |
+| 让 SpringBoard 的 launchd job 把 stdout 指到控制台 | job plist 在只读的 OS 卷里 ✗ 需 addon/overlay | 高 |
+| 在 `D4K beat` 里打印 SpringBoard 的线程数与等待状态 | 只能看出"是否阻塞" ✗ 说不出原因 | 低 ✓ |
+| 对比 merlinx 的 userland 侧配置 | 他们能出锁屏 ✓ 差异可能在 seed/plist/参数 | 低 ✓ |
+
+**建议先做最后一个** ✓（纯比对 ✓ 零风险 ✓ 之前用这招找到过 vsync 与 512 MiB 两件事 ✓）
+
+### 五、当前镜像与状态
+
+| 镜像 | sha | 状态 |
+| --- | --- | --- |
+| `boot-sr34-data512.img` | `1e114c14` | ✅ **最佳**：ENOSPC 0 ✓ 197 进程 ✓ 挂根卷正常 ✓ |
+| `boot-sr35-vsync.img` | `85fd3c4c` | ⚠️ 复验中（13:11:33 重刷同一枚）✓ |
+| `boot-sr33-stable.img` | `db4ac67c` | ✅ 稳定基线（256 MiB）|
+
+board.toml 已把 `sheng-vsync` 移出默认参数 ✓（实验时用 `--kernel-arg` ✓）
+
+---
