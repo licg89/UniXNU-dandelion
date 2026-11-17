@@ -10207,3 +10207,66 @@ pages=0x3afa8 free=0x34bf7
 安全方向是让驱动**通知**控制台，而不是控制台自己改分频 ✗
 
 ---
+
+## 0.178 2026-11-18 00:3x：sr40 排除最后一个硬件类假设；停帧是**用户态服务图**的不变量
+
+### 一、sr40 = `native-msdc-clk=4`（保持继承时钟，不提频）
+
+假设：提频导致读损坏 → 控制台死、`verify mismatch`、共享缓存映射失败 → 界面不出。
+
+实测（对比 sr38 all-threads）：
+
+| 指标 | sr38（提频）| **sr40（不提频）** |
+| --- | --- | --- |
+| 日志行数 | 7061 | **8489** |
+| `NativeMsdc: verify` 读错 | 3 | **7**（没有变少 ✗）|
+| `vm_shared_region_start_address() failed` | 2 | **2**（一样 ✗）|
+| `DISP FRAME` | 6 | **6** |
+| `frontboardd` exec | 0 | **0** |
+| `runningboardd` exec | 1 | **1** |
+| 界面 | logo | **logo** |
+
+⇒ **读损坏/时钟不是元凶** ✗ 最后一个硬件类假设排除 ✓
+⇒ 日志量差异只是运行时长不同，不是"提频杀死控制台"的证据 ✗（更正 0.163/0.177 的推断 ✓）
+
+### 二、跨镜像不变量（sr26 / sr34 / sr38 / sr40 全部一致）
+
+```
+frontboardd exec      = 0          ← 从未启动 ✗
+runningboardd exec    = 1（随后退出）
+DISP FRAME            = 6..7（全成功）
+SpringBoard 线程数    = 4
+SpringBoard 最终状态  = waitpc=mach_msg2_trap，全线程等待
+```
+
+⇒ 这不是随机失败 ✓ 是**每次启动都复现的用户态服务图缺口** ✓
+
+### 三、种子配置也已排除 ✓
+
+逐项比对 merlinx `data-seed.json` 与我们的 `build-data-seed.py`：
+
+```
+SetupDone=true, SetupFinishedAllSteps=true, SetupVersion=11,
+SetupState=SetupUsingAssistant, ForceNoBuddy=true,
+6 个 ShouldRun*MiniBuddy=false, FBLaunchWatchdogExceptions.purplebuddy=100.0
+```
+
+**完全一致** ✓ ⇒ Setup Assistant / disabled.plist 不是原因 ✗
+
+### 四、诚实回答"什么时候能看到系统"
+
+要到锁屏，缺的是 **FrontBoard/RunningBoard 服务图 + render server 持续出帧** ✗
+而 merlinx 官方 `porting.toml` 明写 "No userland display provider or renderer is implemented" ✗
+⇒ **上游未解** ✓ 没有现成实现可抄 ✓ 不是参数/配置/时钟/磁盘问题 ✓
+
+需要的是真正的 userland 显示服务实现（FrontBoard 场景、CADisplay 主显示、
+持续提交帧），属于新的组件开发，不是移植参数调整。在此之前**无法给出完成日期** ✗
+但可以肯定：每一轮都在排除具体假设，今晚已把可配置项全部排除干净 ✓
+
+### 五、可结转的资产
+
+- 稳定可启动到 logo 的镜像：`boot-sr38-sbthr.img` / `boot-sr37-aks.img`
+- 完整诊断：`DANDELION-FOCUS` 全线程采样、panic 屏 abort 原因、512 MiB Data seed、AKS、link-stub
+- 已排除清单：DMA / srcclk / 传输粒度 / clockearly / vsync / 最小种子 / PAN / AKS / 时钟 / 读损坏 / 种子配置 / 控制台自改分频
+
+---
