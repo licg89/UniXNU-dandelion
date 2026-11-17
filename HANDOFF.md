@@ -10331,3 +10331,64 @@ printf("DANDELION-DATA: mount=%d stage=%d dev=%d seed=%llu disabled=%d")
 - 备份 218 文件 / 13 GiB；两个仓库均干净 ✓
 
 ---
+
+## 0.180 2026-11-18 01:4x：★★★ **真正根因找到**：本机 mkapfs 最小种子是空的
+
+### 一、sr41 探针给出确定结果
+
+```
+DANDELION-DATA: mount=0 stage=4 dev=16777219 seed=536870912 disabled=2
+```
+
+- `mount=0 stage=4` → Data 卷挂载**成功** ✓
+- `seed=536870912` → 512 MiB 卷在 ✓
+- **`disabled=2`（ENOENT）** → `/private/var/db/com.apple.xpc.launchd/disabled.plist` **不存在** ✗✓
+
+### 二、解包两个种子对比（决定性）
+
+| 种子 | `disabled.plist` | `watchdogd` | `SetupDone` | `NXSB` |
+| --- | --- | --- | --- | --- |
+| CI/macOS `dandelion-data-512.dbr` | ✅ 有 | ✅ 有 | ✅ 有 | ✅ |
+| 本机 `make-data-seed-linux.py` 产 `dandelion-data-minimal.dbr` | ❌ **没有** | ❌ 没有 | ❌ 没有 | ✅ |
+
+⇒ **本机 mkapfs 构建器只创建了 84 个目录，没有写入 `data-seed.json` 里的 12 个 plist 文件** ✗✓
+（`files` 字段被它忽略；我们误当完整种子用了 ✗）
+
+### 三、后果链（终于闭合）
+
+```
+空种子 → disabled.plist 不存在
+       → watchdogd / bluetoothd / liveactivitiesd / PerfPowerServices 不被禁用
+       → 反复 sig=5/sig=6 退出并重启
+       → "Too many corpses being created"（21 次）
+       → launchd 停止 spawn 新进程
+       → frontboardd 从未启动、runningboardd 起一次
+       → SpringBoard 4 个线程全在 mach_msg2_trap 等 IPC
+       → backboardd 只画 7 帧后不再提交
+       → 停在 Apple logo
+```
+
+⇒ **从 sr36 起所有"最小种子"实验都是基于空种子** ✗ 这是一整条误判线 ✓
+⇒ merlinx 记录说的 "Data seed disables watchdogd through the launchd disabled plist" 是对的 ✓
+  我们之前以为种子逐项相同，其实**只比了 spec，没比产物** ✗✓
+
+### 四、修复（sr42）
+
+换回**已验证含文件**的 CI/macOS 512 MiB 种子 `dandelion-data-512.dbr` ✓
+UUID `420A12EB-24B8-445B-899F-05E77163FE4F` 已写回 defconfig ✓
+保留 sr41 的只读探针，下轮日志应显示 **`disabled=0`** ✓
+
+预期：
+1. `DANDELION-DATA: ... disabled=0` ✓
+2. watchdogd 不再反复崩 / `Too many corpses` 消失 ✓
+3. 服务图能继续起（`frontboardd` 可能出现）✓
+4. 界面有可能越过 logo ✓✓
+
+### 五、教训
+
+- **比对配置 spec ≠ 比对产物镜像** ✗ 必须解包验证 ✓
+- 本机 `make-data-seed-linux.py` 目前只建目录，不能当完整种子生成器用 ✗
+  （若要在本机建完整种子，需给它补写 plist 的能力；但 CI 种子已可用，不必造轮子 ✓）
+- 之前"种子不是原因"（0.171/0.176/0.178）的结论**作废**，因为用的是空种子 ✗
+
+---
