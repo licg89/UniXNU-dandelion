@@ -9722,3 +9722,49 @@ DANDELION-DISP(31): DISP FRAME 7 K0        ← 第 7 帧之后再无任何 swap 
 board.toml 已把 `sheng-vsync` 移出默认参数 ✓（实验时用 `--kernel-arg` ✓）
 
 ---
+
+## 0.169 2026-11-17 13:2x：**本机就能建 APFS 种子了**（不再依赖 macOS / CI）
+
+### 一、发现
+
+比对 merlinx 仓库（同代 MTK、能出锁屏 ✓）时找到 `data-seed.json` 与
+`scripts/make-data-seed-linux.py` ✓ 后者是 **纯 Linux** 的种子构建器 ✓：
+
+> "No root, no kernel module, no FUSE. mkapfs (apfsprogs) formats a raw image of size_mib MiB as one
+> APFS container at offset 0 (no partition map) holding one case-sensitive, unencrypted volume with no
+> role (APFS_VOL_ROLE_NONE …). mkapfs cannot create directories, so this script then edits the fresh
+> container in place: the catalog is rebuilt … every rewritten object gets its Fletcher-64 checksum
+> recomputed … checked with apfsck, then read back by an independent walker … packed with
+> `packed_ramdisk.pack` and unpacked again for a byte-for-byte comparison."
+
+### 二、本机工具已具备 ✓
+
+```
+/usr/sbin/mkapfs      ✓
+/usr/sbin/apfsck      ✓
+```
+
+⇒ **以后建/改 Data 种子不需要 macOS ✗ 不需要 GitHub Actions ✗** ✓✓
+（此前 `scripts/build-data-seed.py` 声明 "Every step needs macOS: hdiutil" ✗ 所以一直靠 CI ✓）
+
+### 三、merlinx 的种子与我们的关键差异
+
+| | merlinx | 我们 |
+| --- | --- | --- |
+| 大小 | **16384 MiB（16 GiB）** ✗ | 512 MiB ✓ |
+| 内容 | **只有空目录 + 偏好文件** ✓（"contain no keys, user records, or Apple files"）| OS 的 `private/var` 副本 + SEED_FILES ✓ |
+| 卷名/角色 | `Data`，**role = none** ✓（注释：iOS APFS panics on an unencrypted volume with the Data role）| 需核对 ✓ |
+| 构建 | Linux（mkapfs）✓ | macOS hdiutil ✗ / CI ✓ |
+
+**16 GiB 能跑** ⇒ merlinx 的种子**不整体展开进内存** ✗（否则 4 GB 手机放不下 ✗）
+而我们 4 GiB 种子实测失败 ✓（sr32）⇒ 我们的路径是**整体展开** ✗ ⇒ 512 MiB 是我们的实际上限 ✓
+
+⇒ 值得查清 merlinx 的 16 GiB 是怎么消费的 ✓（可能通过持久存储 ✗ 不展开 ✓）—— 但**优先级不高** ✓
+因为 ENOSPC 已由 512 MiB 解决（0 次 ✓）
+
+### 四、顺带确认
+
+- `data-seed.json` 里 `role` 必须是 `none` ✓ —— 值得核对我们种子的 role 字段 ✓
+  （若为 Data role ✗ iOS APFS 会 panic ✗，我们没 panic ✓ 说明可能是 none ✓ 但仍建议核实 ✓）
+
+---
