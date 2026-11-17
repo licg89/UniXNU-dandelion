@@ -10447,3 +10447,59 @@ containers/{Bundle,Data/System,Shared/SystemGroup,Temp}
 merlinx 只作为"同代硬件寄存器"参考，不作为完整性基准 ✓
 
 ---
+
+## 0.182 2026-11-18 02:2x：按 UniXNU 主分支重建 Data seed（sr43 待验）
+
+### 一、方法纠正后的权威依据
+
+| 事实 | 主分支位置 |
+| --- | --- |
+| Data seed = **OS 的 `private/var` 全量复制** | `scripts/prepare-owner-data-fixture.py` |
+| 跳 Setup 的 5 个偏好 | `scripts/seed-data-skip-setup.py` / `docs/guide/skip-setup.md` |
+| 禁服务用 boot-arg `sheng-disable-jobs` + `sheng-disable-watchdogd` | `docs/xnu/boot-arguments.md:76-77` |
+| 精确列表：identityservicesd, locationd, CommCenter, iconservicesagent | `docs/guide/skip-setup.md:89` |
+| sheng-lite 另加 bluetoothd + coreduetd（XPC wait cycle）| `docs/.vitepress/device-records/asteroids.toml` T40d |
+| `--skip-setup` 需要 macOS `hdiutil`，由 payload.py 调 `skip_setup_tool` | `scripts/unixnu/payload.py:74-121` |
+
+### 二、sr41/sr42 实测（决定性）
+
+| | sr41（本机 mkapfs 空种子）| **sr42（CI 种子，主分支式复制）** |
+| --- | --- | --- |
+| `DANDELION-DATA disabled=` | **2**（ENOENT）| **0** ✓ |
+| Data mount | 成功 | 成功 |
+| corpse 风暴 | 有 | **0** ✓ |
+| watchdogd exec | 6 | **1** ✓ |
+| bluetoothd/liveactivitiesd/PerfPowerServices | 反复起 | **0** ✓ |
+| backboardd / DISP 帧 | 1 / 6–7 | **0 / 0** ✗ |
+
+⇒ **空种子是 sr36 以来一整条误判线的根因** ✓ 已修正 ✓
+⇒ 但 sr42 暴露第二层：好种子的 `disabled.plist` 禁得过宽，`backboardd` 没起来 ✓
+  （`disabled.plist` 是手工从 merlinx 抄的，主分支用 BootProgress 精确 job policy ✗）
+
+### 三、本次改动（提交 `558573c`，已 push）
+
+`scripts/build-data-seed.py` 的 SEED_FILES 对齐主分支：
+
+- **删除** merlinx 独有：`FBLaunchWatchdogScale`、`com.apple.frontboard.plist`、`SetupState`、
+  `ForceNoBuddy`、`backboardd.plist` / `.GlobalPreferences.plist` 的 `CAEnable*Compression`
+- **保留**主分支 5 个偏好：migration / springboard（含 `--no-auto-dim`）/
+  purplebuddy / purplebuddy.notbackedup / managedconfiguration
+- `disabled.plist` 换为**主分支精确列表**：
+  identityservicesd, locationd, CommCenter, iconservicesagent（guide）
+  + watchdogd, bluetoothd, coreduetd（sheng-lite / T40d）
+- **保留 OS private/var 复制**（主分支 `prepare-owner-data-fixture.py` 的做法）✓
+- 已撤销之前误加的 `--no-copy-var` ✓
+
+### 四、sr43（CI 生成新种子后构建）
+
+用 `data-seed.yml` 的 macOS 工作流生成 512 MiB 种子 → 取 UUID → 写回 defconfig → 打包。
+判据：`disabled=0` + corpse 0 + **`backboardd` 出现** + DISP 帧 > 0 ✓
+
+### 五、诚实进度
+
+- 已解决：磁盘 ENOSPC、link-stub、AKS、空种子、日志通道、诊断能力 ✓
+- 已排除：DMA / srcclk / 传输粒度 / clockearly / vsync / 时钟 / 读损坏 / EPHEMERAL 误读 ✓
+- 未解：userland 显示持续出帧（上游主分支用 BootProgress + userland 显示组件，我们还没接全）✗
+- **方法原则**：以主分支 `docs/` + `scripts/` + `patches/` 为准；merlinx 仅作同代硬件寄存器参考 ✓
+
+---
