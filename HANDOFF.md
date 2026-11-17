@@ -10037,3 +10037,39 @@ sr38 的镜像和日志：
 - 日志：`console-sr38-20261117-202943.txt`
 
 ---
+
+## 0.174 2026-11-17 21:3x：wait-state 诊断确认 SpringBoard/lsd 在 Mach 消息等待
+
+### sr38 wait-state 日志
+
+最后一条 focus 记录：
+
+```
+SpringBoard: state=1 wait=0 pc=0x1df110b58 lr=0x1df114224 x16=0xfffffffffffffff2
+backboardd:  state=4 wait=0 pc=0x1bcdbdc88 lr=0x1bcdbdc64 x16=0x73
+lsd:         state=1 wait=0 pc=0x1df110b58 lr=0x1df114224 x16=0xfffffffffffffff2
+```
+
+本次启动 shared-region slide=`0x13990000`，所以：
+
+```
+0x1df110b58 - 0x13990000 = 0x1cb780b58 = libsystem_kernel.dylib 的 mach_msg2_trap wrapper
+```
+
+状态来自 XNU `thread.h`：
+
+```
+TH_WAIT = 0x01
+TH_RUN  = 0x04
+```
+
+⇒ **SpringBoard 和 lsd 确实处于等待状态，PC 是 `mach_msg2_trap`** ✓
+⇒ **backboardd 采到的是可运行线程（TH_RUN），不是等待线程** ✓
+
+### 结论
+
+这证明 SpringBoard 不是用户态忙循环，也不是直接卡在显示 API；它在等待 Mach IPC。backboardd 仍有可运行线程，但不再产生新的 display submit。下一步应定位 backboardd 自身 PC `0x1bcdbdc88` 对应的主程序函数（需要 backboardd 二进制或其 image symbol），而不是继续改 eMMC、vsync 或 display provider。
+
+sr38 wait-state 镜像保持为诊断资产；日常回滚使用 `boot-sr37-aks.img` 或 `boot-sr34-data512.img`。
+
+---

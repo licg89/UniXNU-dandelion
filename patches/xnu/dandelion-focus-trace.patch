@@ -1,5 +1,5 @@
 --- /tmp/focus.exec.pre	2026-11-17 20:12:16.937508762 +0800
-+++ b/bsd/kern/kern_exec.c	2026-11-17 20:12:57.617601390 +0800
++++ b/bsd/kern/kern_exec.c	2026-11-17 20:21:10.055801816 +0800
 @@ -8756,6 +8756,10 @@
  			printf("DANDELION-EXEC: pid %d comm=%s (policy answer %d)\n",
  			    proc_getpid(p), exe_name != NULL ? exe_name : "?", imgp->ip_mac_return);
@@ -12,7 +12,7 @@
  			}
  			imgp->ip_mac_return = 0;
 --- /tmp/focus.exit.pre	2026-11-17 20:12:16.961508997 +0800
-+++ b/bsd/kern/kern_exit.c	2026-11-17 20:12:57.617721191 +0800
++++ b/bsd/kern/kern_exit.c	2026-11-17 20:21:10.055913117 +0800
 @@ -1653,6 +1653,8 @@
  	    proc_getpid(p), p->p_comm, p->p_ppid, rv,
  	    WIFSIGNALED(rv) ? WTERMSIG(rv) : 0,
@@ -23,7 +23,7 @@
  /**/
  /*
 --- /tmp/focus.sleh.pre	2026-11-17 20:12:17.021509586 +0800
-+++ b/osfmk/arm64/sleh.c	2026-11-17 20:20:52.971828778 +0800
++++ b/osfmk/arm64/sleh.c	2026-11-17 21:16:49.633538303 +0800
 @@ -43,6 +43,8 @@
  #include <kern/socd_client.h>
  #include <kern/task.h>
@@ -33,7 +33,7 @@
  #include <kern/zalloc_internal.h>
  #include <mach/exception.h>
  #include <mach/arm/traps.h>
-@@ -2428,3 +2430,99 @@
+@@ -2428,3 +2430,101 @@
  SYSCTL_TEST_REGISTER(recoverable_kernel_trap, recoverable_kernel_trap_test);
  
  #endif
@@ -106,9 +106,11 @@
 +			mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
 +			if (machine_thread_get_state(thread, ARM_THREAD_STATE64,
 +			    (thread_state_t)&state, &count) == KERN_SUCCESS) {
-+				printf("DANDELION-FOCUS: pid=%d comm=%s pc=%#llx lr=%#llx x16=%#llx\\n",
-+				    pid, dandelion_focus_name[i], (unsigned long long)state.pc,
-+				    (unsigned long long)state.lr, (unsigned long long)state.x[16]);
++				printf("DANDELION-FOCUS: pid=%d comm=%s state=%x wait=%#llx pc=%#llx lr=%#llx x16=%#llx\n",
++				    pid, dandelion_focus_name[i], thread->state,
++				    (unsigned long long)thread->wait_event,
++				    (unsigned long long)state.pc, (unsigned long long)state.lr,
++				    (unsigned long long)state.x[16]);
 +			}
 +			thread_deallocate(thread);
 +		}
