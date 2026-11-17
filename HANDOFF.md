@@ -9824,3 +9824,69 @@ Still waiting for root device              ← 根卷因此挂不上 ✗
 2. 加一个诊断补丁打印 SpringBoard 的线程状态（能看出是否阻塞 ✗ 但说不出原因 ✓）
 
 ---
+
+## 0.171 2026-11-17 14:4x：sr36 —— Data 种子换成 merlinx 式**最小种子**（本机 mkapfs 构建）
+
+### 一、比对 merlinx userland 配置的结论
+
+#### ① 内核配置只有一项真差异，而且**不可行** ✗
+
+| 配置 | merlinx（出锁屏 ✓）| 我们 | 结论 |
+| --- | --- | --- | --- |
+| `CONFIG_XNU_NATIVE_PAN` | `y` | `n` | ✗ **硬件不允许** |
+
+build-xnu-4k-baseline.sh 自己写明：`NATIVE_PAN=1` 需要 **ARMv8.1** ✓
+而我们 MT6762G = **Cortex-A53 = ARMv8.0** ✗ —— 注释记录过实测：
+`msr PAN, #1` → Undefined Instruction ✓
+merlinx 的 MT6768 是 A75/A55（ARMv8.2 ✓）所以能开 ✓ ⇒ **正确禁用，不是缺陷** ✓
+
+其余差异都在预期内 ✓（`NATIVE_EMMC` vs `NATIVE_MSDC` ✓、`OWNER_CRYPTEX_FILES` ✓、种子 UUID ✓、
+双方各自有 `DT_PANIC_REGION`/`EMMC_SERIAL`/`MSDC_VERIFIED`/`VIRTIO_BLOCK`/`SOURCE_MOCKFS` 的取舍 ✓）
+
+#### ② 种子的**结构**是真差异 ✓✓
+
+| | merlinx | 我们（旧）|
+| --- | --- | --- |
+| 内容 | **84 个最小空目录 + 12 个偏好文件** ✓ | **复制 OS 的 `private/var`**（39 文件 ✗）+ 12 偏好 ✓ |
+| role | `none`（`role_value 0x0` ✓ 注释：Data role 的未加密卷会让 iOS APFS panic ✗）| 未核 |
+| 大小 | 16384 MiB（其种子不整体展开 ✓）| 512 MiB（展开 ✓ 我们上限 ✓）|
+
+那 12 个文件与我们的 `SEED_FILES` **几乎相同** ✓（springboard/frontboard/backboardd/disabled ✓）
+⇒ 唯一实质差异 = **我们多复制了一份 OS 的 `private/var`** ✗✓
+**陈旧的 OS 用户态状态**是"SpringBoard 起来了却画不出"的合理嫌疑 ✓
+
+### 二、本机就能建种子了（新能力）
+
+`make-data-seed-linux.py`（来自 merlinx 仓库 ✓，源自 UniXNU-fajita ✓）用 `mkapfs`：
+- 本机 `/usr/sbin/mkapfs` ✓ `/usr/sbin/apfsck` ✓ 都在 ✓
+- 不需要 root ✗ 不需要 FUSE ✗ 不需要 macOS ✗ 不需要 CI ✗
+- 自校验：`apfsck -cuw` ✓ Python 独立回读 ✓ `packed_ramdisk.regions == raw` ✓
+
+本次产物：`/root/work/dandelion-data-minimal.dbr`
+- logical 512 MiB ✓ extents 5 ✓ **packed 90,224 bytes** ✓
+- volume_uuid `380E201A-1611-45BF-8CB9-7CEA543892E6` ✓ role `0x0` ✓ Case-sensitive APFS ✓
+
+### 三、sr36
+
+`boot-sr36-minimalseed.img` = `bfb7b02f74cc132e6e79c5eea554cd88b2eeabc41498dcf22c80f62c75aa30e2`
+
+= sr34 基线 ✓（512 MiB ✓ 无 vsync ✗ 无 clockearly ✗）+ **最小种子** ✓
+- 固件段与 sr26 逐字节相同 ✓
+- 新 UUID 已在核内 ✓
+- 14:44:40 刷入启动 ✓ 采集窗口 8 小时 ✓
+
+### 四、判据
+
+| 现象 | 结论 |
+| --- | --- |
+| **出了锁屏/界面** ✓✓ | ✅ **元凶是 OS `private/var` 副本** ✓ 问题解决 |
+| 仍停 logo ✗ 但日志无 ENOSPC ✓ | ❌ 种子不是原因 ✗ → 转"SpringBoard 线程状态诊断补丁" ✓ |
+| 根卷挂不上 ✗ | 种子格式问题 ✗ → 回 512 MiB 旧种子 ✓ |
+
+### 五、备注
+
+- 若 sr36 成功 ✓，再把我们自己的额外偏好（`BKNoWatchdogs` / `CAEnable*Compression=False` /
+  `SetupDone` 等）逐步加回 ✓ 以确认哪些是必要的 ✓
+- 旧种子仍在 `/root/work/dandelion-data-512.dbr` ✓ 可随时回滚 ✓
+
+---
