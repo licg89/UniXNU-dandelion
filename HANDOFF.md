@@ -10105,3 +10105,56 @@ backboardd waitpc = 0x193e6a060  -> /usr/lib/libAccessibility.dylib + 0x1a060
 这把问题进一步收窄到用户态服务依赖/Accessibility/PerfPowerServices 等 IPC 链，不支持继续修改显示 client、vsync 或存储。sr38 的诊断只读观察，不改变行为；后续应从 `PerfPowerServices`、`IOMFB_FDR_Loader`、Accessibility 相关服务的启动/退出状态继续比对。
 
 ---
+
+## 0.176 2026-11-17 23:0x：★ 纠正一条贯穿全程的错误假设 —— **merlinx 也没有锁屏**
+
+### 一、事实（来自 merlinx 自己的 porting.toml，area id="display"）
+
+```
+status      = "implemented"
+findings    = ["... Userland reaches SpringBoard, but IOMFB_FDR_loader exits with status 1
+                and no scanout provider is published."]
+completion  = ["The kernel console is visible and userland presentation and backlight control work."]
+limits      = ["No userland display provider or renderer is implemented. IOMFB_FDR_loader fails
+                before GPU display handoff. The scanout starts mid-panel."]
+next_action = ["Trace IOMFB_FDR_loader exit 1 and add the userland display and GPU scanout path
+                after the service graph is stable."]
+```
+
+⇒ **merlinx 没有锁屏** ✗ 它的 userland 显示路径**根本没实现** ✗
+`IOMFB_FDR_loader exit 1`、**没有 scanout provider 发布** ✗
+
+### 二、这意味着什么
+
+本会话早期多次依据"merlinx 能到锁屏"做推断 ✗ 那些推断的**前提是假的** ✗
+包括：差异在 Data seed、差异在 AKS、差异在 Mali/GPU glue、差异在 userland 配置。
+
+**实际上我们在这一点上比 merlinx 走得更远** ✓：
+
+| 项 | merlinx | 我们（sr34/sr37/sr38）|
+| --- | --- | --- |
+| IOMFB_FDR_loader | exit 1 ✗ | exit 0x100 ✓（同样非零，但不同） |
+| scanout provider | **完全没有** ✗ | `DISP NUB A1 S1` + `DISP P1 A1 S1` + `DISP UP` ✓ |
+| display client | 无 ✗ | `DISP CLIENT 57 backboardd` ✓ |
+| userland 帧 | 无 ✗ | **7 个全屏 CPU-copy 帧，VAL 1 R0 / COPY 0 / RET** ✓ |
+| SpringBoard | 到达 ✓ | 到达并存活 ✓ |
+
+⇒ **"别人没这个问题"是错的** ✓ 锁屏在这套移植生态里**是未解状态** ✗ 没有现成实现可照抄 ✓
+⇒ 之前"去比对别人的实现"这条策略对这一项**已经用尽** ✓ 继续比对不会带来答案 ✗
+
+### 三、对"解决所有问题"的诚实分解
+
+| 问题 | 是否可解 | 依据 |
+| --- | --- | --- |
+| 日志在提频后死亡 | ✅ **本会话已修**（`dandelion-console-divider.patch`）| 控制台按自己的分频写，写完恢复驱动设置 ✓ |
+| Data 卷 ENOSPC | ✅ 已修（512 MiB 种子，ENOSPC 0）| sr34/sr36 实测 ✓ |
+| link-stub / AKS | ✅ 已修（`AKS UP`）| sr37 实测 ✓ |
+| 面板三写者互相覆盖 | ✅ 可修（几何分区）| 已有 `kProgressStripPx` 机制 ✓ |
+| watchdogd 每次 `off=0xab0c` 陷入 | 🔍 需 watchdogd 二进制的符号 ✗ 本地 APFS 无读取器 ✗ |
+| `disabled.plist` 未生效 | 🔍 可观测（watchdogd 仍在跑 ✗）但原因未定 ✗ |
+| **锁屏 / userland 显示** | ❌ **上游未解** ✗ 需要真正实现 userland 显示路径 | merlinx 记录 ✓ |
+| 启动整体变快 | ❌ 未达成（实测更慢）| 需中断驱动存储 / HS400 ✓ |
+
+⇒ 前四项可交付 ✓ 后四项中"锁屏"属**未解研究问题** ✗ 不是配置差异 ✓
+
+---

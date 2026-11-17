@@ -1,0 +1,73 @@
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -861,7 +861,7 @@
+ 
+ /* One sector, one CMD24: no CMD12 state machine to get wrong. */
+ static int
+-emmc_write_block(uint32_t lba, const void *buffer)
++emmc_write_block_divider(uint32_t lba, const void *buffer)
+ {
+ 	const uint8_t *source = (const uint8_t *)buffer;
+ 	uint32_t response = 0;
+@@ -929,6 +929,61 @@
+ 	return emmc_wait_ready(2000);
+ }
+ 
++/*
++ * Program a CKDIV and wait for the clock to come back, mirroring what emmc_rearm does when CKSTB is
++ * clear.  Returns non-zero when the clock never became stable.
++ */
++static int
++emmc_program_divider(uint32_t divider)
++{
++	uint32_t config = emmc_read(EMMC_MSDC_CFG);
++	uint64_t deadline;
++
++	config &= ~(0xFFFu << 8);
++	config |= 1u | EMMC_CFG_PIO | ((divider & 0xFFFu) << 8);
++	emmc_write(EMMC_MSDC_CFG, config);
++	deadline = emmc_now_ms() + 20;
++	while ((emmc_read(EMMC_MSDC_CFG) & EMMC_CFG_CKSTB) == 0) {
++		if (emmc_now_ms() > deadline) {
++			return -1;
++		}
++	}
++	return 0;
++}
++
++/*
++ * One console sector, written at the divider this console was brought up with.
++ *
++ * The console shares MSDC0 with the storage driver.  The driver raises the card clock once its windows
++ * are published and only retunes the read path, so once the clock is raised a console write at the new
++ * divider fails; when that happens the log dies with it and a boot that is still running looks exactly
++ * like a boot that has stopped.  Measured on this board: sr29 and sr32 logged about 270 lines and went
++ * silent, while sr30, whose clock change landed later, logged 21039.
++ *
++ * The driver's own setting is restored before returning, so this changes the console only, and only
++ * for the length of one transfer.
++ */
++static int
++emmc_write_block(uint32_t lba, const void *buffer)
++{
++	uint32_t saved = emmc_read(EMMC_MSDC_CFG);
++	uint32_t current = (saved >> 8) & 0xFFu;
++	int changed = 0;
++	int result;
++
++	if (current != (emmc_clock_div & 0xFFu)) {
++		if (emmc_program_divider(emmc_clock_div) != 0) {
++			return -1;
++		}
++		changed = 1;
++	}
++	result = emmc_write_block_divider(lba, buffer);
++	if (changed) {
++		(void)emmc_program_divider(current);
++	}
++	return result;
++}
++
+ static void
+ emmc_put_le32(uint8_t *at, uint32_t value)
+ {
