@@ -125,6 +125,11 @@ namespace {
 // generous room for a slow card under APFS load without hiding a real hardware fault.
 constexpr uint64_t kCommandTimeoutNs = 10000000000ULL;
 constexpr uint64_t kBusyTimeoutNs = 5000000000ULL;        // programming after a write, cache flush
+// The BD length field is 16 bits wide on this controller (the vendor's BDMA_DESC_BUFLEN is
+// GENMASK(15,0); only SoCs with support_64g use the 24-bit BDMA_DESC_BUFLEN_EXT).  A 128-block transfer
+// is 65536 bytes, which truncates to zero in a 16-bit field, so a DMA transfer at the maximum size moves
+// nothing.  DMA therefore uses one block less than the PIO path.
+constexpr uint32_t kDmaMaxBlocks = 127;
 constexpr unsigned kDmaDescriptorBytes = 4096;             // GPD at 0, BD at 64; the buffer follows
 constexpr unsigned kTransferBytes = kMaxBlocks * kSector;
 
@@ -387,7 +392,7 @@ void hostRecoverAfterError (void);
 // the caller falls back to the path that works and the boot continues.
 IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
 {
-  if (!gHost.dmaVirt || !blocks || blocks > kMaxBlocks) return kIOReturnBadArgument;
+  if (!gHost.dmaVirt || !blocks || blocks > kDmaMaxBlocks) return kIOReturnBadArgument;
   /*
    * Hold native_msdc_busy for the whole DMA transfer so the console declines to write while the
    * controller is in DMA mode.  The console shares MSDC0 and its write path reprograms MSDC_CFG
@@ -1874,7 +1879,8 @@ const char *loadPolicy (void)
     uint64_t began = mach_absolute_time ();
     bool readFailed = false;
     for (uint64_t done = 0; done < sectors;) {
-      uint32_t blocks = sectors - done > kMaxBlocks ? kMaxBlocks : uint32_t (sectors - done);
+      const uint32_t cap = native_msdc_dma == 1 ? kDmaMaxBlocks : uint32_t (kMaxBlocks);
+      uint32_t blocks = sectors - done > cap ? cap : uint32_t (sectors - done);
       HostSession session;
       if (transfer (firstSector + done, blocks, region + done * kSector, false) != kIOReturnSuccess) {
         readFailed = true;
@@ -2079,7 +2085,8 @@ IOReturn NativeMsdcBlock::doAsyncReadWrite (IOMemoryDescriptor *buffer, UInt64 b
   IOReturn result = kIOReturnSuccess;
   uint64_t done = 0;
   while (done < count && result == kIOReturnSuccess) {
-    uint32_t blocks = count - done > kMaxBlocks ? kMaxBlocks : uint32_t (count - done);
+    const uint32_t cap = native_msdc_dma == 1 ? kDmaMaxBlocks : uint32_t (kMaxBlocks);
+    uint32_t blocks = count - done > cap ? cap : uint32_t (count - done);
     IOByteCount bytes = IOByteCount (blocks) * kSector, offset = IOByteCount (done) * kSector;
     HostSession session;
     if (write) {
