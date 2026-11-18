@@ -139,7 +139,10 @@ jobs:
               '-I', str(home / '.cache/xnu-work/osfmk'),
               '-I', str(home / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT'),
               '-DNATIVE_HID_SOURCE_API=1',
-              '-c', str(source), '-o', str(destination),
+              # The recipe's own -c stays in place and the source is substituted at its original
+              # position above, so only the output has to be appended; adding -c source here as well
+              # gave clang two inputs and it refuses to write one output for them.
+              '-o', str(destination),
               '-Wno-everything',
           ]
           print('argument count:', len(cmd))
