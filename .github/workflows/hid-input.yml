@@ -55,8 +55,11 @@ jobs:
           mkdir -p ~/assets
           gh release download "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" \
             --pattern 'kernel.macho' --pattern 'kernel.json' \
-            --pattern 'xnu-compile-tree.tar.gz' --dir ~/assets
+            --pattern 'xnu-compile-tree.tar.gz' --pattern 'hidfamily-headers.tar.gz' --dir ~/assets
           ls -l ~/assets
+          mkdir -p ~/hidheaders
+          tar xzf ~/assets/hidfamily-headers.tar.gz -C ~/hidheaders
+          test -f ~/hidheaders/IOKit/hid/IOHIDDevice.h
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -136,10 +139,9 @@ jobs:
               '--target=arm64-apple-ios17.0',
               '-isysroot', sdk,
               '-I', sdk + '/usr/include',
-              # IOKit and IOHIDFamily headers live in the SDK frameworks, not under usr/include.
-              '-iframework', sdk + '/System/Library/Frameworks',
-              '-I', sdk + '/System/Library/Frameworks/IOKit.framework/Headers',
-              '-I', sdk + '/System/Library/Frameworks/IOKit.framework/Headers/hid',
+              # IOHIDFamily-2031.120.4 headers come from Apple's open-source distribution, packed in the
+              # release, because the runner SDK does not ship these kernel-private headers.
+              '-I', str(pathlib.Path.home() / 'hidheaders'),
               '-I', str(home / '.cache/xnu-work/osfmk'),
               '-I', str(home / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT'),
               '-DNATIVE_HID_SOURCE_API=1',
