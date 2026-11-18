@@ -109,9 +109,11 @@ jobs:
               if flag not in args:
                   args.append(flag)
           record['arguments'] = args
-          record['file'] = str(home / '.cache/xnu-work/iokit/Kernel/IOPlatformExpert.cpp')
-          # build-arm-driver.py runs the compile with cwd=record['directory'], so it has to be a
-          # directory this runner actually has.
+          # Leave record['file'] alone: build-arm-driver.py finds that exact string in the arguments
+          # and replaces it with the component source.  Rewriting it here leaves the original source
+          # in the command line, and clang then sees two inputs ("cannot specify -o when generating
+          # multiple output files").
+          # build-arm-driver.py runs the compile with cwd=record['directory'], so that has to exist.
           record['directory'] = str(home / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT')
           recipe.write_text(json.dumps(record) + '\n')
           print('recipe rewritten: %d arguments, prefix replaced with %s' % (len(args), home))
