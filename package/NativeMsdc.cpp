@@ -328,6 +328,12 @@ IOReturn hostPrepareData (uint32_t blocks)
 // native-msdc-cache=0 for comparison.
 enum { kReadCacheLines = 512, kReadCacheLineShift = 3 };   // 512 lines x 8 sectors = 2 MiB
 struct ReadCacheLine { uint64_t firstSector; };
+// A slot is empty only when its firstSector is the sentinel.  Zero is a real sector: the GPT header is
+// sector 1, which is line 0, so an index zeroed to 0 reported a hit on an empty cache and returned the
+// zero-filled buffer -- the GPT signature check then failed with "GPT signature" and the driver refused to
+// start, which is why the root volume never appeared.  That is what made the same image boot once and fail
+// later: the cache only misbehaves when its allocation succeeded.
+constexpr uint64_t kReadCacheEmpty = ~0ull;
 static ReadCacheLine readCacheIndex[kReadCacheLines];
 static uint8_t *readCacheData;
 static volatile uint64_t readCacheHits, readCacheMisses;
@@ -345,7 +351,8 @@ static bool readCacheLookup (uint64_t sector, uint32_t blocks, uint8_t *buffer)
   const uint64_t lineSectors = 1ull << kReadCacheLineShift;
   if (sector < lineFirst || sector + blocks > lineFirst + lineSectors) return false;
   const unsigned slot = readCacheSlot (lineFirst);
-  if (readCacheIndex[slot].firstSector != lineFirst) {
+  const uint64_t held = readCacheIndex[slot].firstSector;
+  if (held == kReadCacheEmpty || held != lineFirst) {
     readCacheMisses = readCacheMisses + 1;
     return false;
   }
@@ -844,18 +851,22 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
         unsigned shown = 0;
         const char *head = "W";
         while (*head && at + 1 < sizeof (line)) line[at++] = *head++;
+        // The ranking must not consume the counters: the RD line above sums the same array, so zeroing an
+        // entry made the reported total jump backwards -- the panel showed RD restarting from zero.
+        uint64_t taken[kReadWindows];
+        for (unsigned w = 0; w < kReadWindows; ++w) taken[w] = native_msdc_read_windows[w];
         for (unsigned pick = 0; pick < kReadWindows && shown < 6; ++pick) {
           unsigned best = kReadWindows;
           uint64_t bestBytes = 0;
           for (unsigned w = 0; w < kReadWindows; ++w) {
-            if (native_msdc_read_windows[w] > bestBytes) {
-              bestBytes = native_msdc_read_windows[w];
+            if (taken[w] > bestBytes) {
+              bestBytes = taken[w];
               best = w;
             }
           }
           if (best == kReadWindows || bestBytes == 0) break;
           uint64_t mebibytes = bestBytes >> 20;
-          native_msdc_read_windows[best] = 0;   // consume, so the next pass shows the next biggest
+          taken[best] = 0;   // consume the copy, so the next pass shows the next biggest
           char digits[24];
           unsigned count = 0;
           if (mebibytes == 0) digits[count++] = '0';
@@ -1849,6 +1860,7 @@ bool hostBringUp (IOService *provider, bool useDma, const char **why)
     readCacheData = static_cast<uint8_t *> (IOMalloc (uint64_t (kReadCacheLines) * (1u << kReadCacheLineShift) * kSector));
     if (readCacheData != nullptr) {
       bzero (readCacheData, uint64_t (kReadCacheLines) * (1u << kReadCacheLineShift) * kSector);
+      for (unsigned i = 0; i < kReadCacheLines; ++i) readCacheIndex[i].firstSector = kReadCacheEmpty;
     }
   }
   if (!gHost.map || !gHost.lock || !gHost.bounce) {

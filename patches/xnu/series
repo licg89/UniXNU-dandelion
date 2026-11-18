@@ -84,3 +84,4 @@ dandelion-beat-summary.patch
 dandelion-beat-panel.patch
 dandelion-focus-trace.patch
 dandelion-data-visibility.patch
+dandelion-deny-exec.patch

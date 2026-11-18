@@ -1,0 +1,37 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8821,7 +8821,34 @@
+ 				native_diag_focus_start();
+ 				vnode_putname(exe_name);
+ 			}
+ 			imgp->ip_mac_return = 0;
++			/*
++			 * dandelion: refuse to exec processes that cannot work on this board.
++			 *
++			 * There is no Bluetooth driver, so bluetoothd starts, fails and is respawned by launchd.  On
++			 * sr63 it accounted for 133 of 742 exec records, and that churn is about 91 percent of a
++			 * 48-minute boot.  The seed's launchd disabled plist lists com.apple.bluetoothd and the
++			 * mechanism does work for the other labels in it, but this one keeps coming back through
++			 * another route.
++			 *
++			 * This sits after the statement above clears ip_mac_return, so the value survives; an earlier
++			 * attempt placed it before and was silently overwritten.  Setting it makes exec fail through
++			 * the existing security-policy path with the same os_reason a rejected signature produces, so
++			 * no new error path is introduced.  dandelion-deny-exec=1 enables it.
++			 */
++			{
++				unsigned deny = 0;
++				if (PE_parse_boot_argn("dandelion-deny-exec", &deny, sizeof(deny)) && deny != 0) {
++					const char *denied = vnode_getname(imgp->ip_vp);
++					if (denied != NULL) {
++						if (strcmp(denied, "bluetoothd") == 0) {
++							printf("DANDELION-DENY: pid %d comm=%s\n", proc_getpid(p), denied);
++							imgp->ip_mac_return = EACCES;
++						}
++						vnode_putname(denied);
++					}
++				}
++			}
+ 		}
+ 	}
+ 	if (imgp->ip_mac_return != 0) {
