@@ -388,10 +388,21 @@ void hostRecoverAfterError (void);
 IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
 {
   if (!gHost.dmaVirt || !blocks || blocks > kMaxBlocks) return kIOReturnBadArgument;
-  // The busy guard that used to be here (holding native_msdc_busy so the console would decline) is
-  // gone: when the DMA transfer hangs, the console -- which is written through this same card --
-  // stays blocked for as long as the hang lasts, and the boot went silent after 121 lines with the
-  // controller holding the card.  A failed experiment must not be able to silence the machine.
+  /*
+   * Hold native_msdc_busy for the whole DMA transfer so the console declines to write while the
+   * controller is in DMA mode.  The console shares MSDC0 and its write path reprograms MSDC_CFG
+   * through emmc_rearm(), which clears the PIO/DMA selection: that is why an earlier trace found
+   * MSDC_CFG back in PIO at the moment the engine should have been running, and why the guard used to
+   * live here but was removed.  It was removed because a hanging transfer then silenced the console
+   * forever.  Three things changed since: the wait below is bounded by kCommandTimeoutNs, a failed
+   * transfer puts the controller back in PIO instead of poisoning the transport, and
+   * device-emmc-console-gate.patch makes the console decline (rather than block) when the guard is
+   * held.  With all three in place the guard is safe again, and without it DMA cannot work at all.
+   */
+  struct DmaBusyGuard {
+    DmaBusyGuard () { __atomic_add_fetch (&native_msdc_busy, 1, __ATOMIC_ACQ_REL); }
+    ~DmaBusyGuard () { __atomic_sub_fetch (&native_msdc_busy, 1, __ATOMIC_ACQ_REL); }
+  } dmaBusyGuard;
   unsigned bytes = blocks * kSector;
   DmaGpd *gpd = reinterpret_cast<DmaGpd *> (gHost.dmaVirt);
   DmaBd *bd = reinterpret_cast<DmaBd *> (gHost.dmaVirt + 64);
@@ -670,6 +681,7 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
       // apart without pulling the eMMC log.
       static volatile uint64_t shown;
       const uint64_t n = __atomic_add_fetch (&shown, 1, __ATOMIC_RELAXED);
+      (void)n;   // the line now prints the real totals; the batch counter is only a rate limit
       // Each increment is 400 reads; a read moves at most kMaxBlocks sectors, so the megabyte figure
       // is a floor, not an estimate that can overshoot.
       // The old line printed n * 4 and called it MB while one increment was 400 reads, so the number
