@@ -10915,3 +10915,61 @@ release `abi-dandelion`：
 sr44 干净镜像已刷入 ✓ 锁屏无叠字 ✓ `display/userspace=verified` ✓
 
 ---
+
+## 0.190 ★★★★★ 2026-11-18 11:0x：**无 Mac 也能编译 ShengHidInput** —— xcrun/brew shim
+
+### 一、突破
+
+官方 `scripts/build-sheng-hid-input.py` **原样**在本机 Linux 跑通 ✓
+
+```
+ShengHidInput: -Werror build and arm64-apple-ios17.0 object audit passed
+PASS: original HID instruction identity, base imports, call boundaries and exact owned vtable
+```
+
+产物（`build/sheng-hid-input/`）：
+
+| 文件 | 大小 |
+| --- | --- |
+| `libShengHidInput.a` | 267,192 B |
+| `NativeHidInput.o` | 266,184 B |
+| `NativeHidInput.late.o` | 266,054 B |
+| `hid-original-bindings.o` | 2,984 B |
+| `original-bindings.S` | 5,298 B |
+| `OriginalHidDeviceABI.h` | 5,141 B（官方脚本自己生成）|
+| `abi-audit.json` | 3,821 B |
+
+### 二、方法（关键洞察）
+
+**官方脚本只通过 `xcrun` 与 `brew` 两个命令索要外部工具** ✓ 于是不需要改脚本、不需要 mac ✓
+
+`/root/work/shim/xcrun`：
+- `--sdk iphoneos --show-sdk-path` → 打印打包的头目录
+- `clang` → `/opt/unixnu-linux/llvm/bin/clang`，并丢弃 `-isysroot`
+- `ar` → `/usr/bin/llvm-ar`
+- `ranlib/lipo` → 对应 llvm 工具
+
+`/root/work/shim/brew`：`--prefix llvm` → `/usr`（使 `/usr/bin/llvm-objcopy` 可用）
+
+**官方脚本一行未改** ✓ 它自己生成 `OriginalHidDeviceABI.h`（含 207 槽布局与
+`static_assert(sizeof(IOHIDDevice)==0xd0)`）✓ 所以**根本不需要 SDK 头** ✓✓
+
+### 三、另需一处补丁
+
+`scripts/build-arm-driver.py` 会剥掉配方里所有 `-W*` 参数并在末尾加 `-Werror` ✗
+而内核配方本就带 `-Wno-missing-designated-field-initializers` ✓ 不补回则 XNU 头报 11 个错误 ✗
+已在末尾列表补回该例外 ✓（1 个 token 的最小改动，已记录）
+
+### 四、先前 macOS CI 路线的结论修正
+
+之前判定"需要 iOS 17 SDK / 需要 Mac"是**错的** ✓ 那只是因为我们没提供 shim ✓
+`scripts/hid-input.yml` 与 release 上的编译树/头包因此不再是必需 ✓（可保留作参考）
+
+### 五、下一步（接线，不再是编译问题）
+
+1. 把 `drivers/ShengHidInput` 与产物纳入构建（`board.toml` archives + `-force_load`）
+2. 写板级调用方：`native_hid_input_allocate()` → `attach`/`start`/`registerService`
+3. 用 `native_buttons_set_sink` 注入一次 Home（report 2 bit 0）→ 锁屏应解锁
+4. 构建、刷入、观察桌面
+
+---
