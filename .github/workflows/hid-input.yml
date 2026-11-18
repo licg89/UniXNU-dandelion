@@ -103,8 +103,12 @@ jobs:
                   args.append(flag)
           record['arguments'] = args
           record['file'] = str(home / '.cache/xnu-work/iokit/Kernel/IOPlatformExpert.cpp')
+          # build-arm-driver.py runs the compile with cwd=record['directory'], so it has to be a
+          # directory this runner actually has.
+          record['directory'] = str(home / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT')
           recipe.write_text(json.dumps(record) + '\n')
           print('recipe rewritten: %d arguments, prefix replaced with %s' % (len(args), home))
+          print('directory:', record['directory'])
           PY
 
       - name: Fetch the HID component at the pinned revision
