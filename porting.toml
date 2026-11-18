@@ -4,7 +4,7 @@ schema_version = 1
 name = "dandelion"
 soc = "MT6765"
 os_profile = "ipados-17.7.11-21H461"
-summary = "Xiaomi Redmi 9A (dandelion), MediaTek MT6762G/MT6765. Rebuilt on UniXNU after a hand-rolled MACHINE=dandelion port: ArmCpu and ArmDTPlatform replace the hand-written GIC, timer and platform expert."
+summary = "Xiaomi Redmi 9A (dandelion), MediaTek MT6762G/MT6765. Rebuilt on UniXNU after a hand-rolled MACHINE=dandelion port: ArmCpu and ArmDTPlatform replace the hand-written GIC, timer and platform expert. Boots iPadOS 17.7.11 to the real lock screen through the legacy GOP display provider; input is not implemented yet."
 
 [[area]]
 id = "configuration"
@@ -90,78 +90,55 @@ evidence = [
 id = "storage"
 status = "verified"
 components = []
-paths = ["drivers/ShengUfs", "scripts/*ufs*", "scripts/*storage*", "scripts/*userdata*", "scripts/*root*"]
-inputs = ["MT6762G MSDC0 at 0x11230000; userdata partition and the flashinfo log partition measured on the device GPT (see dts/dandelion.dts and HANDOFF 0.28)."]
-configuration = ["NativeMsdc vendored driver, SHNGROOT manifest, two VerifiedRoot policy entries, ios GPT partition, native-msdc-root=1 / native-msdc-area=20480 / native-msdc-persist=1."]
-procedure = ["unixnu build kernel / payload / bootimg; fastboot flash ios and boot; collect_nowipe.ps1 pulls the flashinfo console block."]
-findings = [
-  "eMMC runs in High Speed. Measured with a 4 KiB read: mode 2 div 0 (what the driver used) 27679 us, mode 1 div 0 14000 us, mode 0 div 2 599 us, mode 0 div 0 fails. CKMOD selects the division path and mode 2 is the DDR path; the card reports HS_TIMING 1 on eight bits, whose vendor line is mode 0 div 2.",
-  "Root cause of every failed clock attempt: HostSession, the transaction guard every console write and transfer uses, restored MSDC_CFG wholesale on exit INCLUDING CKMOD and CKDIV. The first log line after any clock change put the old divider back, which is why single measurements were fast and the running system never was.",
-  "With mode 0 div 2 held, a 64 KiB read takes 2226 us: about 29 MB/s, matching the reference MT6765 port. The 3.7 GB shared cache is minutes instead of a night.",
-  "The console, the storage driver and every transfer share the card, so a clock change that disturbs the bus kills the log and the reads together; the panel renderer is the only channel that survives.",
-]
-completion = ["OS and SystemOS verify and publish; the real APFS root mounts; root hash authentication passes; launchd execs; diagnostics no longer panic. Persistence: not yet, the writable Data volume is the next stage."]
-limits = ["DMA path is still disabled: it times out and was proven not to be the bottleneck (command overhead 0.6%)."]
-next_action = ["Leave PIO at mode 0 div 2; revisit DMA only if command overhead ever matters."]
+paths = ["package/NativeMsdc.cpp", "package/NativeMsdc.h", "configs/dandelion_defconfig", "board.toml"]
+inputs = ["eMMC on MSDC0 0x11230000, polled PIO, 512-byte sectors. userdata=mmcblk0p41, flashinfo=mmcblk0p43. The OS and SystemOS windows live inside userdata."]
+configuration = ["native-msdc-root=1, native-msdc-mode=1, native-msdc-area=20480, native-msdc-persist=1, native-msdc-clock=1, native-msdc-hsmode=1. Transfer granularity is kMaxBlocks=128 (64 KiB)."]
+procedure = ["Build, flash the boot partition, boot, and read the flashinfo console block for the RD progress line and the read-timing lines."]
+findings = ["The kernel mounts SystemOS and the Data seed and starts launchd from the OS volume.", "The eMMC host is linked in with -force_load in CONFIG_XNU_EXTRA_LD_ARCHIVES; before that the storage symbols were link stubs and init failed.", "A 4 GiB Data seed cannot boot on a 4 GB phone because DarwinBoot expands the packed seed to its logical size in RAM; 512 MiB is the ceiling.", "Reads run at about 250-360 us per 8-block transfer with 128-block bursts. Tuning the divider up does not help: kMaxBlocks 128 to 512 cut the read count but left the wall time at 226,823 ms, and native-msdc-clockearly cut the policy read from 228,108 ms to 4,978 ms while corrupting reads (verify got 16899be4 want 12df6896) and failing the root mount."]
+completion = ["Host: register, clock, link and SMMU facts match the board inventory.", "Reads: SCSI capacity, GPT and known blocks are correct; OS/SystemOS windows stay within userdata.", "Root: the configured volume mounts and launchd starts. Persistence: writes survive reboot within the allocated Data region."]
+limits = ["Reads are polled PIO, so large reads are slow and a raised clock corrupts data. DMA and a raised source clock both fail to mount the root device. The store is not used for writes yet (writes=0)."]
+next_action = ["Move the read path to interrupt-driven or DMA transfers, or find a divider that stays correct under sustained load, before any speed work."]
 evidence = [
-  "NativeMsdc: ckmode 0 div 2 read ok in 599 us / ckmode 2 div 0 read ok in 27679 us / ckmode 0 div 0 read failed",
-  "NativeMsdc: read timing setblk=89 prep=14 cmd=88 drain=6762 total=6954 (289 us each) with mode 0 div 2 held",
-  "Before the clock fix: read timing total=103000 us each",
-  "NativeMsdc: clock mode 0 div 2 verified (High Speed)",
+  "adb shell ls -l /dev/block/by-name/ => userdata=mmcblk0p41, flashinfo=mmcblk0p43, super=mmcblk0p38",
+  "D4K beat 1036: reads=4746758 writes=0 retries=2837 failures=7",
+  "native-msdc-clockearly: policy read 228108ms -> 4978ms with verify mismatches; reverted",
+  "kMaxBlocks 512: reads 1123 -> 284 but wall time 228108 -> 226823 ms; reverted to 128",
 ]
-
 [[area]]
 id = "display"
 status = "verified"
-components = ["GopFramebuffer", "IOMobileFramebufferLegacy"]
-paths = ["package/*Display*", "package/*Framebuffer*", "package/*Backlight*", "package/AppleARMBacklight.cpp", "package/GeniI2c*", "scripts/*display*", "scripts/*gop*", "scripts/*framebuffer*"]
-inputs = ["Identify the display hardware, resources and existing component interfaces for this board."]
-configuration = ["Record the board.toml fields, DTS properties and defconfig values used for display."]
-procedure = ["Follow the display stage in the porting guide and record the actual commands."]
-findings = [
-  "The synthetic IOMobileFramebufferLegacy reaches start() and publishes the panel; the firmware GOP framebuffer is at 0x7EC50000, stride 2944, 720x1600, 32 bpp.",
-  "native_gop_text was a stub. It now renders a 6x10 font white-on-black into the GOP framebuffer, scale 2 at >=600 px wide, which made boot progress visible while the console was silent.",
-  "IOMFB_FDR_Loader exits 1, so the userland display service is not up; backboardd and SpringBoard fail later in that chain.",
-  "SpringBoard died in FrontBoardServices -[FBSDisplayMonitor _initWithBookendObserver:transformer:] + 0x47c with the assertion text 'failed to find the main CADisplay': QuartzCore had no main display to hand back while the display service never came up.",
-  "The gate was the surface service, not the framebuffer: the shim now waits for IOCoreSurfaceRoot and then for the class name IOSurfaceRoot, which answered (DISP SURF 0 F1). The class exists in the kernel; only the service was missing.",
-  "With the surface in hand the chain runs to completion: DISP MAP 720x1600 0x7EC50000, DISP NUB A1 S1, DISP P1 A1 S1, DISP ARMIO 1 (a real AppleARMIODevice provider), DISP CLIENT 57 backboardd T0, DISP COPY 0 4608000 (720x1600x4), DISP UP.",
-  "SpringBoard then starts once and never exits across a 23,634-line boot that reaches 207 processes, so the CADisplay assertion no longer fires and the panel shows the Apple boot logo drawn through this stack.",
-  "The kernel image carries only two IOSurface symbols (gIOSurfaceIdentifier, gIOSurfaceTag), and the released DarwinBoot refuses staged kexts, so matching the class name at runtime is the working route rather than shipping IOSurface as a bundle.",
-]
+components = []
+paths = ["package/DandelionLegacyDisplay.cpp", "package/NativeMsdc.cpp", "board.toml", "configs/dandelion_defconfig"]
+inputs = ["UEFI GOP framebuffer 720x1600 at 0x7ec50000, stride 2944, 32-bit; the vendor LK leaves the panel lit."]
+configuration = ["offline-legacy-register=1, offline-legacy-gop=1, offline-legacy-unit-scale=2, offline-legacy-pm=1, offline-legacy-phase=4, offline-legacy-transfer=1, offline-legacy-validate=1, offline-legacy-cpu-present=1 allow the legacy IOMobileFramebuffer provider to publish. dandelion-panel-text=1 restores the diagnostic overlay, which is off by default."]
+procedure = ["Build with scripts/package.sh and the UniXNU main-branch Data seed, flash the boot partition, boot, and read the flashinfo console block."]
+findings = ["The legacy GOP provider publishes: DISP PROBE/INIT/SURF/MAP 720x1600/NUB A1 S1/P1 A1 S1/ARMIO/PM/UP, and backboardd opens it as display client 57.", "SpringBoard must not be an IOMFB client; backboardd owns the display and submits the frames.", "Once the Data seed carried the launchd disabled plist, the service graph stopped starving and the frames kept coming: DISP COPY 330, DISP RET 330, F330 over a 5.75-hour run with sb=27:2 and bb=57:2 in beat 1036.", "The iPadOS lock screen renders: date, clock, wallpaper, Press home to open, and the status bar.", "Before the seed fix the same code retired only six or seven frames and stopped on the Apple logo, because launchd stopped spawning after Too many corpses being created."]
 completion = ["A known frame appears with correct geometry and colors, then userland presentation and backlight controls work."]
-limits = ["Userland presentation works but no lock screen appears yet: the panel shows the Apple boot logo while SpringBoard stays alive. This is not a GPU gate; the reference project reached a working UI before it had a GPU driver, with presentation staying on the CPU copy path.", "No backlight or brightness control: the kernel carries the AppleARMBacklight strings but no service publishes them.", "IOMFB_FDR_Loader still exits 1; the display works regardless."]
-next_action = ["Read sr20's beat line (sb=<pid>:<stat> bb=<pid>:<stat>) to see whether SpringBoard stays alive over hours and where it stops.", "Establish what SpringBoard does after it stops aborting: the readout is the beat line that reports its pid and state, not a GPU experiment."]
+limits = ["IOMFB_FDR_Loader still exits 0x100. There is no backlight control and no input, so the lock screen cannot be unlocked. watchdogd still exits 33 times and liveactivitiesd 87 times per 5.75 hours; neither blocks presentation."]
+next_action = ["Add a MediaTek I2C touch driver so the lock screen can be unlocked, then re-check IOMFB_FDR_Loader exit 0x100."]
 evidence = [
-  "DANDELION-DISP UP / virtual bool IOMobileFramebufferLegacy::start(IOService *)",
-  "DARWINBOOT: video base=0x7EC50000 display=1 row=2944 width=720 height=1600 depth=32",
-  "IMG_5929.JPG / IMG_5932.JPG: colour bars plus RD progress and HS mode lines drawn by native_gop_text",
-  "DANDELION-EXIT: pid=85 comm=IOMFB_FDR_Loader ppid=1 rv=0x100 sig=0 status=1",
-  "DANDELION-BRK: pid=113 comm=SpringBoard pc=0x1bf04b2ec lr=0x1bf04b2ec comment=0x0 fits slide 0x1fc6c000, unslid 0x19f3df2ec = FrontBoardServices + 0x1e2ec",
-  "The trap block's format CFString decodes to 'failed to find the main CADisplay' (33 characters, flags 0x7C8), next to 'failed to find the symbol for CADisplay' and the QuartzCore soft-link paths",
-  "sr18 console: DANDELION-DISP(23) DISP SURF 0 F1, DISP MAP 720x1600 7ec50000, DISP NUB A1 S1, DISP P1 A1 S1, DISP ARMIO 1, DISP CLIENT 57 backboardd T0, DISP COPY 0 4608000, DISP UP",
-  "sr18 console: one DANDELION-EXEC for SpringBoard and no exit for it, across 23,634 lines and D4K beat 181 procs=207 pid1stat=2",
-  "IMG_5976.JPG / IMG_5978.JPG: the panel shows the Apple boot logo instead of colour bars, which is this stack drawing",
-  "Disassembly of +[CADisplay mainDisplay] -> ensure_displays() -> query_displays() -> __CASGetDisplays in the cached QuartzCore shows the display list is a server round trip, not a local IOKit enumeration",
+  "adb shell wm size => 720x1600, wm density => 320",
+  "dmesg: [LCM] tps65132_probe - LCM bias supply is a TPS65132 over I2C",
+  "DISP RET 330/330 F330 with S57:backboardd, over D4K beat 1036",
+  "DANDELION-DATA: mount=0 stage=4 dev=16777219 seed=536870912 disabled=0",
 ]
-
 [[area]]
 id = "input"
 status = "planned"
 components = []
-paths = ["drivers/ShengHidInput", "drivers/ShengNovatekTouch", "package/*Touch*", "package/*Button*", "scripts/*touch*", "scripts/*hid*"]
-inputs = ["Identify the input hardware, resources and existing component interfaces for this board."]
-configuration = ["Record the board.toml fields, DTS properties and defconfig values used for input."]
-procedure = ["Follow the input stage in the porting guide and record the actual commands."]
-findings = ["Collect the first input observation, its cause when established, and the resulting implementation decision."]
+paths = ["dts/dandelion.dts", "board.toml"]
+inputs = ["The touch controller is a Novatek NT36525B (dmesg [NVT-ts] HEILITAI nt36525b) on the MediaTek I2C bus, IRQ gpio 329. The panel is 720x1600 at density 320."]
+configuration = ["Nothing selected. No input component is included in board.toml."]
+procedure = ["Identify the bus, IRQ and protocol of the controller, then implement the driver and the HID sink."]
+findings = ["The UniXNU catalog touch stack is ShengHidInput plus ShengNovatekTouch, written for the Novatek NT36532E on a Qualcomm GENI SPI bus. This board has a different sensor (NT36525B) on a different bus (MediaTek I2C), and the catalog has no MediaTek I2C controller driver.", "nx769j records the same mismatch for a Goodix panel and deliberately selects no input component, so the catalog offer is not portable to this bus without new work.", "The yunluo record states its Novatek host models cover NT36532-family behaviour only and qualify no real firmware, bus timing, IRQ or HID consumer path."]
 completion = ["Touches map to the display, simultaneous contacts keep stable IDs, release events arrive, and buttons produce expected HID reports."]
-limits = ["Hardware inputs and implementation are pending for this example board."]
-next_action = ["Inventory the required input inputs before implementation."]
+limits = ["No MediaTek I2C controller driver exists in the catalog, and ShengNovatekTouch speaks GENI SPI and NT36532. Reusing it needs a new bus driver plus protocol work for NT36525B, so this is new development rather than configuration."]
+next_action = ["Scope a MediaTek I2C driver and an NT36525B protocol path, or find the controller that the vendor LK and Android use for this panel, before writing the HID sink."]
 evidence = [
   "dmesg: [NVT-ts] nvt_driver_init: TP info: [Vendor]HELITAI [IC]nt36525b",
   "dmesg: [NVT-ts] nvt_parse_dt: novatek,irq-gpio=329",
-  "dmesg: [HXTP] himax_hx83102_init also runs - either a second controller or a compatibility probe; the Novatek one reports the panel",
+  "dts: touch { compatible = \"mediatek,touch\"; }",
 ]
-
 [[area]]
 id = "gpu"
 status = "planned"
@@ -231,48 +208,41 @@ evidence = []
 
 [[area]]
 id = "packaging"
-status = "planned"
-components = []
-paths = ["scripts/*payload*", "scripts/*image*", "scripts/*flash*", "patches/**", "package/Kit.toml"]
-inputs = ["Identify the image assembly hardware, resources and existing component interfaces for this board."]
-configuration = ["Record the board.toml fields, DTS properties and defconfig values used for image assembly."]
-procedure = ["Follow the image assembly stage in the porting guide and record the actual commands."]
-findings = ["Collect the first image assembly observation, its cause when established, and the resulting implementation decision."]
+status = "verified"
+components = ["DarwinBoot", "XnuPrelink"]
+paths = ["scripts/package.sh", "scripts/build-data-seed.py", ".github/workflows/data-seed.yml", "board.toml", "configs/dandelion_defconfig"]
+inputs = ["The boot partition is 64 MiB; the payload is 60 MiB. The firmware is Mu-Silicium on dandelionPkg with FD_BASE 0x41080000 and FD_SIZE 0x300000."]
+configuration = ["partition_list/entry_kernel keep the known-good firmware FV and only replace the payload. The Data seed is built by the data-seed.yml macOS workflow on the main branch, then packed as DBRDISK1."]
+procedure = ["bash scripts/package.sh --os 17 --uefi ../uefi-dandelion --data-ramdisk <seed>.dbr --kernel-arg panic_on_crash_disabled=1, then splice the payload into boot-sr26-emmc-linked.img and flash."]
+findings = ["Splicing the payload into the known-good firmware keeps boot working; the firmware region is byte-identical after the splice.", "The repository default branch is main, so workflow_dispatch and pushes must target main; two CI seed runs produced old output because the work was pushed to master.", "A locally built mkapfs seed contains directories only, so its launchd disabled plist is absent and the service graph starves; the CI macOS seed from the OS private/var tree is the correct input."]
 completion = ["Kernel and prelink succeed, payload contains all declared inputs, and the boot image matches the bootloader format and size limit."]
-limits = ["Hardware inputs and implementation are pending for this example board."]
-next_action = ["Inventory the required image assembly inputs before implementation."]
-evidence = []
-
+limits = ["seed-data-skip-setup.py needs macOS hdiutil, so the local Linux build cannot run the main-branch skip-setup tool; the seed is produced by CI instead."]
+next_action = ["Keep the seed UUID in dandelion_defconfig in step with the seed the workflow emits; record the UUID in the build log."]
+evidence = [
+  "boot-sr43-mainseed.img and boot-sr44-clean.img: firmware unchanged, payload replaced",
+  "Data seed UUID 47000E8A-66EF-4308-AEAD-1130B31752AB, 512 MiB, 39 files, 7 seed files",
+  "CI run 44150566205 on main produced the seed used by sr43 and sr44",
+]
 [[area]]
 id = "diagnostics"
 status = "verified"
 components = []
-paths = ["scripts/check-*", "scripts/probe-*", "scripts/audit-*", "scripts/read-*", "scripts/prepare-*", "scripts/data/**", "package/tests/**", "package/*Tests*", "package/*Diagnostic*", "package/*Probe*", "package/Boot*", "package/linux-log/**", "unixnu.lock"]
-inputs = ["Identify the diagnostics hardware, resources and existing component interfaces for this board."]
-configuration = ["Record the board.toml fields, DTS properties and defconfig values used for diagnostics."]
-procedure = ["Follow the diagnostics stage in the porting guide and record the actual commands."]
-findings = [
-  "The panel is a reliable channel when the console is not: native_gop_text renders arbitrary lines into the GOP framebuffer.",
-  "Console bytes come back through the flashinfo partition; collect_cycle.ps1 pulls the 16 MiB block after Android is restored.",
-  "DANDELION-EXIT names every exiting process with ppid, raw status and signal; DANDELION-ABORT records the os_reason namespace and code for aborts.",
-  "Reversed buildArgument(name, maximum, fallback) arguments are a silent trap: the DMA engine never enabled because maximum and fallback were swapped.",
-  "The console now carries process names (DANDELION-EXEC from vnode_getname), the display stages (DANDELION-DISP, previously panel only), the containing image of every trap (DANDELION-TEXT) and SpringBoard/backboardd liveness in the beat line; scripts/analyze-console.py turns one capture into processes, display stages, probe answers and a beat timeline.",
-  "Two of this board's own diagnostics panicked the kernel before they were fixed: copyinstr of a user string in abort_with_payload, and a copyin in the exit path. Both read kernel data only now.",
-]
-completion = ["Each claimed milestone has a reproducible command, a matching image revision and an accessible result."]
-limits = ["The os_log_fault kcd text is still unreachable from the console."]
-next_action = ["Add the kcd buffer dump to the exit trace; keep every new diagnostic inside an already-applying patch, because a new patch with fresh line numbers does not apply."]
+paths = ["patches/xnu/dandelion-focus-trace.patch", "patches/xnu/dandelion-data-visibility.patch", "package/DandelionLegacyDisplay.cpp", "package/NativeMsdc.cpp", "scripts/collect-slide.ps1", "scripts/brk-symbolize.py"]
+inputs = ["No UART. The kernel console writes to the flashinfo block (14,680,064 bytes, text from offset 512) and is read back from Android."]
+configuration = ["serial=3 -v. dandelion-panel-text=1 turns the on-panel diagnostic overlay back on (off by default once the UI renders)."]
+procedure = ["scripts/collect-slide.ps1 waits for fastboot, flashes Android back, pulls the flashinfo block and symbolizes any trapped PC."]
+findings = ["DANDELION-* records carry the boot axis: BRK traps with slide and unslid PC, EXEC/EXIT with reason, DISP stages, FOCUS per-process thread counts, and DATA for the seed mount.", "The D4K beat line prints procs, pid1stat, SpringBoard and backboardd state plus read/write/retry/failure counters every 20 s, which is what showed the service graph starving.", "DANDELION-DATA prints mount status, stage, device, seed size and the errno of a vnode_lookup of the launchd disabled plist; a value of 2 proved the seed was empty.", "The panic screen prints the full os_reason description, which is the only channel that shows why a userland process failed."]
+completion = ["Every milestone is observable from the log block alone, without a UART."]
+limits = ["Userland logs are not reachable: /private/var is a RAM seed and there is no APFS reader on the build host, so only kernel-side observation is available."]
+next_action = ["Keep the focus sampler and the Data probe as the first stops for any userland stall."]
 evidence = [
-  "DANDELION-EXIT: pid=6 comm=launchd ppid=1 rv=0x1 sig=1 status=-1",
-  "DANDELION-ABORT: pid=... ns=2 code=5",
-  "IMG_5933.JPG / IMG_5942.JPG: panel crash report with frames and pages=0x3aec5",
-  "The documented diagnostic arguments boot-ui-focus, disable-watchdogd and log-display have no reader in this kernel (only boot-progress does), so passing them changes nothing and their silence is not a failure.",
-  "sr15/sr18 captures: 4,903 and 23,634 console lines recovered through the flashinfo window, decoded with tools/ddnlog.py and summarized by scripts/analyze-console.py",
+  "console-sr43-20261118-024936.txt: 136263 lines, DANDELION-DATA disabled=0, DISP RET 330/330 F330",
+  "console-sr41-20261118-013151.txt: DANDELION-DATA disabled=2, which located the empty seed",
+  "SR40 comparison: native-msdc-clk=4 gave 7 verify mismatches against 3 and the same 6 frames",
 ]
-
 [[area]]
 id = "userspace"
-status = "in_progress"
+status = "verified"
 components = ["RamBlock", "XnuPrelink", "DarwinBoot"]
 paths = ["package/NativeMsdc.cpp", "patches/xnu/**", "configs/dandelion_defconfig", ".github/workflows/data-seed.yml"]
 inputs = ["iPadOS 17.7.11 (21H461) IPSW, trust caches, SystemOS cryptex, owner-root policy."]
@@ -288,11 +258,16 @@ findings = [
   "The split is clean: services that register a Mach exception port (watchdogd, SpringBoard, liveactivitiesd) abort, and services that do not (fsck, keybagd, fairplayd, usermanagerd, DumpPanic) all run to completion.",
   "Symbolised from kernel.macho, the abort path is handle_breakpoint -> sleh_synchronous -> postsig_locked -> exit_with_reason: the process executed a brk trap, it did not fault.",
   "backboardd does appear once the exec trace carries a name: one DANDELION-EXEC with comm=backboardd and no exit for it, in the same boot where it opens the framebuffer as display client 57.",
+  "ROOT CAUSE OF THE CRASH LOOP, established with a read-only probe: the locally built mkapfs Data seed contained directories only, so /private/var/db/com.apple.xpc.launchd/disabled.plist was absent (vnode_lookup errno 2, ENOENT) and every service the seed means to disable crash-looped until launchd reported Too many corpses being created and stopped spawning. Unpacking both DBRDISK1 images proved it: the CI macOS seed holds disabled.plist, watchdogd and SetupDone, the local one holds NXSB and nothing else.",
+  "With the UniXNU main-branch seed (OS private/var copied, the five skip-setup preferences, and the guide job list plus the sheng-lite jobs) the probe reports disabled=0, the corpse storm stops, the service graph completes, and the iPadOS lock screen renders.",
+  "sr43 stability: 136,263 log lines over 1036 beats (5.75 hours), procs 129, SpringBoard pid 27 and backboardd pid 57 alive in every beat, DISP COPY 330 / DISP RET 330 / F330.",
+  "watchdogd still exits 33 times and liveactivitiesd 87 times over that run; the crashes no longer starve launchd, so they are noise rather than a blocker.",
   "SpringBoard stops aborting once the display service is up: one exec, no exit, no breakpoint record, across a 23,634-line boot that reaches 207 live processes (D4K beat 181 procs=207 pid1stat=2).",
   "The services still aborting are watchdogd (19 launches, all at the same code offsets), liveactivitiesd (SessionSyncEngine + 0x2e4f8) and gamed (Foundation + 0x4cd2c); none of them stops the boot any more.",
 ]
 completion = ["launchd exec passes; the dyld cache registers; Early boot complete is reached; SpringBoard starts and stays alive with the display service up."]
-limits = ["SpringBoard stays alive but no lock screen appears: the display service is up and the panel shows the Apple boot logo, while no GPU component is selected on this board.", "watchdogd, liveactivitiesd and gamed still abort on an exception-handler failure; the boot tolerates it and no longer panics with panic_on_crash_disabled=1.", "The full fault format string is not in the exit reason (the buffer is 116 bytes), so the firehose has to be tapped to read it."]
+limits = [
+  "The lock screen renders but cannot be unlocked: no input driver, and IOMFB_FDR_Loader still exits 0x100.","SpringBoard stays alive but no lock screen appears: the display service is up and the panel shows the Apple boot logo, while no GPU component is selected on this board.", "watchdogd, liveactivitiesd and gamed still abort on an exception-handler failure; the boot tolerates it and no longer panics with panic_on_crash_disabled=1.", "The full fault format string is not in the exit reason (the buffer is 116 bytes), so the firehose has to be tapped to read it."]
 next_action = ["Read the sr20 beat line (sb=<pid>:<stat> bb=<pid>:<stat>) to see how long SpringBoard stays alive and where it stops.", "Read the sr20 beats to see whether SpringBoard stays alive over hours and where it stops; the reference project produced a UI on the CPU copy path, so look for the userland blocker before any graphics work."]
 evidence = [
   "DANDELION-EXIT: pid=26 comm=SpringBoard ppid=1 rv=0x5 sig=5 status=-1",

@@ -896,6 +896,17 @@ static bool gopTextOpen(void) {
 extern "C" void
 native_gop_text (unsigned line, const char *text)
 {
+  /*
+   * Once the lock screen renders, these diagnostic strings are drawn over the UI, so the whole panel
+   * text path is off unless the boot argument asks for it.  The kernel console still reaches the
+   * flashinfo log, so a silent panel costs nothing for diagnosis; dandelion-panel-text=1 restores it.
+   */
+  static int panelText = -1;
+  if (panelText < 0) {
+    unsigned want = 0;
+    panelText = (PE_parse_boot_argn("dandelion-panel-text", &want, sizeof(want)) && want != 0) ? 1 : 0;
+  }
+  if (!panelText) return;
   if (!text || !gopTextOpen()) return;
   volatile uint8_t *base = reinterpret_cast<volatile uint8_t *>(textMapping->getVirtualAddress());
   const unsigned scale = textVideo.v_width >= 600 ? 2u : 1u;
