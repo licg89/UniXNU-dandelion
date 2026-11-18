@@ -11349,3 +11349,57 @@ sed -i 's|CONFIG_XNU_OWNER_DATA_VOLUME_UUID=.*|CONFIG_XNU_OWNER_DATA_VOLUME_UUID
 ```
 
 ---
+
+## 0.198 2026-11-19 00:2x：★★★ 真相 —— **UI 只画了 7 帧就停**，40 分钟不是"启动慢"而是"停在那里"
+
+### 一、决定性数据（sr69 日志，15,256 行）
+
+```
+sheng-fb: copy 1..7: 4608000 bytes in 2798-2849 us     ← 每帧像素拷贝仅 2.8 ms ✓
+sheng-fb: frame 6 kind 0: 41011 lit pixels in (248,616)-(475,896)   ← 画的是 Apple logo
+DANDELION-DISP(30): DISP RET 7/7 F7 S57:backbo C5/73:PerfPo        ← 第 7 帧，backboardd 提交
+```
+
+- `DISP COPY` / `DISP FRAME` / `DISP RET` 各 **7 次** ✗
+- 第 7 帧在第 **7196 行**，日志共 15,256 行 ⇒ **后面 8000 行零帧** ✗
+- 像素拷贝 **2.8 ms/帧** ✓ ⇒ **渲染不是瓶颈** ✗
+
+### 二、这推翻了之前所有"锁屏 42 分钟"的结论
+
+| 之前的结论 | 实际情况 |
+| --- | --- |
+| "42 分钟进锁屏" | **很可能从未进锁屏** ✗ 屏幕一直是 logo ✓ |
+| "SpringBoard 起来后渲染慢" | 只画了 7 帧，之后**零帧** ✗ |
+| "launchd 重启风暴拖慢" | 是噪音 ✓ 不是主因 ✗ |
+| "存储是瓶颈" | 226 s / 2380 s ✗ |
+| "UEFI 是瓶颈" | **已修复** ✓ 8.6 s |
+
+⇒ **40 分钟 = 系统停在 logo，SpringBoard 在等一个永远不会来的事件** ✗✓✓
+
+### 三、谁在等什么
+
+```
+backboardd  total=17 wait=17 run=0  event=0xfffffff00700aadc   ← 内核地址
+SpringBoard total=17 wait=17 run=0  waitpc=0x1db8dcb58         ← 共享缓存地址
+```
+
+⇒ `backboardd` 在**内核里等事件** ✗ 最可能是 **vsync / 帧完成回调** ✓
+⇒ 我们的显示 shim（`DandelionLegacyDisplay.cpp`）**可能没有交付帧完成通知** ✗
+⇒ 于是 backboardd 提交 7 帧后停住 ⇒ SpringBoard 等它 ⇒ UI 永不更新 ✓✓✓
+
+### 四、下一步（明确）
+
+查 `DandelionLegacyDisplay.cpp` 的：
+1. swap 完成后的**客户端回调**（`swapComplete` / `IOFence` 信号）
+2. **vsync / 显示中断**的交付路径（`native_legacy_pm_callbacks` 计数器）
+3. `DISP RET 7/7` 的 7/7 是什么含义（7 次返回 / 7 次请求？）
+
+主分支对应实现是 `NativeLegacyDisplay`（catalog 组件），可对照 ✓
+
+### 五、教训
+
+- 我用 `beat` 计数和 `procs` 数量推断"进度"✗ 但**帧数**才是 UI 的真实进度 ✓
+- 每轮测试都应该**先看帧数**：`DISP FRAME` 的次数 ✓ 它直接回答"UI 动了没有" ✓
+- 今晚前 5 小时的性能优化方向全部偏离 ✗ 因为真正的症状是"UI 停住"，不是"启动慢" ✓
+
+---
