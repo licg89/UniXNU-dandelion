@@ -11289,3 +11289,63 @@ DANDELION-EXIT: pid=81 comm=bluetoothd rv=0x9 sig=9   ← launchd 立刻 SIGKILL
 本板未链接它 ✓ 所以走"种子 plist + CI 重建"这条路 ✓
 
 ---
+
+## 0.197 2026-11-19 00:0x：**用户域 plist 才有效**（已验证 98→0），但禁多会卡死 SpringBoard
+
+### 一、已验证：`disabled.501.plist` 是有效的那个
+
+sr70（新种子，只改 501 plist）实测：
+
+| 进程 | sr69 | **sr70** | 结论 |
+| --- | --- | --- | --- |
+| **bluetoothd** | 98 次 | **0 次** | ✅ **机制有效** |
+| fairplayd.A2 | 62 次 | 3 次 | ✅ |
+| com.apple.datamigrator | 14 次 | 2 次 | ✅ |
+| **总 exec** | **780** | **200** | ✅ **↓74%** |
+
+⇒ **`disabled.plist`（系统域）无效，`disabled.501.plist`（mobile 用户域）有效** ✓✓
+⇒ 这是今晚第二个确定的机制性发现 ✓
+
+### 二、但一次禁 4 个会卡死 SpringBoard
+
+| 指标 | sr69（未禁）| sr70（禁 4 个）|
+| --- | --- | --- |
+| SpringBoard 线程数 | **17** ✓ 持续增长 | **2** ✗ 停滞 |
+| `run` | 7 ✓ | **0** ✗ 全在等 |
+| 最后 beat | **118**（2380 s）| **50**（1000 s）✗ |
+
+⇒ SpringBoard 在 sr70 里停在 2 线程全等待 ✓
+⇒ 最可能原因：**`fairplayd` 是 SpringBoard 的 DRM 初始化依赖** ✗ 禁了它 UI 卡住 ✓
+
+### 三、修正：只禁 bluetoothd（与主分支 lite 列表一致）
+
+UniXNU main 的 lite 列表是 **bluetoothd + coreduetd** ✓ 我们保留：
+```python
+'com.apple.bluetoothd': True,
+```
+移除 fairplayd / fairplayd.A2 / datamigrator ✓
+
+### 四、教训
+
+- 一次改多个变量 ✗ 无法定位是哪个导致卡死 ✓ 应该逐个加 ✓
+- 主分支的 lite 列表是**有原因的**：它是能到锁屏的最小集合 ✓ 不该擅自扩大 ✓
+
+### 五、种子重建流程（已验证可用）
+
+```sh
+# 1. 改 scripts/build-data-seed.py
+# 2. 提交并推送
+git push origin master:main
+# 3. 触发 CI（约 3-10 分钟）
+gh workflow run data-seed.yml -f size_mib=256 -f unixnu_ref=main
+# 4. 下载
+gh run download <run-id> -D /tmp/seed-dl
+tar xzf /tmp/seed-dl/dandelion-data-seed/dandelion-data-seed.tar.gz -C /tmp/seed-dl/dandelion-data-seed
+# 5. 安装 + 更新 UUID（每次 UUID 都变！）
+cp .../dandelion-data.dbr /root/work/dandelion-data-main.dbr
+sed -i 's|CONFIG_XNU_OWNER_DATA_VOLUME_UUID=.*|CONFIG_XNU_OWNER_DATA_VOLUME_UUID="<uuid from .dbr.json>"|' \
+    configs/dandelion_defconfig
+# 6. 构建
+```
+
+---
