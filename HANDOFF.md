@@ -10852,3 +10852,66 @@ clang: error: cannot specify -o when generating multiple output files
 - `scripts/hid-abi-snapshot.json` 证明 ABI 逐位一致 ✓
 
 ---
+
+## 0.189 2026-11-18 10:5x：HID CI 追到尽头 —— 需要 **iOS 17 SDK**，本仓库 runner 只有 iOS 26
+
+### 一、这一轮又修掉的 bug（累计 13 处）
+
+| # | 症状 | 修法 |
+| --- | --- | --- |
+| 9 | 命令里源码出现**两次**（配方位置 + 末尾追加）| 去掉末尾的 `-c source`，只留 `-o` |
+| 10 | 把 Linux clang 当编译器 | 重写 `argv[0]` 为 `xcrun clang` |
+| 11 | `record['file']` 未做前缀替换 ⇒ 编译内核源码 | 用替换后的路径匹配 |
+| 12 | `IOKit/hid/IOHIDDevice.h` 在 runner SDK 里不存在 | 打包 `hidfamily-headers.tar.gz`（140 KB，IOHIDFamily-2031.120.4 Apple 开源头 + `TargetConditionals.h` + IIG 生成头的占位）|
+| 13 | 缺 `IOHIDParameter.h` / `IOGraphicsTypes.h` 等 | 把仓库里全部 `IOHIDFamily/*.h`(50) 与 `IOKit/hidsystem/*.h`(14) 打包 |
+
+### 二、当前唯一的阻断（环境级）
+
+```
+iPhoneOS26.5.sdk/usr/include/MacTypes.h:289: error: typedef redefinition
+   'UnsignedWide' vs 'UInt64'
+IOKit/hidsystem/IOHIDTypes.h:41: 'IOKit/graphics/IOGraphicsTypes.h' file not found
+```
+
+根因分析 ✓：
+
+- `build-sheng-hid-input.py` 的 README 明确写 **"The legacy builder is limited to arm64 iOS 17 /
+  IOHIDFamily 2031.120.4"** ✓
+- 本仓库 runner 是 `macos-26`，Xcode 26.6，**SDK 是 iPhoneOS26.5** ✗ 与 iOS 17 的
+  `MacTypes.h`/`IOGraphicsTypes.h` 不兼容 ✓
+- `macos-14`（Xcode 15.x，带 iOS 17 SDK）在本仓库被报
+  `The configuration 'macos-14-arm64-us-default' is not supported` ✗ 不可用 ✓
+
+⇒ 这不是再修一个 flag 能解决的 ✓ **需要带 iOS 17 SDK 的 macOS 环境** ✗
+
+### 三、结论与建议
+
+**结论**：本机（Linux）与现有 CI（macos-26 / iOS 26 SDK）都无法完成该组件的官方编译 ✓
+官方构建器要求与 iOS 17 IOHIDFamily 同代的 SDK ✓
+
+**可行路径**（按可行性排序）：
+
+1. **用一台装有 Xcode 15.2（iOS 17.2 SDK）的 Mac** 直接跑
+   `python3 scripts/build-sheng-hid-input.py`（需先放候选产物与编译树，本会话已备好：
+   release `abi-dandelion` 的 4 个资产） ✓ 一次性完成 ✓
+2. 让本仓库允许 `macos-14` runner（改 runner group 配置）✓
+3. 放弃官方 C++ 路径，等有 iOS 17 SDK 环境再做 ✓（不建议本机复刻 SDK ✗）
+
+### 四、已备好、可直接复用的资产
+
+release `abi-dandelion`：
+
+| 资产 | 大小 | 说明 |
+| --- | --- | --- |
+| `kernel.macho` | 51.7 MB | 参考候选产物 |
+| `kernel.json` | 17.0 MB | 其 plan |
+| `xnu-compile-tree.tar.gz` | 19.3 MB | 头+配方（6158 头、`.cpo.json`、`meta_features.h`、Kernel.framework）|
+| `hidfamily-headers.tar.gz` | 140 KB | IOHIDFamily-2031.120.4 全头 + IIG 占位 |
+
+`scripts/hid-abi-snapshot.json`（10.9 KB）证明本内核与官方 ABI 逐位一致 ✓
+
+### 五、不受影响
+
+sr44 干净镜像已刷入 ✓ 锁屏无叠字 ✓ `display/userspace=verified` ✓
+
+---
