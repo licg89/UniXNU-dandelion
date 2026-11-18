@@ -11088,3 +11088,65 @@ NativeMsdc: rw 0:12M 3:880M 7:1500M ... n=4096
 | `boot-sr50-rwstats.img` | `1912e147` | sr49 + 读盘区间统计 |
 
 ---
+
+## 0.193 2026-11-18 14:4x：按用户要求「回主分支学习 + 自审代码」的结果
+
+### 一、主分支提供了什么（我原先不知道的）
+
+`docs/guide/debugging.md` 是一套完整诊断体系：
+
+| 机制 | 内容 |
+| --- | --- |
+| `boot-progress=1/2` | 全屏诊断页：48 行 × 120 列，画进帧缓冲；**30 秒无进展自动冻结**留屏拍照 ✓ |
+| `boot-diag-resume=<秒>` | UI 接管屏幕后**把面板抢回来** ✓ |
+| `sheng-build-tag=<tag>` | 标题栏打镜像标签 ✓ |
+| 脉冲条 | 面板底部 32 px，每秒心跳 ✓ |
+| `boot-ui-focus` 1–4 + `decode-boot-ui-trace.py` | 官方 UI 追踪 + 解码器 ✓ |
+| 日志源表 | 明确列出「**Diagnostic page — Live state after the console stops**」✓ |
+
+### 二、为什么我们用不了（关键）
+
+`scripts/build-xnu-4k-baseline.sh` 第 89 行前后有硬门禁：
+
+```bash
+if [ "${XNU_NATIVE_UFS:-0}" != 1 ] || [ "${XNU_OWNER_ROOT_AUDIT:-0}" != 1 ] || \
+   [ "${XNU_SOURCE_CORECRYPTO14:-0}" != 1 ]; then
+  echo 'Boot progress requires the audited UFS/owner-root and source-corecrypto build' >&2
+  exit 1
+fi
+```
+
+⇒ **BootProgress 要求 `XNU_NATIVE_UFS=1`**，即 UFS 存储路径 ✗
+⇒ 本板是 **eMMC / MSDC** ✓（`XNU_NATIVE_UFS` 不适用）✗
+⇒ **官方面板诊断页对本板不可用** ✓
+
+**结论修正**：我们的 `native_gop_text` 面板叠字**不是盲造轮子**，而是官方机制被 UFS 门禁挡住后的必要替代 ✓
+但**功能上确实落后**：缺「卡死冻结」「面板抢回」「构建标签」三项 ✓ 这三项与存储路径无关，可以移植 ✓
+
+### 三、自审：我这几处改动的问题
+
+| # | 我的改动 | 问题 | 严重度 |
+| --- | --- | --- | --- |
+| 1 | `native-msdc-fastpolicy`（局部提频读 73 MB 策略）| **让整机启动变成不可观测** ✗ 控制台与存储共用 MSDC0，一提频日志就断（sr49 只有 116 行，正好断在策略读那一行）✓ 等于用"看得见"换"跑得快" ✗ | **高** |
+| 2 | 同样的提频第一次写死 `mode 0 div 2` | 实测**传输失败** ⇒ 启动直接终止（无 panic、无日志）✗ 应复用 `hostRaiseClock()` 的扫描+验证路径 ✓ 已改 sr51 | 高（已修）|
+| 3 | HID 桥塞进 `DandelionLegacyDisplay.cpp` | 违反 AGENTS.md「board-package services 如 buttons 应单独归属」✗ 且显示包因此依赖 HID 组件 ⇒ 不链组件就链接失败 ✓ 应独立成包 ✓ | 中 |
+| 4 | 面板叠字只有"开/关" | 缺主分支那三项能力（冻结/抢回/标签）✗ 且关掉后完全失去可视化 ✗ | 中 |
+| 5 | `collect-slide.ps1` | 每次都要**人工按键**进 fastboot ✗ 主分支的无人值守流程是「板子自己回 bootloader 再读日志」✓ | 中 |
+| 6 | `weak_import` 用于 HID 符号 | 静态内核链接仍要求符号存在 ✗ 应用 `weak` 或不引用 ✓ | 低（已修）|
+| 7 | focus 采样器 | 与官方 `boot-ui-focus` 重复 ✗ 但官方那套同样受 UFS 门禁 ✗ 结论：保留，但应加解码器而非纯日志 | 低 |
+
+### 四、优先修正顺序（按"恢复可观测性"排序）
+
+1. **让面板叠字扛住提频**：面板走帧缓冲，与 MSDC 无关 ✓ 所以启动期任何时刻都能显示 ✓
+   ⇒ 应在 `native_gop_text` 里加「最后 N 行常驻 + 卡死冻结」⇒ 不依赖日志也能判读 ✓
+2. **移植 `boot-diag-resume` 概念**：UI 停止扫描后自动重画面板 ✓
+3. **fastpolicy 只在面板可用时才启用**（否则宁可不提速 ✗ 不能失去观测）
+4. HID 桥独立成包 ✓ 并从显示包移除 ✓（已移除，待重建）
+
+### 五、当前仓库状态
+
+- 显示包已**移除 HID 桥** ✓ 回退到 sr44 基线行为 ✓
+- `native-msdc-fastpolicy` 改为复用 `hostRaiseClock()` ✓（sr51）但**仍会切断日志** ✗
+- 证据：sr49 日志 116 行、断在 `reading the signed root policy` ✓ 证明提频确实发生 ✓ 也证明日志会断 ✓
+
+---

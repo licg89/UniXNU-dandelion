@@ -1848,7 +1848,9 @@ const char *loadPolicy (void)
   for (unsigned attempt = 0; attempt < attempts; ++attempt) {
     const bool fast = fastPolicy && attempt == 0;
     if (fast) {
-      hostSetClockMode (0, 2);
+      // Reuse the sweep that already verified its own divider.  A hardcoded mode 0 div 2 was tried in
+      // sr49 and the transfer failed outright, leaving the boot with 116 log lines and no display.
+      hostRaiseClock ();
       screen (61, "policy fast read");
     }
     uint64_t began = mach_absolute_time ();
@@ -1864,6 +1866,13 @@ const char *loadPolicy (void)
     }
     if (fast) hostSetClockMode (savedMode, savedDivider);
     if (readFailed) {
+      // A transfer failure at the raised clock is the expected outcome on this board (sr49), so retry at
+      // the setting that was in use before, and only give up when that also fails.
+      if (fast) {
+        IOLog ("NativeMsdc: fast policy read failed to transfer; repeating at mode %u div %u\n",
+               savedMode, savedDivider);
+        continue;
+      }
       freePolicy ();
       return "policy region read failed";
     }
