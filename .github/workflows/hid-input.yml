@@ -69,9 +69,9 @@ jobs:
         run: |
           mkdir -p ~/unixnu/build/xnu-prelink
           cp ~/candidate/kernel.macho \
-            ~/unixnu/build/xnu-prelink/native-owner-dandelion-hid-init-candidate.macho
+            ~/unixnu/build/xnu-prelink/native-owner-ufs-cpu-desktop-dandelion-candidate.macho
           cp ~/candidate/kernel.json \
-            ~/unixnu/build/xnu-prelink/native-owner-dandelion-hid-init-candidate.json
+            ~/unixnu/build/xnu-prelink/native-owner-ufs-cpu-desktop-dandelion-candidate.json
           ls -l ~/unixnu/build/xnu-prelink/
 
       - name: Verify the candidate against the recorded ABI
@@ -79,7 +79,7 @@ jobs:
           cd ~/unixnu
           python3 - <<'PY'
           import hashlib, json, pathlib
-          cand = pathlib.Path('build/xnu-prelink/native-owner-dandelion-hid-init-candidate.macho')
+          cand = pathlib.Path('build/xnu-prelink/native-owner-ufs-cpu-desktop-dandelion-candidate.macho')
           plan = json.loads(cand.with_suffix('.json').read_text())
           snap = json.loads(pathlib.Path('${{ github.workspace }}/scripts/hid-abi-snapshot.json').read_text())
           assert hashlib.sha256(cand.read_bytes()).hexdigest() == plan['candidate_sha256'], 'candidate does not match its plan'
