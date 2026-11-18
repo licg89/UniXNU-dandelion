@@ -136,6 +136,10 @@ jobs:
               '--target=arm64-apple-ios17.0',
               '-isysroot', sdk,
               '-I', sdk + '/usr/include',
+              # IOKit and IOHIDFamily headers live in the SDK frameworks, not under usr/include.
+              '-iframework', sdk + '/System/Library/Frameworks',
+              '-I', sdk + '/System/Library/Frameworks/IOKit.framework/Headers',
+              '-I', sdk + '/System/Library/Frameworks/IOKit.framework/Headers/hid',
               '-I', str(home / '.cache/xnu-work/osfmk'),
               '-I', str(home / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT'),
               '-DNATIVE_HID_SOURCE_API=1',
