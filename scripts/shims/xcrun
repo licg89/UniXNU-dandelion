@@ -1,0 +1,27 @@
+#!/bin/bash
+# The official UniXNU builders ask for a compiler and an SDK through xcrun.  This port builds on Linux,
+# so answer the SDK question with the header directory in UNIXNU_HID_HEADERS (unused by the HID builder,
+# which generates its own ABI header) and forward the tools to the local LLVM.
+LLVM="${UNIXNU_LLVM_PREFIX:-/opt/unixnu-linux/llvm}"
+if [ "${1:-}" = "--sdk" ] && [ "${2:-}" = "iphoneos" ] && [ "${3:-}" = "--show-sdk-path" ]; then
+    echo "${UNIXNU_HID_HEADERS:-$LLVM/include}"
+    exit 0
+fi
+tool="${1:-}"; shift || true
+case "$tool" in
+    clang)   exe="$LLVM/bin/clang" ;;
+    clang++) exe="$LLVM/bin/clang++" ;;
+    ar)      exe="$(command -v llvm-ar || echo /usr/bin/llvm-ar)" ;;
+    ranlib)  exe="$(command -v llvm-ranlib || echo /usr/bin/llvm-ranlib)" ;;
+    *)       exe="$(command -v "$tool" || true)" ;;
+esac
+if [ -z "$exe" ] || [ ! -x "$exe" ]; then
+    echo "xcrun shim: no local equivalent for '$tool'" >&2
+    exit 1
+fi
+args=()
+while [ $# -gt 0 ]; do
+    if [ "$1" = "-isysroot" ]; then shift 2; continue; fi
+    args+=("$1"); shift
+done
+exec "$exe" "${args[@]}"

@@ -124,20 +124,22 @@ evidence = [
 ]
 [[area]]
 id = "input"
-status = "planned"
-components = []
-paths = ["dts/dandelion.dts", "board.toml"]
-inputs = ["The touch controller is a Novatek NT36525B (dmesg [NVT-ts] HEILITAI nt36525b) on the MediaTek I2C bus, IRQ gpio 329. The panel is 720x1600 at density 320."]
-configuration = ["Nothing selected. No input component is included in board.toml."]
-procedure = ["Identify the bus, IRQ and protocol of the controller, then implement the driver and the HID sink."]
-findings = ["The UniXNU catalog touch stack is ShengHidInput plus ShengNovatekTouch, written for the Novatek NT36532E on a Qualcomm GENI SPI bus. This board has a different sensor (NT36525B) on a different bus (MediaTek I2C), and the catalog has no MediaTek I2C controller driver.", "nx769j records the same mismatch for a Goodix panel and deliberately selects no input component, so the catalog offer is not portable to this bus without new work.", "The yunluo record states its Novatek host models cover NT36532-family behaviour only and qualify no real firmware, bus timing, IRQ or HID consumer path.", "The official HID sink is separable in principle: ShengHidInput/NativeHidInput.cpp is a standalone IOHIDDevice subclass exporting native_hid_input_allocate, native_buttons_set_sink and native_touch_set_sink, and its report 2 carries Menu/Home on bit 0, so a synthetic Home press could unlock the lock screen with no touch controller at all.", "That path cannot be built on this Linux host: scripts/build-sheng-hid-input.py calls xcrun --sdk iphoneos and brew --prefix llvm, so it needs macOS, and it also requires build/xnu-prelink/native-owner-ufs-cpu-desktop-v9-hid-init-candidate.macho, an artifact from another device that this tree does not contain; the builder itself records runtime_qualified: false.", "No IOKit SDK headers are available offline (there is no IOHIDDevice.h in the tree) and this port declares IOKit ABI by hand, so a hand-written IOHIDDevice subclass would have to reproduce the 207-slot abstract device that the official builder verifies slot by slot against the original kernelcache. That is not a safe guess.", "Objective conclusion: reaching input needs either a macOS build host or a CI macOS runner for ShengHidInput, plus the MediaTek I2C and NT36525B work on top of it. Neither is reachable from this Linux-only build host."]
+status = "in_progress"
+components = ["ShengHidInput"]
+paths = ["drivers/ShengHidInput", "scripts/build-sheng-hid-input-local.sh", "scripts/shims", "package/DandelionLegacyDisplay.cpp", "configs/dandelion_defconfig", "dts/dandelion.dts"]
+inputs = ["The touch controller is a Novatek NT36525B (dmesg [NVT-ts] HEILITAI nt36525b) on the MediaTek I2C bus, IRQ gpio 329. The panel is 720x1600 at density 320. Buttons reach IOHIDEventDriver through ShengHidInput."]
+configuration = ["ShengHidInput is vendored at drivers/ShengHidInput and built by scripts/build-sheng-hid-input-local.sh, which puts scripts/shims on PATH so the official scripts/build-sheng-hid-input.py runs unmodified without macOS. The archive and its bindings object are force-loaded through CONFIG_XNU_EXTRA_LD_ARCHIVES. package/DandelionLegacyDisplay.cpp supplies the component hooks and, when the boot argument dandelion-hid-home=<n> is given, allocates the device, starts it, registers it and injects a Menu press after 15 s."]
+procedure = ["Build the archive, package the image, flash it with dandelion-hid-home=<n>, then read the console block for HID UP and watch whether the lock screen leaves."]
+findings = ["The official builder needs macOS only through xcrun and brew, so two small shims let it run on this Linux host: it generates its own OriginalHidDeviceABI.h with the 207-slot layout and a sizeof(IOHIDDevice)==0xd0 assertion, and binds the owned methods to the original IOHIDDevice slots. It prints PASS for the original HID instruction identity, base imports, call boundaries and exact owned vtable.", "The kernel ABI was checked against the builder's assumptions before any of this: the IOHIDFamily __TEXT_EXEC hash, the 207-slot vtable, the protected constructor bytes and the IOService override slot list [0,1,7,12,14,21,23,76,81,82,86,87,91,92,93,101,132,140] all match, so scripts/hid-abi-snapshot.json records that this kernel is bit-identical for HID purposes.", "The archive alone is not enough: hid-original-bindings.o supplies the original IOHIDDevice base methods the vtable references and has to go on the link line, and the component's native_touch_* digitizer globals have to be defined by the board even when only buttons are used.", "Report 2 of the component's descriptor carries the consumer buttons with bit 0 = Menu, so a synthetic Menu press is the shortest way to unlock the lock screen; the component only emits while native_hid_input_requested() answers true.", "The touch controller is still unserved: the catalog ShengNovatekTouch speaks NT36532 over Qualcomm GENI SPI, this board has NT36525B over MediaTek I2C, and the catalog carries no MediaTek I2C controller driver."]
 completion = ["Touches map to the display, simultaneous contacts keep stable IDs, release events arrive, and buttons produce expected HID reports."]
-limits = ["No MediaTek I2C controller driver exists in the catalog, and ShengNovatekTouch speaks GENI SPI and NT36532. Reusing it needs a new bus driver plus protocol work for NT36525B, so this is new development rather than configuration. The HID sink itself also needs a macOS toolchain that this build host does not have."]
-next_action = ["Scope a MediaTek I2C driver and an NT36525B protocol path, or find the controller that the vendor LK and Android use for this panel, before writing the HID sink."]
+limits = ["Buttons are injected but not yet confirmed to reach SpringBoard. Touch is not implemented: no MediaTek I2C controller driver exists in the catalog and the Novatek component targets a different sensor and bus."]
+next_action = ["Flash sr46 with dandelion-hid-home=3 and read whether HID UP appears and whether the lock screen leaves; if the report is ignored, trace native_hid_input_requested and the IOHIDEventDriver edge-bit path."]
 evidence = [
-  "dmesg: [NVT-ts] nvt_driver_init: TP info: [Vendor]HELITAI [IC]nt36525b",
+  "dmesg: [NVT-ts] nvt_driver_init: TP info: [Vendor]HEILITAI [IC]nt36525b",
   "dmesg: [NVT-ts] nvt_parse_dt: novatek,irq-gpio=329",
-  "dts: touch { compatible = \"mediatek,touch\"; }",
+  "ShengHidInput: -Werror build and arm64-apple-ios17.0 object audit passed",
+  "PASS: original HID instruction identity, base imports, call boundaries and exact owned vtable",
+  "kernel symbols present: native_hid_input_allocate, NativeHidInput, native_buttons_set_sink",
 ]
 [[area]]
 id = "gpu"

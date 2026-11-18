@@ -87,6 +87,12 @@ patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches
   # placeholder in /chosen/memory-map.  Until this exists the kernel has nothing
   # to mount and stops at "Still waiting for root device".
   #
+  #
+  # The HID sink for buttons and touch: ShengHidInput (catalog id ShengHidInput) publishes an IOHIDDevice
+  # whose report 2 carries Menu/Power/Volume.  The wrapper runs the official builder with
+  # scripts/shims on PATH, which is what lets this board build it on Linux; see VENDORED.md.
+  #
+  "build-sheng-hid-input-local.sh",
   "build-arm-driver.py AppleKeyStoreState",
   "build-arm-driver.py RamBlock",
   #

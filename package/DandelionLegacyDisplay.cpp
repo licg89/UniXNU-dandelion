@@ -291,6 +291,98 @@ void native_legacy_frame_colors_observed(const uint32_t *colors,const uint64_t *
 // and retired. Times are microseconds since boot; the last 64 are kept.
 struct SwapEvent {uint64_t submitted,offered,done;uint32_t number;};
 static SwapEvent swapEvents[64];static uint32_t swapEventCount;
+// ---- HID input bridge -------------------------------------------------------------------------
+// ShengHidInput (catalog id ShengHidInput, runtime NativeHidInput) publishes an IOHIDDevice whose
+// report 2 carries the consumer buttons on bits 0..3 with bit 0 = Menu (Home).  The component
+// weak-imports the hooks below, so the board supplies them, and a report is only emitted while
+// native_hid_input_requested() answers true.
+//
+// Everything here is inactive unless the boot argument dandelion-hid-home=<n> is given, so the
+// display path this file already provides is unchanged when the bridge is off.
+extern "C" IOService *native_hid_input_allocate(void) __attribute__((weak_import));
+static void (*hidButtonNotify)(void *, uint32_t);
+static void *hidButtonContext;
+static volatile int hidHomeCount;
+static volatile unsigned hidHomeInjected;
+
+extern "C" void native_hid_input_observed(unsigned, int) {}
+extern "C" void native_hid_live_checkpoint(IOService *) {}
+extern "C" bool native_hid_input_requested(void) { return true; }
+extern "C" void native_buttons_set_sink(void (*notify)(void *, uint32_t), void *context) {
+    hidButtonNotify = notify;
+    hidButtonContext = context;
+}
+extern "C" void native_touch_set_sink(void (*)(void *), void *) {}
+
+// The component's touch digitizer reads these board globals; this port only drives buttons, so they
+// stay empty until a touch driver publishes contacts.
+extern "C" {
+volatile uint32_t native_touch_seq = 0;
+volatile uint32_t native_touch_count = 0;
+volatile uint32_t native_touch_hid_reports = 0;
+volatile int native_touch_xs[12];
+volatile int native_touch_ys[12];
+volatile int native_touch_ids[12];
+}
+
+
+static void dandelionHidHome(void)
+{
+    if (hidButtonNotify == nullptr) {
+        return;
+    }
+    // Press, hold briefly, release: a Menu press is what the lock screen waits for.
+    hidButtonNotify(hidButtonContext, 1u);
+    IOSleep(400);
+    hidButtonNotify(hidButtonContext, 0u);
+    hidHomeInjected = hidHomeInjected + 1u;
+}
+
+static void dandelionHidHomeThread(void *, wait_result_t)
+{
+    // Give the HID stack and SpringBoard time to come up before the first press.
+    IOSleep(15000);
+    for (int i = 0; i < hidHomeCount; i++) {
+        dandelionHidHome();
+        IOSleep(5000);
+    }
+    thread_terminate(current_thread());
+}
+
+static void native_dandelion_hid(IOService *parent)
+{
+    unsigned wanted = 0;
+    if (!PE_parse_boot_argn("dandelion-hid-home", &wanted, sizeof(wanted)) || wanted == 0) {
+        return;
+    }
+    if (native_hid_input_allocate == nullptr) {
+        dline(101, "HID NOALLOC");
+        return;
+    }
+    IOPlatformExpert *expert = static_cast<IOPlatformExpert *>(IOService::getPlatform());
+    IOService *provider = parent ? parent : static_cast<IOService *>(expert);
+    IOService *hid = native_hid_input_allocate();
+    if (hid == nullptr || provider == nullptr) {
+        dline(101, "HID NODEV");
+        return;
+    }
+    bool ok = hid->init() && hid->attach(provider) && hid->start(provider);
+    if (ok) {
+        hid->registerService();
+        hidHomeCount = (int)wanted;
+        thread_t thread = THREAD_NULL;
+        if (kernel_thread_start(dandelionHidHomeThread, nullptr, &thread) == KERN_SUCCESS) {
+            thread_deallocate(thread);
+            dline(101, "HID UP n%u", wanted);
+            return;
+        }
+        dline(101, "HID NOTHREAD");
+        return;
+    }
+    dline(101, "HID FAIL");
+    hid->release();
+}
+
 extern "C" void native_legacy_swap_stage(unsigned stage) {
     const uint64_t now=probeNowUs();
     uint32_t total=swapEventCount;
@@ -765,6 +857,7 @@ void native_legacy_display_late_probe(void) {
                 aks->release();
             }
         }
+        native_dandelion_hid(parent);
         IODeviceMemory *memory=IODeviceMemory::withRange(video.v_baseAddr,video.v_rowBytes*video.v_height);
         OSArray *ranges=OSArray::withCapacity(1);
         if(nub && memory && ranges && nubParent && nub->init()) {

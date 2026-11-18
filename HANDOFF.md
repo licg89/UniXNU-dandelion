@@ -10973,3 +10973,58 @@ PASS: original HID instruction identity, base imports, call boundaries and exact
 4. 构建、刷入、观察桌面
 
 ---
+
+## 0.191 ★★★★ 2026-11-18 11:2x：**HID 输入组件已在无 Mac 条件下编入内核**（sr46 待刷）
+
+### 一、sr46 已生成（`boot-sr46-hid.img`，sha `1d42f1a0`）
+
+内核符号验证 ✓：
+
+```
+native_hid_input_allocate    present
+NativeHidInput               present
+native_buttons_set_sink      present
+```
+
+启动参数：`dandelion-hid-home=3`（15 s 后注入 Home，重复 3 次，每次按住 400 ms）
+
+### 二、无 Mac 的完整做法（可复现）
+
+| 环节 | 做法 |
+| --- | --- |
+| 组件源码 | `drivers/ShengHidInput/NativeHidInput.cpp`（上游钉定版本，BSD-2-Clause-Patent，见 `VENDORED.md`）|
+| 工具映射 | `scripts/shims/xcrun`（`clang`→本地 LLVM、`ar`→`llvm-ar`、SDK 查询→头目录）+ `scripts/shims/brew`（`--prefix llvm`→`/usr`）|
+| 构建 | `scripts/build-sheng-hid-input-local.sh`：准备参考候选产物（本板 prelink）→ 用 shim 跑**官方** `build-sheng-hid-input.py`（脚本未改）|
+| 官方脚本自给自足 | 它自己生成 `OriginalHidDeviceABI.h`（207 槽布局 + `sizeof(IOHIDDevice)==0xd0` 断言）⇒ **不需要 SDK 头** ✓ |
+| 唯一源码补丁 | `build-arm-driver.py` 末尾列表补 `-Wno-missing-designated-field-initializers`（它剥掉配方里所有 `-W*` 又加 `-Werror`）|
+| 链接 | `CONFIG_XNU_EXTRA_LD_ARCHIVES` 增 `-force_load {tree}/build/sheng-hid-input/libShengHidInput.a` 与 `hid-original-bindings.o` |
+
+### 三、踩过并修掉的 6 个接线问题
+
+| # | 现象 | 原因与修法 |
+| --- | --- | --- |
+| 1 | 归档不在链接里 | 只改了设备仓库的 defconfig ✗ 构建用的是 `/root/work/UniXNU-dandelion` 那份 ⇒ 两边同步 |
+| 2 | `-Wmissing-designated-field-initializers` 11 个错误 | 补丁被构建同步覆盖 ⇒ 同时改树内与 UniXNU 源两份 |
+| 3 | `volatile ++` 报错 | C++20 弃用 ⇒ 改 `x = x + 1u` |
+| 4 | 未定义 `__ZN11IOHIDDevice*`（vtable 基类）| 缺 `hid-original-bindings.o`（不在 .a 里）⇒ 加进链接 |
+| 5 | 未定义 `native_touch_*` 全局 | 触摸驱动的坐标全局 ⇒ 桥内定义零值（本移植只做按键）|
+| 6 | 树内缺 shim | wrapper 只复制了脚本 ⇒ `scripts/shims/` 一并复制 |
+
+### 四、板级桥（`package/DandelionLegacyDisplay.cpp`）
+
+默认**关**，`dandelion-hid-home=<n>` 开启 ✓ 内容：
+
+- 实现组件 weak-import 的钩子：`native_hid_input_observed` / `native_hid_live_checkpoint` /
+  `native_hid_input_requested`（返回 true 才会出报告）/ `native_buttons_set_sink` / `native_touch_set_sink`
+- `native_hid_input_allocate()` → `init` → `attach` → `start` → `registerService`
+- 内核线程：15 s 后按 Home（report 2 bit 0），按住 400 ms 释放，重复 `n` 次
+- 面板输出 `HID UP n%u` / `HID FAIL` / `HID NOALLOC` 便于判读（面板叠字默认关，但日志里有）
+
+### 五、待验证（解锁是否成功）
+
+判据（日志）：
+- `HID UP n3` ⇒ 设备已注册
+- SpringBoard 是否退出锁屏：观察屏幕是否进入主屏
+- 若仍停在锁屏：说明 Home 事件未被消费，需要查 `native_hid_input_requested` 与事件路径
+
+---
