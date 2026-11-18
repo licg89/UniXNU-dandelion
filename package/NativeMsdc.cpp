@@ -91,6 +91,13 @@ volatile uint64_t native_msdc_reads = 0, native_msdc_writes = 0, native_msdc_flu
 volatile uint64_t native_msdc_retries = 0;
 // MSDC_CFG.CKDIV and MSDC_IOCON read-data sampling delay in effect after bring-up.
 volatile uint32_t native_msdc_clock_divider = 0;
+// Bytes read per 512 MiB window of the card, so a boot's I/O can be attributed to a region instead of
+// guessed: this driver reads about 3 GiB before SpringBoard and the size breakdown is what decides the
+// next storage change.  Printed every 4096 transfers, which is a few dozen lines per boot.
+enum { kReadWindows = 16 };
+volatile uint64_t native_msdc_read_windows[kReadWindows];
+volatile uint64_t native_msdc_read_overflow;
+volatile uint64_t native_msdc_read_transfers;
 volatile uint32_t native_msdc_sample_delay = 0;
 // Optional verified-root snapshot reuse: hits, misses, authenticated bytes reused.
 volatile uint64_t native_msdc_verified_cache_stats[3] = {};
@@ -612,6 +619,28 @@ public:
 // One transfer of at most kMaxBlocks sectors anywhere on the user area; callers bound it to their own region.
 IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write)
 {
+  // Attribute this transfer to its 512 MiB window.  The destructor runs on every return path.
+  struct WindowNote {
+    uint64_t sector; uint32_t blocks;
+    WindowNote (uint64_t s, uint32_t b) : sector (s), blocks (b) {}
+    ~WindowNote () {
+      const uint64_t window = sector >> 20;             // 1M sectors = 512 MiB
+      if (window < kReadWindows) native_msdc_read_windows[window] += uint64_t (blocks) * kSector;
+      else native_msdc_read_overflow += uint64_t (blocks) * kSector;
+      native_msdc_read_transfers = native_msdc_read_transfers + 1;
+      if ((native_msdc_read_transfers & 4095u) == 0) {
+        IOLog ("NativeMsdc: rw");
+        for (unsigned w = 0; w < kReadWindows; ++w) {
+          if (native_msdc_read_windows[w]) {
+            IOLog (" %u:%lluM", w, native_msdc_read_windows[w] >> 20);
+          }
+        }
+        if (native_msdc_read_overflow) IOLog (" over:%lluM", native_msdc_read_overflow >> 20);
+        IOLog (" n=%llu\n", native_msdc_read_transfers);
+      }
+    }
+  } windowNote (sector, blocks);
+
 
   struct BusyGuard {
     BusyGuard () { __atomic_add_fetch (&native_msdc_busy, 1, __ATOMIC_ACQ_REL); }
@@ -1804,25 +1833,52 @@ const char *loadPolicy (void)
   uint8_t *region = reinterpret_cast<uint8_t *> (storage);
   IOLog ("NativeMsdc: reading the signed root policy, %llu bytes at userdata +%llu\n", header.totalBytes, start);
   screen (61, "policy %llu MB", (unsigned long long)(header.totalBytes / (1024 * 1024)));
-  uint64_t began = mach_absolute_time ();
-  uint64_t sectors = (header.totalBytes + kSector - 1) / kSector;
-  for (uint64_t done = 0; done < sectors;) {
-    uint32_t blocks = sectors - done > kMaxBlocks ? kMaxBlocks : uint32_t (sectors - done);
-    HostSession session;
-    if (transfer (firstSector + done, blocks, region + done * kSector, false) != kIOReturnSuccess) {
+  // This read is 73 MB, it happens before the clock sweep, and at the inherited divider it measured
+  // 228,108 ms against a whole boot of about 420 s -- more than half the boot is this one transfer.
+  // native-msdc-fastpolicy=1 raises the clock for just these bytes and puts the previous setting back
+  // afterwards, so the later OS reads keep the divider they were verified at.  The policy is
+  // authenticated below, so a corrupt fast read is caught instead of trusted; when that happens the
+  // read is repeated at the safe setting.
+  const bool fastPolicy = bootArgument ("native-msdc-fastpolicy", 1, 0) != 0;
+  const unsigned savedMode = (rd (kMsdcCfg) >> 16) & 0x3u;
+  const unsigned savedDivider = (rd (kMsdcCfg) >> 8) & 0xffu;
+  const uint64_t sectors = (header.totalBytes + kSector - 1) / kSector;
+  uint64_t elapsed = 0;   // reported after the loop
+  unsigned attempts = fastPolicy ? 2u : 1u;
+  for (unsigned attempt = 0; attempt < attempts; ++attempt) {
+    const bool fast = fastPolicy && attempt == 0;
+    if (fast) {
+      hostSetClockMode (0, 2);
+      screen (61, "policy fast read");
+    }
+    uint64_t began = mach_absolute_time ();
+    bool readFailed = false;
+    for (uint64_t done = 0; done < sectors;) {
+      uint32_t blocks = sectors - done > kMaxBlocks ? kMaxBlocks : uint32_t (sectors - done);
+      HostSession session;
+      if (transfer (firstSector + done, blocks, region + done * kSector, false) != kIOReturnSuccess) {
+        readFailed = true;
+        break;
+      }
+      done += blocks;
+    }
+    if (fast) hostSetClockMode (savedMode, savedDivider);
+    if (readFailed) {
       freePolicy ();
       return "policy region read failed";
     }
-    done += blocks;
-  }
-  uint64_t elapsed = 0;
-  absolutetime_to_nanoseconds (mach_absolute_time () - began, &elapsed);
-  screen (61, "policy ok %llu ms", elapsed / 1000000ULL);
-  // The header is taken from the copy that the envelopes are opened from, and must describe the same region.
-  policyDigest (region, digest);
-  status = parsePolicyHeader (region, digest, available, gPolicy.header);
-  native_msdc_policy_status = status;
-  if (status != kPolicyOk || gPolicy.header.totalBytes != header.totalBytes) {
+    absolutetime_to_nanoseconds (mach_absolute_time () - began, &elapsed);
+    screen (61, "policy %s %llu ms", fast ? "fast" : "ok", elapsed / 1000000ULL);
+    // The header is taken from the copy that the envelopes are opened from, and must describe the same region.
+    policyDigest (region, digest);
+    status = parsePolicyHeader (region, digest, available, gPolicy.header);
+    native_msdc_policy_status = status;
+    if (status == kPolicyOk && gPolicy.header.totalBytes == header.totalBytes) break;
+    if (fast) {
+      IOLog ("NativeMsdc: fast policy read did not authenticate (%d); repeating at mode %u div %u\n",
+             status, savedMode, savedDivider);
+      continue;
+    }
     freePolicy ();
     return status != kPolicyOk ? policyReason (status) : "policy region changed while it was read";
   }
