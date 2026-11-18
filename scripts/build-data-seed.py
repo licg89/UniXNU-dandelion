@@ -94,10 +94,21 @@ SEED_FILES = (
         'com.apple.bluetoothd': True,
         'com.apple.coreduetd': True,
     }),
+    #
+    # The 501 file is the mobile user's domain, and it is the one that matters for the services that keep
+    # respawning: measured on sr69, bluetoothd launched 98 times, fairplayd.A2 62 and com.apple.datamigrator
+    # 14, all with ppid 1, while the three labels above sat at one launch each.  The system-domain plist
+    # lists bluetoothd too and it makes no difference, which is what identified the domain as the problem:
+    # these are user-domain jobs, so they belong here.  Denying their exec is not enough -- launchd simply
+    # SIGKILLs and respawns them, 98 times in 40 minutes -- so the job has to be disabled instead.
     ('db/com.apple.xpc.launchd/disabled.501.plist', 0, 0, 0o644, {
         'com.apple.ScreenTimeAgent': True,
         'com.apple.dmd': True,
         'com.apple.UsageTrackingAgent': True,
+        'com.apple.bluetoothd': True,
+        'com.apple.fairplayd': True,
+        'com.apple.fairplayd.A2': True,
+        'com.apple.datamigrator': True,
     }),
     ('mobile/Library/Preferences/com.apple.migration.plist', 501, 501, 0o600, {
         'LastSystemVersion': '21H461',
