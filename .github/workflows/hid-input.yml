@@ -109,10 +109,10 @@ jobs:
               if flag not in args:
                   args.append(flag)
           record['arguments'] = args
-          # Leave record['file'] alone: build-arm-driver.py finds that exact string in the arguments
-          # and replaces it with the component source.  Rewriting it here leaves the original source
-          # in the command line, and clang then sees two inputs ("cannot specify -o when generating
-          # multiple output files").
+          # build-arm-driver.py finds record['file'] verbatim in the arguments and swaps it for the
+          # component source, so that field has to carry the same rewritten prefix as the arguments;
+          # leaving the original prefix makes the match fail and clang is handed the kernel source.
+          record['file'] = record['file'].replace(prefix, str(home))
           # build-arm-driver.py runs the compile with cwd=record['directory'], so that has to exist.
           record['directory'] = str(home / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT')
           recipe.write_text(json.dumps(record) + '\n')
