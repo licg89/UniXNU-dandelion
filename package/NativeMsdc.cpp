@@ -91,13 +91,43 @@ volatile uint64_t native_msdc_reads = 0, native_msdc_writes = 0, native_msdc_flu
 volatile uint64_t native_msdc_retries = 0;
 // MSDC_CFG.CKDIV and MSDC_IOCON read-data sampling delay in effect after bring-up.
 volatile uint32_t native_msdc_clock_divider = 0;
-// Bytes read per 512 MiB window of the card, so a boot's I/O can be attributed to a region instead of
-// guessed: this driver reads about 3 GiB before SpringBoard and the size breakdown is what decides the
-// next storage change.  Printed every 4096 transfers, which is a few dozen lines per boot.
-enum { kReadWindows = 16 };
+// Bytes read per 512 MiB window, indexed from the userdata area rather than from sector 0: every read a
+// boot makes lands at 34 GiB and above, so an absolute window index put all of it in one overflow bucket
+// and the breakdown said nothing.  kReadWindows windows now cover 16 GiB of the data area, which is more
+// than the whole boot reads.
+enum { kReadWindows = 32 };
 volatile uint64_t native_msdc_read_windows[kReadWindows];
 volatile uint64_t native_msdc_read_overflow;
 volatile uint64_t native_msdc_read_transfers;
+volatile uint64_t native_msdc_window_base;
+
+volatile uint64_t native_msdc_probe_ticks = 0;
+
+extern "C" volatile uint64_t native_msdc_probe_ticks;
+
+static inline uint64_t native_msdc_ticks (void)
+{
+  uint64_t value;
+  __asm__ volatile ("mrs %0, cntpct_el0" : "=r" (value));
+  return value;
+}
+
+static inline uint64_t native_msdc_frequency (void)
+{
+  uint64_t value;
+  __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (value));
+  return value ? value : 1;
+}
+
+// Milliseconds since the driver probed, which is a few hundred milliseconds after kernel entry.
+static inline uint64_t native_msdc_ms_since_probe (void)
+{
+  const uint64_t base = native_msdc_probe_ticks;
+  const uint64_t now = native_msdc_ticks ();
+  if (base == 0 || now < base) return 0;
+  return ((now - base) * 1000ull) / native_msdc_frequency ();
+}
+
 volatile uint32_t native_msdc_sample_delay = 0;
 // Optional verified-root snapshot reuse: hits, misses, authenticated bytes reused.
 volatile uint64_t native_msdc_verified_cache_stats[3] = {};
@@ -287,6 +317,70 @@ IOReturn hostPrepareData (uint32_t blocks)
   wr (kSdcBlkNum, blocks);
   wr (kMsdcFifoCs, rd (kMsdcFifoCs) | kFifoClear);
   return waitClear (kMsdcFifoCs, kFifoClear);
+}
+
+// ---- read cache -------------------------------------------------------------------------------
+// The tail of a boot is hundreds of thousands of small reads, each costing about 5 ms, 99.3% of it
+// waiting for the card in the FIFO drain (measured from this driver's own read-timing lines: 315 slow
+// samples, drain 99.3%).  The boot phase re-reads nothing, but the tail re-reads about a third of its
+// sectors, and every one of those pays the full 5 ms again.  A small direct-mapped cache of 4 KiB lines
+// serves those repeats from memory.  2 MiB, allocated once, and it can be turned off with
+// native-msdc-cache=0 for comparison.
+enum { kReadCacheLines = 512, kReadCacheLineShift = 3 };   // 512 lines x 8 sectors = 2 MiB
+struct ReadCacheLine { uint64_t firstSector; };
+static ReadCacheLine readCacheIndex[kReadCacheLines];
+static uint8_t *readCacheData;
+static volatile uint64_t readCacheHits, readCacheMisses;
+
+static inline unsigned readCacheSlot (uint64_t firstSector)
+{
+  return unsigned ((firstSector >> kReadCacheLineShift) & (kReadCacheLines - 1));
+}
+
+// Serve a read entirely inside one cached 4 KiB line.
+static bool readCacheLookup (uint64_t sector, uint32_t blocks, uint8_t *buffer)
+{
+  if (readCacheData == nullptr || blocks == 0) return false;
+  const uint64_t lineFirst = (sector >> kReadCacheLineShift) << kReadCacheLineShift;
+  const uint64_t lineSectors = 1ull << kReadCacheLineShift;
+  if (sector < lineFirst || sector + blocks > lineFirst + lineSectors) return false;
+  const unsigned slot = readCacheSlot (lineFirst);
+  if (readCacheIndex[slot].firstSector != lineFirst) {
+    readCacheMisses = readCacheMisses + 1;
+    return false;
+  }
+  const uint64_t offset = (sector - lineFirst) * kSector;
+  __builtin_memcpy (buffer, readCacheData + uint64_t (slot) * lineSectors * kSector + offset,
+                    uint64_t (blocks) * kSector);
+  readCacheHits = readCacheHits + 1;
+  return true;
+}
+
+// Store a read that covers whole cached lines.
+static void readCacheStore (uint64_t sector, uint32_t blocks, const uint8_t *buffer)
+{
+  if (readCacheData == nullptr || blocks == 0) return;
+  const uint64_t lineFirst = (sector >> kReadCacheLineShift) << kReadCacheLineShift;
+  const uint64_t lineSectors = 1ull << kReadCacheLineShift;
+  if (sector != lineFirst || blocks != lineSectors) return;   // only whole lines, so a hit is exact
+  const unsigned slot = readCacheSlot (lineFirst);
+  __builtin_memcpy (readCacheData + uint64_t (slot) * lineSectors * kSector, buffer, lineSectors * kSector);
+  readCacheIndex[slot].firstSector = lineFirst;
+}
+
+static bool readCacheWanted (void)
+{
+  unsigned want = 1;
+  if (!PE_parse_boot_argn ("native-msdc-cache", &want, sizeof (want))) return true;
+  return want != 0;
+}
+
+// The post-read SEND_STATUS poll can be kept for comparison with native-msdc-skip-status=0.
+static bool skipPostStatus (void)
+{
+  unsigned want = 1;
+  if (!PE_parse_boot_argn ("native-msdc-skip-status", &want, sizeof (want))) return true;
+  return want != 0;
 }
 
 // PIO read. Multi-block reads are bounded by SET_BLOCK_COUNT, so a completed transfer needs no STOP; an interrupted one
@@ -608,6 +702,16 @@ IOReturn hostWrite (uint32_t sector, const uint8_t *buffer, uint32_t blocks)
       }
       __asm__ volatile ("dsb sy" ::: "memory");
       if (done && offset == total) {
+        /*
+         * The transfer is bounded by SET_BLOCK_COUNT, so the card returns to the transfer state on its
+         * own; the SEND_STATUS poll below therefore costs one extra command on every read.  A boot issues
+         * hundreds of thousands of small reads in its tail phase and each of them pays for it, which is
+         * part of why that phase measures 1.9 MB/s against 12.5 MB/s for the bulk one.
+         * native-msdc-skip-status=1 keeps the poll for comparison.
+         */
+        if (skipPostStatus ()) {
+          return kIOReturnSuccess;
+        }
         result = hostWaitTransfer ();
         if (result == kIOReturnSuccess) return kIOReturnSuccess;
         break;
@@ -658,14 +762,25 @@ public:
 // One transfer of at most kMaxBlocks sectors anywhere on the user area; callers bound it to their own region.
 IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write)
 {
+  // Served from the read cache when this request falls entirely inside a line already held.
+  if (!write && native_msdc_dma != 1 && readCacheWanted () && readCacheLookup (sector, blocks, buffer)) {
+    return kIOReturnSuccess;
+  }
+
   // Attribute this transfer to its 512 MiB window.  The destructor runs on every return path.
   struct WindowNote {
     uint64_t sector; uint32_t blocks;
     WindowNote (uint64_t s, uint32_t b) : sector (s), blocks (b) {}
     ~WindowNote () {
-      const uint64_t window = sector >> 20;             // 1M sectors = 512 MiB
-      if (window < kReadWindows) native_msdc_read_windows[window] += uint64_t (blocks) * kSector;
-      else native_msdc_read_overflow += uint64_t (blocks) * kSector;
+      // Relative to the data area, because absolute sector numbers put every boot read in one bucket.
+      const uint64_t base = native_msdc_window_base;
+      if (sector >= base) {
+        const uint64_t window = (sector - base) >> 20;   // 1M sectors = 512 MiB
+        if (window < kReadWindows) native_msdc_read_windows[window] += uint64_t (blocks) * kSector;
+        else native_msdc_read_overflow += uint64_t (blocks) * kSector;
+      } else {
+        native_msdc_read_overflow += uint64_t (blocks) * kSector;
+      }
       native_msdc_read_transfers = native_msdc_read_transfers + 1;
       if ((native_msdc_read_transfers & 4095u) == 0) {
         IOLog ("NativeMsdc: rw");
@@ -716,11 +831,42 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
       // had no unit.  Print the real totals: MiB moved, transfers issued, and the sector in flight.
       uint64_t movedBytes = native_msdc_read_overflow;
       for (unsigned w = 0; w < kReadWindows; ++w) movedBytes += native_msdc_read_windows[w];
-      screen (60, "RD %llu MB n%llu LBA %llu P%u sb%u bb%u",
+      screen (60, "T+%llu RD %llu MB n%llu LBA %llu P%u sb%u bb%u",
+              (unsigned long long)native_msdc_ms_since_probe (),
               (unsigned long long)(movedBytes >> 20),
               (unsigned long long)native_msdc_read_transfers,
               (unsigned long long)sector, dandelion_procs, dandelion_springboard,
               dandelion_backboardd);
+      // Every 32nd update also draws where the reads landed: window index and MiB, biggest first.
+      if ((n & 31u) == 0) {
+        char line[64];
+        unsigned at = 0;
+        unsigned shown = 0;
+        const char *head = "W";
+        while (*head && at + 1 < sizeof (line)) line[at++] = *head++;
+        for (unsigned pick = 0; pick < kReadWindows && shown < 6; ++pick) {
+          unsigned best = kReadWindows;
+          uint64_t bestBytes = 0;
+          for (unsigned w = 0; w < kReadWindows; ++w) {
+            if (native_msdc_read_windows[w] > bestBytes) {
+              bestBytes = native_msdc_read_windows[w];
+              best = w;
+            }
+          }
+          if (best == kReadWindows || bestBytes == 0) break;
+          uint64_t mebibytes = bestBytes >> 20;
+          native_msdc_read_windows[best] = 0;   // consume, so the next pass shows the next biggest
+          char digits[24];
+          unsigned count = 0;
+          if (mebibytes == 0) digits[count++] = '0';
+          while (mebibytes > 0 && count < sizeof (digits)) { digits[count++] = char ('0' + mebibytes % 10); mebibytes /= 10; }
+          if (at + 1 < sizeof (line)) line[at++] = ' ';
+          while (count > 0 && at + 1 < sizeof (line)) line[at++] = digits[--count];
+          shown++;
+        }
+        line[at] = 0;
+        screen (62, "%s", line);
+      }
     }
   }
   for (unsigned attempt = 0; attempt < attempts; attempt++) {
@@ -736,8 +882,14 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
       IODelay (1000);
     }
   }
-  if (result != kIOReturnSuccess) __atomic_fetch_add (&native_msdc_failures, 1, __ATOMIC_RELAXED);
-  else __atomic_fetch_add (write ? &native_msdc_writes : &native_msdc_reads, 1, __ATOMIC_RELAXED);
+  if (result != kIOReturnSuccess) {
+    __atomic_fetch_add (&native_msdc_failures, 1, __ATOMIC_RELAXED);
+  } else {
+    __atomic_fetch_add (write ? &native_msdc_writes : &native_msdc_reads, 1, __ATOMIC_RELAXED);
+    // Hold the line just read, so the repeats the tail phase makes are served from memory instead of
+    // paying the card's ~5 ms response again.
+    if (!write) readCacheStore (sector, blocks, buffer);
+  }
   return result;
 }
 
@@ -1693,12 +1845,19 @@ bool hostBringUp (IOService *provider, bool useDma, const char **why)
   OSSafeReleaseNULL (memory);
   gHost.lock = IOLockAlloc ();
   gHost.bounce = static_cast<uint8_t *> (IOMalloc (kTransferBytes));
+  if (readCacheWanted ()) {
+    readCacheData = static_cast<uint8_t *> (IOMalloc (uint64_t (kReadCacheLines) * (1u << kReadCacheLineShift) * kSector));
+    if (readCacheData != nullptr) {
+      bzero (readCacheData, uint64_t (kReadCacheLines) * (1u << kReadCacheLineShift) * kSector);
+    }
+  }
   if (!gHost.map || !gHost.lock || !gHost.bounce) {
     *why = "controller map or allocation failed";
     return false;
   }
   gHost.base = static_cast<uintptr_t> (gHost.map->getVirtualAddress ());
   const uint32_t inheritedCfg = rd (kMsdcCfg);
+  native_msdc_probe_ticks = native_msdc_ticks ();
   IOLog ("NativeMsdc: controller 0x%llx inherited CFG=0x%08x STS=0x%08x\n", phys, inheritedCfg, rd (kSdcSts));
   HostSession session;
   uint32_t response = 0;
@@ -1771,6 +1930,9 @@ bool hostFindLayout (const char **why)
   gHost.layoutValid = true;
   native_msdc_step = 3;
   uint64_t partitionSectors = gpt.userdataLast - gpt.userdataFirst + 1;
+  // Reads are bucketed from the data area, because absolute sector numbers put everything a boot
+  // touches into one overflow bucket.
+  native_msdc_window_base = gpt.userdataFirst;
   IOLog ("NativeMsdc: userdata sectors %llu..%llu\n", gpt.userdataFirst, gpt.userdataLast);
   gAreaBytes = partitionSectors * kSector;
   gAreaBaseSector = gpt.userdataFirst;
@@ -1877,7 +2039,8 @@ const char *loadPolicy (void)
   gPolicy.storage = storage;
   gPolicy.storageBytes = tableBytes + keyBytes;
   uint8_t *region = reinterpret_cast<uint8_t *> (storage);
-  IOLog ("NativeMsdc: reading the signed root policy, %llu bytes at userdata +%llu\n", header.totalBytes, start);
+  IOLog ("NativeMsdc: T+%llu ms reading the signed root policy, %llu bytes at userdata +%llu\n",
+         (unsigned long long)native_msdc_ms_since_probe (), header.totalBytes, start);
   screen (61, "policy %llu MB", (unsigned long long)(header.totalBytes / (1024 * 1024)));
   // This read is 73 MB, it happens before the clock sweep, and at the inherited divider it measured
   // 228,108 ms against a whole boot of about 420 s -- more than half the boot is this one transfer.
@@ -1911,7 +2074,14 @@ const char *loadPolicy (void)
       }
       done += blocks;
     }
-    if (fast) hostSetClockMode (savedMode, savedDivider);
+    if (fast) {
+      hostSetClockMode (savedMode, savedDivider);
+  // hostRaiseClock() records the divider it settled on in native_msdc_clock_divider; restoring only the
+  // register leaves that global describing a clock the hardware is no longer running, and the PIO path
+  // then works from the wrong divider.  sr59 measured 3.5 MB/s against 15 MB/s before this code existed,
+  // so both have to be put back.
+  native_msdc_clock_divider = savedDivider;
+    }
     if (readFailed) {
       // A transfer failure at the raised clock is the expected outcome on this board (sr49), so retry at
       // the setting that was in use before, and only give up when that also fails.
