@@ -672,7 +672,13 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
       const uint64_t n = __atomic_add_fetch (&shown, 1, __ATOMIC_RELAXED);
       // Each increment is 400 reads; a read moves at most kMaxBlocks sectors, so the megabyte figure
       // is a floor, not an estimate that can overshoot.
-      screen (60, "RD %llu MB LBA %llu P%u sb%u bb%u", (unsigned long long)(n * 4),
+      // The old line printed n * 4 and called it MB while one increment was 400 reads, so the number
+      // had no unit.  Print the real totals: MiB moved, transfers issued, and the sector in flight.
+      uint64_t movedBytes = native_msdc_read_overflow;
+      for (unsigned w = 0; w < kReadWindows; ++w) movedBytes += native_msdc_read_windows[w];
+      screen (60, "RD %llu MB n%llu LBA %llu P%u sb%u bb%u",
+              (unsigned long long)(movedBytes >> 20),
+              (unsigned long long)native_msdc_read_transfers,
               (unsigned long long)sector, dandelion_procs, dandelion_springboard,
               dandelion_backboardd);
     }
