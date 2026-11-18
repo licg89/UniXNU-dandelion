@@ -112,10 +112,13 @@ jobs:
 
           # Rebuild the command, dropping the driver-level options that make the macOS driver build more
           # than one job: -arch and the recipe's own --target (replaced with an explicit one below).
+          # The arguments already carry the rewritten prefix, so the source path to match against has to
+          # be rewritten the same way.
+          recipe_source = record['file'].replace(prefix, str(home))
           cmd, i = [], 0
           while i < len(args):
               a = args[i]
-              if a == record['file']:
+              if a == recipe_source:
                   cmd.append(str(source)); i += 1; continue
               if a == '-o':
                   i += 2; continue
