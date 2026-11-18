@@ -1,0 +1,102 @@
+name: HID input
+
+# Build ShengHidInput on a macOS runner and publish the archive for local linking.
+#
+# Why this job exists: the official builder (UniXNU scripts/build-sheng-hid-input.py) compiles
+# NativeHidInput.cpp against the iPhoneOS SDK with xcrun and post-processes with brew llvm, so it needs
+# macOS.  It also binds against the real IOHIDFamily ABI, which it reads from a prelinked kernel
+# candidate plus its plan.  The dandelion port has no macOS toolchain locally, so the candidate travels
+# through a release asset (kernel.macho and kernel.json from the same iPadOS 17.7.11 21H461 prelink)
+# and the archive comes back from this run.
+#
+# The dandelion kernel was checked against the constants the builder assumes before this workflow was
+# written: the IOHIDFamily __TEXT_EXEC hash, the 207-slot IOHIDDevice vtable, the protected constructor
+# bytes and the IOService override slot list all match, and scripts/hid-abi-snapshot.json records them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      unixnu_ref:
+        description: UniXNU ref that provides scripts/build-sheng-hid-input.py
+        required: true
+        default: main
+      hid_revision:
+        description: ShengHidInput revision (catalog pins 71a40e76daeae1bb4127546f96ffa7339c7a06ff)
+        required: true
+        default: 71a40e76daeae1bb4127546f96ffa7339c7a06ff
+
+permissions:
+  contents: read
+
+env:
+  UNIXNU_REPO: https://github.com/UniXNU/UniXNU.git
+  HID_REPO: https://github.com/UniXNU/ShengHidInput.git
+  CANDIDATE_TAG: abi-dandelion
+
+jobs:
+  hid:
+    runs-on: macos-14
+    steps:
+      - name: Check out the device repository
+        uses: actions/checkout@v4
+
+      - name: Fetch the kernel candidate and plan
+        run: |
+          mkdir -p ~/candidate
+          gh release download "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'kernel.macho' --pattern 'kernel.json' --dir ~/candidate
+          ls -l ~/candidate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check out UniXNU for the official builder
+        run: |
+          git clone --depth 1 --branch "${{ inputs.unixnu_ref }}" "$UNIXNU_REPO" ~/unixnu
+          test -f ~/unixnu/scripts/build-sheng-hid-input.py
+
+      - name: Fetch the HID component at the pinned revision
+        run: |
+          git clone "$HID_REPO" ~/unixnu/drivers/ShengHidInput
+          cd ~/unixnu/drivers/ShengHidInput
+          git checkout "${{ inputs.hid_revision }}"
+          git log --oneline -1
+          ls -l
+
+      - name: Place the candidate where the builder expects it
+        run: |
+          mkdir -p ~/unixnu/build/xnu-prelink
+          cp ~/candidate/kernel.macho \
+            ~/unixnu/build/xnu-prelink/native-owner-dandelion-hid-init-candidate.macho
+          cp ~/candidate/kernel.json \
+            ~/unixnu/build/xnu-prelink/native-owner-dandelion-hid-init-candidate.json
+          ls -l ~/unixnu/build/xnu-prelink/
+
+      - name: Verify the candidate against the recorded ABI
+        run: |
+          cd ~/unixnu
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          cand = pathlib.Path('build/xnu-prelink/native-owner-dandelion-hid-init-candidate.macho')
+          plan = json.loads(cand.with_suffix('.json').read_text())
+          snap = json.loads(pathlib.Path('${{ github.workspace }}/scripts/hid-abi-snapshot.json').read_text())
+          assert hashlib.sha256(cand.read_bytes()).hexdigest() == plan['candidate_sha256'], 'candidate does not match its plan'
+          hid = plan['original_executable_sha256']['com.apple.iokit.IOHIDFamily']
+          assert hid == snap['hid_text_exec_sha256'], 'IOHIDFamily hash differs from the recorded snapshot'
+          print('candidate matches the recorded ABI:', hid[:24])
+          PY
+
+      - name: Build ShengHidInput with the official builder
+        run: |
+          cd ~/unixnu
+          python3 scripts/build-sheng-hid-input.py 2>&1 | tail -40
+          ls -l build/sheng-hid-input/
+
+      - name: Publish the archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: sheng-hid-input
+          path: |
+            /Users/runner/unixnu/build/sheng-hid-input/libShengHidInput.a
+            /Users/runner/unixnu/build/sheng-hid-input/NativeHidInput.late.o
+            /Users/runner/unixnu/build/sheng-hid-input/abi-audit.json
+          if-no-files-found: error
