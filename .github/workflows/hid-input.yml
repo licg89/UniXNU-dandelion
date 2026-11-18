@@ -90,6 +90,13 @@ jobs:
           recipe = home / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json'
           record = json.loads(recipe.read_text().strip().rstrip(','))
           args = [a.replace(prefix, str(home)) for a in record['arguments']]
+          # The recipe names the Linux toolchain that built the kernel; this runner has Xcode instead.
+          # The target triple, -fapple-kext and the include paths are unchanged, so the same source
+          # compiles to the same kernel ABI.
+          if args and args[0].startswith('/opt/unixnu-linux'):
+              print('compiler:', args[0], '-> xcrun clang')
+              args[0] = 'xcrun'
+              args.insert(1, 'clang')
           extra = [
               # The repository no longer ships OriginalHidDeviceABI.h, so use the source interface.
               '-DNATIVE_HID_SOURCE_API=1',
