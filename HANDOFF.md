@@ -11226,3 +11226,66 @@ DANDELION-FOCUS: pid=26 comm=SpringBoard total=31 wait=24 run=7
 - 存储优化（DMA、缓存、提频）对这个启动**收益上限只有 7.8%** ✗
 
 ---
+
+## 0.196 2026-11-18 23:2x：锁屏 40 分钟的真相 —— launchd 重启风暴，且**只有用户域 plist 有效**
+
+### 一、sr69 的完整测量（无 panic，跑到用户按 fastboot）
+
+```
+EXEC 780 次 / EXIT 224 次
+by count: xpcproxy x380, bluetoothd x98, fairplayd.A2 x62, watchdogd x17, datamigrator x14
+
+beat 19  (380 s)  procs 92  SpringBoard 27:2     ← 6.3 分钟就启动
+beat 34  (680 s)  procs 80  backboardd 57:2
+119 beats = 2380 s = 40 分钟
+springboard 在 119 个 beat 里出现 100 个 ✓
+```
+
+⇒ **SpringBoard 6.3 分钟就起来了** ✓ 锁屏 40 分钟还没出 ✗
+⇒ **之后 33 分钟**是 SpringBoard 与 174 次进程重启**抢 CPU** ✗
+⇒ 存储只占 181 s（512,861 次 × 354 µs）✗ 不是主因 ✓
+
+### 二、deny-exec 生效但无用（重要教训）
+
+```
+DANDELION-EXEC: pid 81 comm=bluetoothd (policy answer 0)
+DANDELION-DENY: pid 81 comm=bluetoothd        ← 拒绝成功
+DANDELION-EXIT: pid=81 comm=bluetoothd rv=0x9 sig=9   ← launchd 立刻 SIGKILL 重拉
+```
+
+⇒ 98 次全部如此 ✓ **拒绝 exec 不能阻止 launchd 重试** ✗ 必须**禁用 job** ✓
+
+### 三、关键发现：**系统域 plist 无效，用户域 plist 有效**
+
+| 文件 | 域 | 条目 | 实测启动次数 |
+| --- | --- | --- | --- |
+| `disabled.plist` | 系统域 | bluetoothd, watchdogd, coreduetd … | **98 / 17** ✗ 无效 |
+| `disabled.501.plist` | **用户域（mobile）** | ScreenTimeAgent, dmd, UsageTrackingAgent | **各 1 次** ✓ 有效 |
+
+⇒ 这些服务是**用户域 job** ✗ 必须写进 `disabled.501.plist` ✓✓
+
+### 四、修复（4abdd15）
+
+`scripts/build-data-seed.py` 的 501 plist 增加：
+```python
+'com.apple.bluetoothd': True,
+'com.apple.fairplayd': True,
+'com.apple.fairplayd.A2': True,
+'com.apple.datamigrator': True,
+```
+
+⇒ 种子必须**重新生成**（`.dbr` 是预生成的 ✗ 改脚本不生效）✓
+⇒ 本地无法生成（需要 macOS `hdiutil`）✗ 走 CI：`.github/workflows/data-seed.yml` ✓
+
+### 五、主分支的做法（供参考）
+
+`docs/guide/skip-setup.md`：`sheng-disable-jobs=<list>`，主分支实例为
+`com.apple.identityservicesd,com.apple.locationd,com.apple.CommCenter,com.apple.iconservices.iconservicesagent`
+`docs/xnu/boot-arguments.md`：`sheng-disable-watchdogd=1`（停止 watchdog 守护进程）
+
+实现位于 **BootProgress 组件**（`zzz-boot-progress.patch` 从 `kern_exec.c` 调
+`sheng_boot_watchdog_policy(p, scratch)`，由组件在启动时写
+`/private/var/db/com.apple.xpc.launchd/disabled.plist`）。该组件不在 UniXNU 主仓库里 ✗
+本板未链接它 ✓ 所以走"种子 plist + CI 重建"这条路 ✓
+
+---
