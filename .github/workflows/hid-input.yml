@@ -4,14 +4,17 @@ name: HID input
 #
 # Why this job exists: the official builder (UniXNU scripts/build-sheng-hid-input.py) compiles
 # NativeHidInput.cpp against the iPhoneOS SDK with xcrun and post-processes with brew llvm, so it needs
-# macOS.  It also binds against the real IOHIDFamily ABI, which it reads from a prelinked kernel
-# candidate plus its plan.  The dandelion port has no macOS toolchain locally, so the candidate travels
-# through a release asset (kernel.macho and kernel.json from the same iPadOS 17.7.11 21H461 prelink)
-# and the archive comes back from this run.
+# macOS, and it binds against the real IOHIDFamily ABI read from a prelinked kernel candidate.
 #
-# The dandelion kernel was checked against the constants the builder assumes before this workflow was
-# written: the IOHIDFamily __TEXT_EXEC hash, the 207-slot IOHIDDevice vtable, the protected constructor
-# bytes and the IOService override slot list all match, and scripts/hid-abi-snapshot.json records them.
+# Two things travel through the abi-dandelion release: the kernel candidate (kernel.macho and
+# kernel.json from the dandelion prelink) and xnu-compile-tree.tar.gz, which holds only the headers and
+# recipes the kernel compile needs (19 MB: 6158 headers, the .cpo.json recipes, meta_features.h and the
+# Kernel.framework PrivateHeaders).  IOHIDFamily headers are not in that tree; they come from the macOS
+# iPhoneOS SDK on the runner, which is why this cannot be done on the Linux host.
+#
+# The recipe records absolute include paths from the machine that built the kernel, so this job rewrites
+# them to the runner checkout and appends the two flags the dandelion build needs: the source-interface
+# switch (the repository no longer carries OriginalHidDeviceABI.h) and the SDK sysroot.
 
 on:
   workflow_dispatch:
@@ -32,6 +35,8 @@ env:
   UNIXNU_REPO: https://github.com/UniXNU/UniXNU.git
   HID_REPO: https://github.com/UniXNU/ShengHidInput.git
   CANDIDATE_TAG: abi-dandelion
+  # Prefix the kernel build wrote into its compile recipes.
+  RECIPE_PREFIX: /root/work/UniXNU/out/dandelion/ipados-17.7.11-21H461/dandelion/tree
 
 jobs:
   hid:
@@ -40,22 +45,67 @@ jobs:
       - name: Check out the device repository
         uses: actions/checkout@v4
 
-      - name: Fetch the kernel candidate and plan
-        run: |
-          mkdir -p ~/candidate
-          gh release download "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern 'kernel.macho' --pattern 'kernel.json' --dir ~/candidate
-          ls -l ~/candidate
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Check out UniXNU for the official builder
         run: |
           # kits/XnuPrelink is a submodule and native_prelink lives there, so recurse.
-          git clone --branch "${{ inputs.unixnu_ref }}" --recurse-submodules --shallow-submodules             "$UNIXNU_REPO" ~/unixnu
+          git clone --branch "${{ inputs.unixnu_ref }}" --recurse-submodules --shallow-submodules \
+            "$UNIXNU_REPO" ~/unixnu
           test -f ~/unixnu/scripts/build-sheng-hid-input.py
-          ls ~/unixnu/kits/XnuPrelink | head
           test -f ~/unixnu/kits/XnuPrelink/native_prelink.py
+
+      - name: Fetch the release assets
+        run: |
+          mkdir -p ~/assets
+          gh release download "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'kernel.macho' --pattern 'kernel.json' \
+            --pattern 'xnu-compile-tree.tar.gz' --dir ~/assets
+          ls -l ~/assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Place the kernel candidate where the builder expects it
+        run: |
+          # The builder falls back to this glob, so the name must match it.
+          mkdir -p ~/unixnu/build/xnu-prelink
+          cp ~/assets/kernel.macho \
+            ~/unixnu/build/xnu-prelink/native-owner-ufs-cpu-desktop-dandelion-candidate.macho
+          cp ~/assets/kernel.json \
+            ~/unixnu/build/xnu-prelink/native-owner-ufs-cpu-desktop-dandelion-candidate.json
+
+      - name: Unpack the kernel compile tree
+        run: |
+          tar xzf ~/assets/xnu-compile-tree.tar.gz -C ~/unixnu
+          test -f ~/unixnu/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json
+          test -d ~/unixnu/.cache/fakeroot
+
+      - name: Rewrite the recipe for this runner
+        run: |
+          cd ~/unixnu
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "sdk: $SDK"
+          python3 - "$SDK" "$RECIPE_PREFIX" <<'PY'
+          import json, pathlib, sys
+          sdk, prefix = sys.argv[1], sys.argv[2]
+          home = pathlib.Path.home() / 'unixnu'
+          recipe = home / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json'
+          record = json.loads(recipe.read_text().strip().rstrip(','))
+          args = [a.replace(prefix, str(home)) for a in record['arguments']]
+          extra = [
+              # The repository no longer ships OriginalHidDeviceABI.h, so use the source interface.
+              '-DNATIVE_HID_SOURCE_API=1',
+              # IOHIDFamily headers live in the iPhoneOS SDK, not in the kernel tree.
+              '-isysroot', sdk,
+              '-I', sdk + '/usr/include',
+              '-iframework', sdk + '/System/Library/Frameworks',
+          ]
+          for flag in extra:
+              if flag not in args:
+                  args.append(flag)
+          record['arguments'] = args
+          record['file'] = str(home / '.cache/xnu-work/iokit/Kernel/IOPlatformExpert.cpp')
+          recipe.write_text(json.dumps(record) + '\n')
+          print('recipe rewritten: %d arguments, prefix replaced with %s' % (len(args), home))
+          PY
 
       - name: Fetch the HID component at the pinned revision
         run: |
@@ -63,23 +113,13 @@ jobs:
           cd ~/unixnu/drivers/ShengHidInput
           git checkout "${{ inputs.hid_revision }}"
           git log --oneline -1
-          ls -l
-
-      - name: Place the candidate where the builder expects it
-        run: |
-          mkdir -p ~/unixnu/build/xnu-prelink
-          cp ~/candidate/kernel.macho \
-            ~/unixnu/build/xnu-prelink/native-owner-ufs-cpu-desktop-dandelion-candidate.macho
-          cp ~/candidate/kernel.json \
-            ~/unixnu/build/xnu-prelink/native-owner-ufs-cpu-desktop-dandelion-candidate.json
-          ls -l ~/unixnu/build/xnu-prelink/
 
       - name: Verify the candidate against the recorded ABI
         run: |
-          cd ~/unixnu
           python3 - <<'PY'
           import hashlib, json, pathlib
-          cand = pathlib.Path('build/xnu-prelink/native-owner-ufs-cpu-desktop-dandelion-candidate.macho')
+          home = pathlib.Path.home() / 'unixnu'
+          cand = home / 'build/xnu-prelink/native-owner-ufs-cpu-desktop-dandelion-candidate.macho'
           plan = json.loads(cand.with_suffix('.json').read_text())
           snap = json.loads(pathlib.Path('${{ github.workspace }}/scripts/hid-abi-snapshot.json').read_text())
           assert hashlib.sha256(cand.read_bytes()).hexdigest() == plan['candidate_sha256'], 'candidate does not match its plan'
