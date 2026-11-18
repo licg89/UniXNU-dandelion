@@ -10677,3 +10677,60 @@ if (!panelText) return;
 `display=verified`、`userspace=verified`、`storage/packaging/diagnostics=verified`、`input=planned` ✓
 
 ---
+
+## 0.186 2026-11-18 09:3x：HID 走 CI macOS —— ABI 全量验证通过，卡在编译树
+
+### 一、达成的关键事实：我们的内核与官方构建器假定的 ABI **逐位一致**
+
+`scripts/hid-abi-snapshot.json`（10,887 字节）从本地 prelink 抽出并逐项校验：
+
+| 项 | 我们内核 | 官方构建器要求 | 结果 |
+| --- | --- | --- | --- |
+| IOHIDFamily `__TEXT_EXEC` sha256 | `7e4c5104814f2e773d5be13d...` | 同 | ✓ |
+| IOHIDDevice vtable @ `0xfffffff005d045c0` | 207 槽，全非空 | 207 槽 | ✓ |
+| 受保护构造函数字节 @ `0xfffffff004ad94f8` | `fd7bbfa9fd030091` | 同 | ✓ |
+| IOService 基表覆盖槽 | `[0,1,7,12,14,21,23,76,81,82,86,87,91,92,93,101,132,140]` | **完全相同** | ✓ |
+| 5 个硬编码地址归属 | 全部落在我们 IOHIDFamily 段内 | — | ✓ |
+
+⇒ **官方 `build-sheng-hid-input.py` 可以原样用于本内核** ✓ 这是"能否复用而非重造"的决定性证据 ✓
+
+### 二、CI 流水线（`.github/workflows/hid-input.yml`，已推送）
+
+1. `macos-26`（与仓库其他 workflow 一致；`macos-14` 会报 unsupported ✗）
+2. 从 release `abi-dandelion` 取 `kernel.macho` + `kernel.json`（68 MB，release 资产）
+3. clone UniXNU（**必须 `--recurse-submodules`**，`kits/XnuPrelink/native_prelink.py` 在子模块里）
+4. clone `ShengHidInput` @ 目录钉定版本 `71a40e76`
+5. 候选产物必须命名为 `native-owner-ufs-cpu-desktop-*-candidate.macho`（构建器的 glob 只认这个）✓
+6. 用快照校验哈希 → 运行官方构建器
+
+### 三、当前唯一阻塞
+
+构建器通过全部 ABI 断言后调用 `build-arm-driver.py NativeHidInput`，后者需要：
+
+```
+build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json
+```
+
+- 该配方本身只有 9 KB，本地有 ✓
+- 但它的 `arguments` 里带 `-I` 指向 **ios-obj（410 MB）+ XNU 源码树** ✗
+- 且编译 `NativeHidInput.cpp` 需要 iPhoneOS SDK 的 `IOHIDDevice.h`（本机无 ✗，只在 macOS）
+
+⇒ CI 需要一个**内核编译树**才能完成编译；三条可选路径：
+
+| 方案 | 说明 |
+| --- | --- |
+| A | 把 ios-obj + XNU 头打成 release 资产（约 400 MB+），CI 拉下来编译 |
+| B | 在 CI 里跑我们的 `scripts/package.sh` 生成编译树（需 6.8 GB IPSW + 约 40 分钟）|
+| C | 本机自写最小 `IOHIDDevice.h`（布局由已验证的 207 槽快照确定），本机编译+绑定，**不需要 macOS** |
+
+方案 C 其实最省：ABI 已知且已校验 ✓ 只需声明被覆盖的 9 个槽（`0,1,7,14,86,87,111,171,173,180` 中实际用到的）
+与 metaclass 形式 ✓ 但属于"自写头"，需谨慎并保留校验 ✓
+
+### 四、已排除
+
+- `macos-14` 标签不可用 ✗ 改 `macos-26` ✓
+- 浅克隆缺子模块 ⇒ `ModuleNotFoundError: native_prelink` ✗ 已修 ✓
+- `| tail` 掩盖失败 ⇒ 加 `set -o pipefail` ✓
+- 候选文件名不符 glob ⇒ `No reference candidate available` ✗ 已修 ✓
+
+---
