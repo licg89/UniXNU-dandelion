@@ -10617,3 +10617,63 @@ D4K beat 1036: procs=129 sb=27:2 bb=57:2                                 ← 5.7
 | 备份 | 231 文件 / 13 GiB ✓ |
 
 ---
+
+## 0.185 2026-11-18 09:xx：干净镜像 sr44；输入的客观硬约束（B 与 A 都被 macOS 工具链挡住）
+
+### 一、sr44 干净镜像（已刷入 08:50:51）
+
+所有面板诊断字都走 `native_gop_text()` 单一入口，故在该入口加开关：
+
+```c
+static int panelText = -1;   // PE_parse_boot_argn("dandelion-panel-text", ...)
+if (!panelText) return;
+```
+
+- 默认**关** ⇒ 锁屏不再被 `DISP RET` / `RD` 两条黑条遮挡 ✓
+- `dandelion-panel-text=1` 可随时恢复叠字 ✓
+- 内核控制台照旧写 flashinfo，诊断能力无损 ✓
+- `boot-sr44-clean.img` sha `d8d3bebb`，固件段与 sr26 逐字节相同 ✓
+
+### 二、B 方案（按键注入）——被 macOS 工具链挡住
+
+用户批准 B→A。核实后 B 在**本机不可行** ✗ 证据：
+
+1. 官方 HID 汇 `ShengHidInput/NativeHidInput.cpp`（已 clone 到 `/root/work/refs/`）确实是**独立 IOHIDDevice 子类** ✓
+   导出 `native_hid_input_allocate` / `native_buttons_set_sink` / `native_touch_set_sink` ✓
+   **Report 2 的 bit 0 = Menu(Home)** ✓ 合成 Home 按键本可解锁 ✓ 设计与 SPI 传输无关 ✓
+2. 但 `scripts/build-sheng-hid-input.py` 调用：
+   - `xcrun --sdk iphoneos --show-sdk-path`
+   - `brew --prefix llvm`
+   ⇒ **需要 macOS** ✗
+3. 还要求参考产物 `build/xnu-prelink/native-owner-ufs-cpu-desktop-v9-hid-init-candidate.macho`
+   ⇒ 我们树里**不存在**，且是别的设备的构建产物 ✗
+4. 该构建器自己输出 `runtime_qualified: false` ✗
+5. 本机也**没有 IOKit SDK 头**（树里无 `IOHIDDevice.h`），本移植是手写 IOKit ABI ✗
+   自写 IOHIDDevice 子类必须复刻官方逐槽校验的 207 槽抽象设备表 ⇒ 不可靠猜测 ✗
+
+### 三、A 方案（真触摸）——新开发
+
+| 需求 | 状态 |
+| --- | --- |
+| MediaTek I2C 控制器驱动 | 目录里没有 ✗ |
+| NT36525B 协议 | 官方组件是 NT36532 + 高通 GENI SPI ✗ |
+| HID 事件汇 | 同上受 macOS 限制 ✗ |
+
+### 四、诚实结论
+
+**输入需要 macOS 构建环境**（本机或 CI macOS runner）✗ 这是客观约束，非配置问题 ✓
+在此之前，锁屏能显示但无法解锁 ✓
+
+### 五、可继续的方向（都在本机可做）
+
+1. 启动速度：PIO 读仍是瓶颈（228 s 级）
+2. watchdogd 每次崩在 `off=0xab0c`、liveactivitiesd 每轮 87 次退出 ⇒ 日志与 CPU 噪声
+3. `IOMFB_FDR_Loader exit 0x100`（= exit(1)）原因未查
+4. 若要输入：把 `ShengHidInput` 挪到 CI macOS runner 上构建，再把产物拉回本机链接 ✓
+
+### 六、记录
+
+`porting.toml` 的 input 区已写入上述 5 条证据与结论 ✓
+`display=verified`、`userspace=verified`、`storage/packaging/diagnostics=verified`、`input=planned` ✓
+
+---
