@@ -256,6 +256,19 @@ IOReturn hostCommand (unsigned opcode, uint32_t argument, Data data, uint32_t *r
   return kIOReturnTimeout;
 }
 
+/*
+ * Issue a command and return without waiting and without touching MSDC_CFG.  hostCommand() is the
+ * synchronous wrapper: it switches the controller to PIO for its own transaction and restores the
+ * configuration afterwards, which is fine for a command with no data and fatal for a DMA data command
+ * that runs in the mode the caller just programmed.  The caller waits for completion itself.
+ */
+void hostCommandIssue (unsigned opcode, Data data, uint32_t argument)
+{
+  wr (kMsdcIntr, rd (kMsdcIntr));
+  wr (kSdcArg, argument);
+  wr (kSdcCmd, commandWord (opcode, data));
+}
+
 // SEND_STATUS until the card is back in the transfer state (after programming, or an R1b command).
 IOReturn hostWaitTransfer (void)
 {
@@ -425,21 +438,31 @@ IOReturn hostReadDma (uint32_t argument, uint8_t *buffer, uint32_t blocks)
   }
   result = hostPrepareData (blocks);
   if (result != kIOReturnSuccess) return result;
-  wr (kMsdcCfg, rd (kMsdcCfg) & ~kCfgPio);
-  // Order follows the vendor's msdc_dma_setup() and msdc_start_data(): MSDC_DMA_CFG.DECSEN, then
-  // MSDC_DMA_CTRL, and the descriptor address (MSDC_DMA_SA) written last --- the vendor writes
-  // gpd_addr after both.  This path used to write SA first, which is the one ordering difference
-  // left from a setup that otherwise matches register for register.  The command is issued with
-  // Data::None so the data phase belongs to the engine, and START follows the response.
+  /*
+   * Order follows the vendor's msdc_dma_setup(), msdc_start_command() and msdc_start_data(): arm the
+   * descriptors and the engine first, then issue the data command, then set START.  Nothing here may go
+   * through hostCommand(): that wrapper runs its own transaction with PIO selected and restores the
+   * configuration on the way out, which is what destroyed the DMA mode in every earlier attempt.
+   */
   wr (kDmaCfg, rd (kDmaCfg) | kDmaCfgDescEn);
   wr (kDmaCtrl, (rd (kDmaCtrl) & ~(kDmaCtrlStart | kDmaCtrlStop | kDmaCtrlLastBuffer | kDmaCtrlBurstMask)) |
                 kDmaCtrlDescriptor | kDmaCtrlBurst64);
   wr (kDmaSaHigh, 0);
   wr (kDmaSa, uint32_t (gHost.dmaPhys));
+  wr (kMsdcCfg, rd (kMsdcCfg) & ~kCfgPio);
   // 0xa8 is not written any more: see the note in NativeMsdc.h.  The vendor programs the descriptor
   // address and nothing else in that gap.
-  /* Command only: Data::None leaves the data phase to the engine, which is started below. */
-  result = hostCommand (multi ? kCmdReadMulti : kCmdReadSingle, argument, Data::None, &response);
+  /*
+   * The command has to carry the data phase even though the engine performs it.  commandWord() only
+   * writes the data-type bits, the direction bit and the block length when Data is not None, so issuing
+   * READ_MULTIPLE/READ_SINGLE with Data::None told the controller the command had no data at all: the
+   * card never entered a data phase, the engine had nothing to fetch, and the symptom was exactly what
+   * the earlier trace recorded -- MSDC_CFG still with PIO set and DMA_CTRL not keeping START.  The
+   * vendor always builds the data command with its data bits and selects DMA only through
+   * MSDC_CFG.PIO.  hostCommand() itself never touches the FIFO, so the engine can own the phase.
+   */
+  hostCommandIssue (multi ? kCmdReadMulti : kCmdReadSingle,
+                    multi ? Data::ReadMulti : Data::ReadSingle, argument);
   // hostCommand runs its transaction with PIO selected and restores the configuration afterwards,
   // so the DMA mode set above is gone by the time it returns.  The trace proved it: at the point
   // where the engine should have been running, MSDC_CFG still had PIO set (cfg=02210499), DMA_CTRL
