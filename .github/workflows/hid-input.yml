@@ -2,19 +2,18 @@ name: HID input
 
 # Build ShengHidInput on a macOS runner and publish the archive for local linking.
 #
-# Why this job exists: the official builder (UniXNU scripts/build-sheng-hid-input.py) compiles
-# NativeHidInput.cpp against the iPhoneOS SDK with xcrun and post-processes with brew llvm, so it needs
-# macOS, and it binds against the real IOHIDFamily ABI read from a prelinked kernel candidate.
+# Why a runner: the official builder compiles against the iPhoneOS SDK with xcrun and post-processes
+# with brew llvm, and it binds against the real IOHIDFamily ABI.  The dandelion host is Linux, so this
+# job does it, and two things travel through the abi-dandelion release: the kernel candidate
+# (kernel.macho + kernel.json) and xnu-compile-tree.tar.gz, which holds only the headers and recipes
+# the kernel compile needs (19 MB, packed from a 547 MB build tree).
 #
-# Two things travel through the abi-dandelion release: the kernel candidate (kernel.macho and
-# kernel.json from the dandelion prelink) and xnu-compile-tree.tar.gz, which holds only the headers and
-# recipes the kernel compile needs (19 MB: 6158 headers, the .cpo.json recipes, meta_features.h and the
-# Kernel.framework PrivateHeaders).  IOHIDFamily headers are not in that tree; they come from the macOS
-# iPhoneOS SDK on the runner, which is why this cannot be done on the Linux host.
-#
-# The recipe records absolute include paths from the machine that built the kernel, so this job rewrites
-# them to the runner checkout and appends the two flags the dandelion build needs: the source-interface
-# switch (the repository no longer carries OriginalHidDeviceABI.h) and the SDK sysroot.
+# Why the compile is driven here rather than by build-arm-driver.py: that helper runs the recipe
+# verbatim, and the dandelion recipe names the Linux clang and carries -arch alongside --target.
+# Handing that argv to the macOS driver produces "cannot specify -o when generating multiple output
+# files" even though it has one input and one -o.  So this job builds the command from the same
+# recipe itself, normalises those driver-level options, and then lets the official script do the part
+# that matters, which is binding the owned methods to the original IOHIDDevice slots.
 
 on:
   workflow_dispatch:
@@ -35,7 +34,6 @@ env:
   UNIXNU_REPO: https://github.com/UniXNU/UniXNU.git
   HID_REPO: https://github.com/UniXNU/ShengHidInput.git
   CANDIDATE_TAG: abi-dandelion
-  # Prefix the kernel build wrote into its compile recipes.
   RECIPE_PREFIX: /root/work/UniXNU/out/dandelion/ipados-17.7.11-21H461/dandelion/tree
 
 jobs:
@@ -47,7 +45,6 @@ jobs:
 
       - name: Check out UniXNU for the official builder
         run: |
-          # kits/XnuPrelink is a submodule and native_prelink lives there, so recurse.
           git clone --branch "${{ inputs.unixnu_ref }}" --recurse-submodules --shallow-submodules \
             "$UNIXNU_REPO" ~/unixnu
           test -f ~/unixnu/scripts/build-sheng-hid-input.py
@@ -65,7 +62,6 @@ jobs:
 
       - name: Place the kernel candidate where the builder expects it
         run: |
-          # The builder falls back to this glob, so the name must match it.
           mkdir -p ~/unixnu/build/xnu-prelink
           cp ~/assets/kernel.macho \
             ~/unixnu/build/xnu-prelink/native-owner-ufs-cpu-desktop-dandelion-candidate.macho
@@ -76,49 +72,6 @@ jobs:
         run: |
           tar xzf ~/assets/xnu-compile-tree.tar.gz -C ~/unixnu
           test -f ~/unixnu/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json
-          test -d ~/unixnu/.cache/fakeroot
-
-      - name: Rewrite the recipe for this runner
-        run: |
-          cd ~/unixnu
-          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          echo "sdk: $SDK"
-          python3 - "$SDK" "$RECIPE_PREFIX" <<'PY'
-          import json, pathlib, sys
-          sdk, prefix = sys.argv[1], sys.argv[2]
-          home = pathlib.Path.home() / 'unixnu'
-          recipe = home / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json'
-          record = json.loads(recipe.read_text().strip().rstrip(','))
-          args = [a.replace(prefix, str(home)) for a in record['arguments']]
-          # The recipe names the Linux toolchain that built the kernel; this runner has Xcode instead.
-          # The target triple, -fapple-kext and the include paths are unchanged, so the same source
-          # compiles to the same kernel ABI.
-          if args and args[0].startswith('/opt/unixnu-linux'):
-              print('compiler:', args[0], '-> xcrun clang')
-              args[0] = 'xcrun'
-              args.insert(1, 'clang')
-          extra = [
-              # The repository no longer ships OriginalHidDeviceABI.h, so use the source interface.
-              '-DNATIVE_HID_SOURCE_API=1',
-              # IOHIDFamily headers live in the iPhoneOS SDK, not in the kernel tree.
-              '-isysroot', sdk,
-              '-I', sdk + '/usr/include',
-              '-iframework', sdk + '/System/Library/Frameworks',
-          ]
-          for flag in extra:
-              if flag not in args:
-                  args.append(flag)
-          record['arguments'] = args
-          # build-arm-driver.py finds record['file'] verbatim in the arguments and swaps it for the
-          # component source, so that field has to carry the same rewritten prefix as the arguments;
-          # leaving the original prefix makes the match fail and clang is handed the kernel source.
-          record['file'] = record['file'].replace(prefix, str(home))
-          # build-arm-driver.py runs the compile with cwd=record['directory'], so that has to exist.
-          record['directory'] = str(home / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT')
-          recipe.write_text(json.dumps(record) + '\n')
-          print('recipe rewritten: %d arguments, prefix replaced with %s' % (len(args), home))
-          print('directory:', record['directory'])
-          PY
 
       - name: Fetch the HID component at the pinned revision
         run: |
@@ -141,34 +94,73 @@ jobs:
           print('candidate matches the recorded ABI:', hid[:24])
           PY
 
-      - name: Build ShengHidInput with the official builder
+      - name: Compile the component with the kernel recipe
+        run: |
+          cd ~/unixnu
+          python3 - "$RECIPE_PREFIX" <<'PY'
+          import json, os, pathlib, subprocess, sys
+          prefix = sys.argv[1]
+          home = pathlib.Path.home() / 'unixnu'
+          sdk = subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
+          recipe = home / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json'
+          record = json.loads(recipe.read_text().strip().rstrip(','))
+          args = [a.replace(prefix, str(home)) for a in record['arguments']]
+          source = home / 'drivers/ShengHidInput/NativeHidInput.cpp'
+          out_dir = home / 'build/sheng-hid-input'
+          out_dir.mkdir(parents=True, exist_ok=True)
+          destination = out_dir / 'NativeHidInput.o'
+
+          # Rebuild the command, dropping the driver-level options that make the macOS driver build more
+          # than one job: -arch and the recipe's own --target (replaced with an explicit one below).
+          cmd, i = [], 0
+          while i < len(args):
+              a = args[i]
+              if a == record['file']:
+                  cmd.append(str(source)); i += 1; continue
+              if a == '-o':
+                  i += 2; continue
+              if a in ('-arch', '--target'):
+                  i += 2; continue
+              if a == '-Xclang' and i + 1 < len(args) and args[i + 1].startswith('-W'):
+                  i += 2; continue
+              if a.startswith('-W'):
+                  i += 1; continue
+              cmd.append(a); i += 1
+
+          cmd += [
+              '--target=arm64-apple-ios17.0',
+              '-isysroot', sdk,
+              '-I', sdk + '/usr/include',
+              '-I', str(home / '.cache/xnu-work/osfmk'),
+              '-I', str(home / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT'),
+              '-DNATIVE_HID_SOURCE_API=1',
+              '-c', str(source), '-o', str(destination),
+              '-Wno-everything',
+          ]
+          print('argument count:', len(cmd))
+          print('compiler:', ' '.join(cmd[:2]))
+          (out_dir / 'compile-command.json').write_text(json.dumps(cmd, indent=2) + '\n')
+          result = subprocess.run(['xcrun', 'clang'] + cmd[1:] if cmd[0] == 'xcrun' else cmd,
+                                  capture_output=True, text=True,
+                                  cwd=str(home / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT'))
+          (out_dir / 'compile.log').write_text((result.stdout or '') + (result.stderr or ''))
+          if result.returncode:
+              print((result.stdout or '') + (result.stderr or ''))
+              raise SystemExit('compile failed rc=%d' % result.returncode)
+          print('compiled:', destination, destination.stat().st_size, 'bytes')
+          PY
+
+      - name: Bind with the official builder
         run: |
           set -o pipefail
           cd ~/unixnu
-          python3 scripts/build-sheng-hid-input.py 2>&1 | tail -60
+          # The official script's first act is the compile this job already did; replace that one call
+          # so the rest of it (the ABI binding it is there for) runs unchanged.
+          sed "s|print(run(\['python3',ROOT/'scripts/build-arm-driver.py','NativeHidInput'\],text=True),end='')|print('using the object already compiled')|" \
+            scripts/build-sheng-hid-input.py > scripts/build-sheng-hid-input-runner.py
+          grep -n 'using the object already compiled' scripts/build-sheng-hid-input-runner.py
+          python3 scripts/build-sheng-hid-input-runner.py 2>&1 | tail -30
           ls -l build/sheng-hid-input/
-
-      - name: Show the compile command when the build fails
-        if: failure()
-        run: |
-          cd ~/unixnu/build/sheng-hid-input 2>/dev/null || exit 0
-          echo '=== compile-command.json (non-flag arguments) ==='
-          python3 - <<'PY'
-          import json, pathlib
-          p = pathlib.Path('compile-command.json')
-          if not p.is_file():
-              print('no compile-command.json'); raise SystemExit
-          cmd = json.loads(p.read_text())
-          print('argument count:', len(cmd))
-          print('argv[0:4]:', cmd[:4])
-          print('non-flag arguments:')
-          for i, a in enumerate(cmd):
-              if not a.startswith('-'):
-                  print('  [%d] %s' % (i, a))
-          print('-o at:', [i for i, a in enumerate(cmd) if a == '-o'])
-          PY
-          echo '=== compile.log tail ==='
-          tail -20 compile.log 2>/dev/null || true
 
       - name: Publish the archive
         uses: actions/upload-artifact@v4
@@ -177,5 +169,7 @@ jobs:
           path: |
             /Users/runner/unixnu/build/sheng-hid-input/libShengHidInput.a
             /Users/runner/unixnu/build/sheng-hid-input/NativeHidInput.late.o
+            /Users/runner/unixnu/build/sheng-hid-input/NativeHidInput.o
             /Users/runner/unixnu/build/sheng-hid-input/abi-audit.json
-          if-no-files-found: error
+            /Users/runner/unixnu/build/sheng-hid-input/compile.log
+          if-no-files-found: warn
