@@ -51,8 +51,11 @@ jobs:
 
       - name: Check out UniXNU for the official builder
         run: |
-          git clone --depth 1 --branch "${{ inputs.unixnu_ref }}" "$UNIXNU_REPO" ~/unixnu
+          # kits/XnuPrelink is a submodule and native_prelink lives there, so recurse.
+          git clone --branch "${{ inputs.unixnu_ref }}" --recurse-submodules --shallow-submodules             "$UNIXNU_REPO" ~/unixnu
           test -f ~/unixnu/scripts/build-sheng-hid-input.py
+          ls ~/unixnu/kits/XnuPrelink | head
+          test -f ~/unixnu/kits/XnuPrelink/native_prelink.py
 
       - name: Fetch the HID component at the pinned revision
         run: |
@@ -87,8 +90,9 @@ jobs:
 
       - name: Build ShengHidInput with the official builder
         run: |
+          set -o pipefail
           cd ~/unixnu
-          python3 scripts/build-sheng-hid-input.py 2>&1 | tail -40
+          python3 scripts/build-sheng-hid-input.py 2>&1 | tail -60
           ls -l build/sheng-hid-input/
 
       - name: Publish the archive
