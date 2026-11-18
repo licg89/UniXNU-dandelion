@@ -137,8 +137,11 @@ jobs:
           cmd = ['xcrun', 'clang'] + cmd[1:]
           cmd += [
               '--target=arm64-apple-ios17.0',
+              # The kernel tree already provides the IOKit headers, and adding the SDK include directory
+              # as well makes its MacTypes.h collide with the kernel's own types.  The SDK stays only as
+              # a sysroot, and lowered priority for anything the packed headers do not name.
               '-isysroot', sdk,
-              '-I', sdk + '/usr/include',
+              '-idirafter', sdk + '/usr/include',
               # IOHIDFamily-2031.120.4 headers come from Apple's open-source distribution, packed in the
               # release, because the runner SDK does not ship these kernel-private headers.
               '-I', str(pathlib.Path.home() / 'hidheaders'),
