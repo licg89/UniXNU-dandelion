@@ -11403,3 +11403,48 @@ SpringBoard total=17 wait=17 run=0  waitpc=0x1db8dcb58         ← 共享缓存�
 - 今晚前 5 小时的性能优化方向全部偏离 ✗ 因为真正的症状是"UI 停住"，不是"启动慢" ✓
 
 ---
+
+## 0.199 2026-11-19 01:0x：35 分钟是**真正的 CPU 计算**，不是等待 —— 用 FOCUS 数据直接判定
+
+### 一、方法（不需要新探针）
+
+`DANDELION-FOCUS` 每轮报每个进程的 `total / wait / run` 线程数 ✓
+`run > 0` = 有线程在跑 = 在算 ✓ `run == 0` = 全在等 ✓
+
+按 beat 归并 sr69 日志（93 个 beat 有采样）：
+
+```
+84 个 beat 有线程在运行 ✓
+ 9 个 beat 全部在等待
+run 线程总数随时间增长：beat 34 → 21，beat 61 → 24，beat 80 → 58，beat 88 → 68
+```
+
+⇒ **系统一直在算，而且越算越多** ✓✓
+⇒ 不是等 I/O（存储只 181 s）✗ 不是等事件 ✗ **是 CPU 工作** ✓
+
+### 二、结论
+
+| 判断 | 依据 |
+| --- | --- |
+| 启动慢的原因是 **CPU 计算量** | 84/93 beat 有线程运行 ✓ |
+| SoC 是 8×Cortex-A53 | 而 iPadOS 用户态按快得多的芯片设计 ✓ |
+| 崩溃重启叠加 | 174 次 spawn，每次调度+加载+回收 ✓ |
+
+⇒ **唯一可控的杠杆仍是减少进程重启** ✓ 但必须用**主分支验证过的列表** ✓
+
+### 三、被证伪的方向（今晚）
+
+| 方向 | 结论 |
+| --- | --- |
+| 存储提速（DMA/缓存/提频）| 上限 7.6% ✗ |
+| `sheng-vsync=60` | vsync 计数器全 0 ✗ 且启动慢数倍 ✗ |
+| 禁 fairplayd | SpringBoard 卡在 2 线程 ✗ |
+| 加大禁用列表 | 主分支 lite 列表只有 bluetoothd + coreduetd，擅自扩大会卡死 ✗ |
+
+### 四、下一步
+
+用 **只禁 bluetoothd** 的种子（与主分支 lite 列表一致）构建测试 ✓
+种子由 CI `data-seed.yml` 生成；GitHub 的 macOS runner 容量紧张，可能需要多次重试
+（一次直接失败："The job was not acquired by Runner of type hosted"）✗
+
+---
