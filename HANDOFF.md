@@ -10734,3 +10734,66 @@ build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.c
 - 候选文件名不符 glob ⇒ `No reference candidate available` ✗ 已修 ✓
 
 ---
+
+## 0.187 2026-11-18 09:4x：C 方案的边界 —— 本机编译需要复制 Apple SDK，已停止
+
+### 一、C 方案取得的部分成功
+
+| 步骤 | 结果 |
+| --- | --- |
+| 用内核自己的编译配方（`IOPlatformExpert.cpo.json`，475 个参数）驱动编译 | ✓ 可行 |
+| 取到**完全对应版本**的 `IOHIDDevice.h` | ✓ `IOHIDFamily-2031.120.4`（39,970 B，Apple 开源）|
+| 取到 `IOHIDUsageTables.h` / `IOHIDKeys.h` / `IOHIDDeviceTypes.h` / `IOHIDEvent.h` | ✓ |
+| 取到 `TargetConditionals.h` | ✓ 20,481 B（MacOSX10.15 SDK 镜像）|
+| 编译推进到 `NativeHidInput.cpp:480`（`OSDefineMetaClassAndStructors`）| ✓ 前面全部通过 |
+
+⇒ 说明**思路是对的**：本机有能力编译，只差 SDK 头的完整性 ✓
+
+### 二、无法继续的客观原因
+
+`IOKit/hid/IOHIDDevice.h` 的 include 链要求（实测逐条）：
+
+```
+#include <TargetConditionals.h>                      ✓ 已取
+#include <IOKit/IOService.h>                         ✓ 内核自带
+#include <IOKit/IOMessage.h>                         ✓ 内核自带
+#include <IOKit/IOBufferMemoryDescriptor.h>          ✓ 内核自带
+#include <IOKit/hidsystem/IOHIDDescriptorParser.h>   ✗ 仓库路径未找到
+#include <IOKit/hid/IOHIDKeys.h>                     ✓ 已取
+#include <IOKit/hid/IOHIDUsageTables.h>              ✓ 已取
+#include <IOKit/IOEventSource.h>                     ✓ 内核自带
+#include <IOKit/hid/IOHIDDeviceTypes.h>              ✓ 已取
+#include <HIDDriverKit/IOHIDDevice.h>                ✗ **无保护 include**，且由 IIG 生成
+#include <sys/queue.h>                               ✓
+```
+
+关键在 `HIDDriverKit/IOHIDDevice.h`：它是 DriverKit 的 **IIG 生成头**，无任何 `#if` 保护 ✗
+用空占位可以绕过 include，但后面还有 `IOHIDDescriptorParser.h` 等未定位的头 ✓
+
+### 三、判断
+
+继续这条路等于在本机**重建一份 Apple SDK 的 HID 切片** ✗
+这既不是"复用官方实现"，也违背用户"能不自己造轮子的一定不要自己造"的原则 ✓
+而且每补一个头都可能牵出下一个，收敛不可预期 ✗
+
+⇒ **本机编译路线停止** ✗ 记录以免下次重复走 ✓
+
+### 四、正确路线（如果要继续输入）
+
+| 方案 | 是否"复用" | 代价 |
+| --- | --- | --- |
+| CI macOS + **完整内核编译树** | ✓ 纯官方 | 需把 ios-obj（410 MB）或 IPSW 构建搬进 CI |
+| CI macOS + IPSW 现场构建编译树 | ✓ 纯官方 | 6.8 GB 下载 + 约 40 分钟 |
+| 本机复制 SDK 头 | ✗ 违背原则 | 收敛未知 |
+
+⇒ 结论：**输入需要 CI 提供完整编译环境** ✓ 这是唯一的"不造轮子"路径 ✓
+
+### 五、当前可交付状态（未受影响）
+
+- sr44 干净镜像已刷入 ✓ 锁屏无叠字 ✓
+- `display=verified` / `userspace=verified` ✓
+- `input=planned`，`porting.toml` 已记录上述 include 链与判断 ✓
+- `scripts/hid-abi-snapshot.json`（10.9 KB）保留 ✓ 它证明了本内核与官方 ABI 逐位一致，
+  未来任何输入工作都可直接用它校验 ✓
+
+---
