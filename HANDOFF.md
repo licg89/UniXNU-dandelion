@@ -10797,3 +10797,58 @@ build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.c
   未来任何输入工作都可直接用它校验 ✓
 
 ---
+
+## 0.188 2026-11-18 10:2x：HID 走 CI —— 已打通的 8 环，与剩下的一环
+
+### 一、已上传的 release 资产（tag `abi-dandelion`）
+
+| 资产 | 大小 | 用途 |
+| --- | --- | --- |
+| `kernel.macho` | 51.7 MB | 官方构建器的参考候选产物 |
+| `kernel.json` | 17.0 MB | 其 plan（含 `candidate_sha256`、`extents`、`original_executable_sha256`）|
+| `xnu-compile-tree.tar.gz` | **19.3 MB** | 只含编译需要的头与配方：6158 个头、`.cpo.json` 配方、`meta_features.h`、`Kernel.framework/PrivateHeaders` |
+
+打包方式：从 547 MB 的构建树里只取 `*.h`/`*.json`/`meta_features.h`，压缩后 19 MB ✓
+
+### 二、CI 已跑通的环节（每轮修掉一个真 bug）
+
+| # | 症状 | 修法 |
+| --- | --- | --- |
+| 1 | `macos-14` unsupported | 改 `macos-26`（与本仓库其他 workflow 一致）|
+| 2 | `ModuleNotFoundError: native_prelink` | clone 加 `--recurse-submodules` |
+| 3 | 失败被 `\| tail` 掩盖 | 加 `set -o pipefail` |
+| 4 | `No reference candidate available` | 候选文件名须匹配 `native-owner-ufs-cpu-desktop-*-candidate.macho` |
+| 5 | 缺 `IOPlatformExpert.cpo.json` | 上传 19 MB 头树，解包到 checkout |
+| 6 | `cwd=record['directory']` 不存在 | 改写 `record['directory']` 到 checkout 路径 |
+| 7 | `FileNotFoundError: /opt/unixnu-linux/llvm/bin/clang-24` | 改写 `args[0]` 为 `xcrun clang`（target/`-fapple-kext`/include 不变）|
+| 8 | `record['file']` 前缀不匹配 ⇒ clang 拿到内核源码 | 对 `record['file']` 做同样的前缀替换 |
+
+已确认可用：`sdk: iPhoneOS26.5.sdk` ✓ `recipe rewritten: 476 arguments` ✓
+`candidate matches the recorded ABI: 7e4c5104814f2e773d5be13d` ✓
+
+### 三、剩余一环（未解）
+
+最终命令已正确：`['xcrun','clang','-xc++','.../NativeHidInput.cpp', '-o', '.../NativeHidInput.o', ...]`，
+单一输入、单一 `-o` ✓ 但 macOS 上 clang 报：
+
+```
+clang: error: cannot specify -o when generating multiple output files
+```
+
+本地用同一份配方 + 同一 LLVM 复现时**只报缺 `meta_features.h`** ✗ 不出现该错误 ✗
+⇒ 属 macOS clang 驱动特有行为 ✓ 未定位 ✓
+
+**下一步建议**（已在 workflow 加了诊断步骤，会打印真实 argv 与 `compile.log`）：
+1. 取 `compile-command.json` 全量 argv，与一条已知可用的 macOS 编译命令逐项 diff
+2. 重点怀疑：`-iframework <sdk>/System/Library/Frameworks` 与 `-isysroot` 同时出现，
+   或有参数被 macOS 版 build-arm-driver.py 追加两次（`-I out` / `-Werror`）
+3. 备选：绕开 `build-arm-driver.py`，在 CI 里直接按 `compile-command.json` 调 clang，
+   再执行 `build-sheng-hid-input.py` 的绑定段
+
+### 四、不受影响的部分
+
+- sr44 干净镜像已刷入 ✓ 锁屏无叠字
+- `display=verified`、`userspace=verified`、`input=planned`
+- `scripts/hid-abi-snapshot.json` 证明 ABI 逐位一致 ✓
+
+---
