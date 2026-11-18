@@ -19,8 +19,10 @@
 #include <machine/machine_routines.h>
 #include <stdarg.h>
 
+static void gopDrawLine (unsigned line, const char *text);   // defined below, used by the diagnostics
 extern "C" void native_gop_text(unsigned line, const char *text) __attribute__((weak));
-extern "C" void native_diag_persist_start (void);   // starts the panel journal thread when mode 2
+extern "C" void native_diag_persist_start (void);
+static void dandelionAutoResetStart (void);   // starts the panel journal thread when mode 2
 extern "C" void native_gop_redraw_ring(void) __attribute__((weak));
 extern "C" void native_diag_process_summary(void) __attribute__((weak));
 static void dline(unsigned line, const char *format, ...) {
@@ -759,6 +761,7 @@ void native_legacy_display_late_probe(void) {
             if(platform)nubParent=platform;
         }
         native_diag_persist_start();
+        dandelionAutoResetStart();
         if(!activeKeyStore && parent) {
             IOService *aks=native_keyevents_allocate();
             if(aks && aks->init() && aks->attach(parent) && aks->start(parent)) {
@@ -897,6 +900,43 @@ static bool gopTextOpen(void) {
 
 
 // dandelion-panel-persist
+
+// ---- unattended reset -------------------------------------------------------------------------
+// A boot is only useful if it ends by itself: the console dies when the card clock rises, so the log has
+// to be read after the machine is back in the bootloader.  dandelion-autoreset=<seconds> resets the board
+// with PSCI SYSTEM_RESET, the same conduit ArmDTPlatform::platformStageReset() already uses, so the phone
+// returns on its own and a boot can be started with `fastboot boot` without touching any partition.
+static void
+dandelionAutoResetThread (void *, wait_result_t)
+{
+    unsigned seconds = 0;
+    if (!PE_parse_boot_argn ("dandelion-autoreset", &seconds, sizeof (seconds)) || seconds < 30) {
+        thread_terminate (current_thread ());
+        return;
+    }
+    IOSleep (seconds * 1000);
+    // Say so on the panel first: a photo proves the timer fired and dates the run.
+    gopDrawLine (21, "autoreset");
+    IOSleep (1500);
+    register uint64_t x0 __asm__ ("x0") = 0x84000009;   // PSCI SYSTEM_RESET
+    register uint64_t x1 __asm__ ("x1") = 0;
+    register uint64_t x2 __asm__ ("x2") = 0;
+    register uint64_t x3 __asm__ ("x3") = 0;
+    __asm__ volatile ("smc #0" : "+r" (x0) : "r" (x1), "r" (x2), "r" (x3) : "memory");
+    for (;;) {
+        __asm__ volatile ("wfe");
+    }
+}
+
+static void
+dandelionAutoResetStart (void)
+{
+    unsigned seconds = 0;
+    if (!PE_parse_boot_argn ("dandelion-autoreset", &seconds, sizeof (seconds)) || seconds < 30) return;
+    thread_t thread = THREAD_NULL;
+    if (kernel_thread_start (dandelionAutoResetThread, nullptr, &thread) == KERN_SUCCESS) thread_deallocate (thread);
+}
+
 // ---- persistent panel status -------------------------------------------------------------------
 // The kernel console shares MSDC0 with the storage driver, so raising the card clock kills the log while
 // the system keeps running; sr49 logged 116 lines and stopped exactly at the policy read.  The panel is a
