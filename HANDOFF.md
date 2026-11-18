@@ -10547,3 +10547,73 @@ seed_files  = 7
 - 推送前确认默认分支 ✓
 
 ---
+
+## 0.184 ★★★★★ 2026-11-18 08:4x：**锁屏出来了** —— dandelion 首次到 iPadOS 锁屏
+
+### 一、成果
+
+sr43（`boot-sr43-mainseed.img`，sha `5a371454`）启动后 **iPadOS 锁屏真实显示** ✓
+
+屏幕实拍确认：日期 "Wednesday, December 31"、大时钟 9:50、彩色壁纸、**"Press home to open"**、
+顶部状态栏与电池图标 ✓
+
+日志硬证据（`console-sr43-20261118-024936.txt`，136,263 行）：
+
+```
+DANDELION-DATA: mount=0 stage=4 dev=16777219 seed=536870912 disabled=0    ← 种子文件到位
+DISP COPY: 330    DISP RET: 330    F330                                  ← 330 帧退休
+D4K beat 1036: procs=129 sb=27:2 bb=57:2                                 ← 5.75 小时稳定
+```
+
+| 指标 | 修复前 | **修复后** |
+| --- | --- | --- |
+| 显示帧 | 6–7 | **330**（47 倍）|
+| `disabled.plist` 可见 | `2`（ENOENT）| **`0`** ✓ |
+| SpringBoard | 4 线程全等待 | **存活 5.75 小时** ✓ |
+| backboardd | 7 帧后停 | **持续提交** ✓ |
+| 界面 | Apple logo | **锁屏** ✓✓ |
+
+### 二、根因链（全部验证）
+
+```
+本机 mkapfs "最小种子" 只建目录、未写 plist（解包两镜像对比证实）
+  → /private/var/db/com.apple.xpc.launchd/disabled.plist 缺失（探针 disabled=2）
+  → watchdogd / bluetoothd / liveactivitiesd / PerfPowerServices 不被禁用、无限重启
+  → "Too many corpses being created" → launchd 停止 spawn
+  → 服务图饿死（frontboardd 从未启动、runningboardd 只起一次）
+  → backboardd 提交 7 帧后无人再提交
+  → 停在 Apple logo
+```
+
+### 三、修复（完全按 UniXNU 主分支）
+
+| 项 | 依据 |
+| --- | --- |
+| 种子 = OS `private/var` 全量复制 | `scripts/prepare-owner-data-fixture.py` |
+| 5 个偏好 plist | `scripts/seed-data-skip-setup.py`、`docs/guide/skip-setup.md` |
+| job 禁用列表 = identityservicesd/locationd/CommCenter/iconservicesagent + watchdogd/bluetoothd/coreduetd | `docs/guide/skip-setup.md:89`、`asteroids` T40d 的 sheng-lite |
+| 清除 merlinx 杂质 | FBLaunchWatchdogScale / CAEnable* / SetupState / ForceNoBuddy / frontboard.plist |
+
+种子经 CI（`data-seed.yml` on `main`）由 macOS `hdiutil` 生成，UUID `47000E8A-66EF-4308-AEAD-1130B31752AB`，
+解包逐项验证：主分支条目全在、merlinx 杂质全 absent ✓
+
+### 四、用户方法纠正的价值（记录）
+
+用户两次关键纠正直接决定了结果：
+
+1. **"别造轮子，参考 UniXNU 主分支"** → 放弃 merlinx 作为基准，改用主分支种子/偏好/job 列表 ✓
+2. **"merlinx 分支并不完善，优先参考 unixnu 主分支"** → 发现 merlinx 自己也没有 userland 显示路径，
+   之前多条推断前提是假的 ✓
+
+### 五、遗留（可继续，不阻塞锁屏）
+
+| 项 | 状态 |
+| --- | --- |
+| 诊断叠字 `DISP RET` / `RD` 画在锁屏上 | ✗ 观感问题，需关闭面板叠字 |
+| watchdogd 仍崩 33 次 / liveactivitiesd 87 次 / corpse 25 次 | 不影响 UI，但仍是噪声 |
+| 输入驱动未接 | "Press home" 无法解锁，无法进入桌面 |
+| `IOMFB_FDR_Loader exit 0x100` | 未解，但不阻塞 |
+| 启动耗时 / PIO 读速 | 未优化 |
+| 备份 | 231 文件 / 13 GiB ✓ |
+
+---
