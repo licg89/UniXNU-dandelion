@@ -148,6 +148,28 @@ jobs:
           python3 scripts/build-sheng-hid-input.py 2>&1 | tail -60
           ls -l build/sheng-hid-input/
 
+      - name: Show the compile command when the build fails
+        if: failure()
+        run: |
+          cd ~/unixnu/build/sheng-hid-input 2>/dev/null || exit 0
+          echo '=== compile-command.json (non-flag arguments) ==='
+          python3 - <<'PY'
+          import json, pathlib
+          p = pathlib.Path('compile-command.json')
+          if not p.is_file():
+              print('no compile-command.json'); raise SystemExit
+          cmd = json.loads(p.read_text())
+          print('argument count:', len(cmd))
+          print('argv[0:4]:', cmd[:4])
+          print('non-flag arguments:')
+          for i, a in enumerate(cmd):
+              if not a.startswith('-'):
+                  print('  [%d] %s' % (i, a))
+          print('-o at:', [i for i, a in enumerate(cmd) if a == '-o'])
+          PY
+          echo '=== compile.log tail ==='
+          tail -20 compile.log 2>/dev/null || true
+
       - name: Publish the archive
         uses: actions/upload-artifact@v4
         with:
