@@ -20,6 +20,7 @@
 #include <stdarg.h>
 
 extern "C" void native_gop_text(unsigned line, const char *text) __attribute__((weak));
+extern "C" void native_diag_persist_start (void);   // starts the panel journal thread when mode 2
 extern "C" void native_gop_redraw_ring(void) __attribute__((weak));
 extern "C" void native_diag_process_summary(void) __attribute__((weak));
 static void dline(unsigned line, const char *format, ...) {
@@ -757,6 +758,7 @@ void native_legacy_display_late_probe(void) {
             IOService *platform=OSDynamicCast(IOService,static_cast<IOService *>(IOService::getPlatform()));
             if(platform)nubParent=platform;
         }
+        native_diag_persist_start();
         if(!activeKeyStore && parent) {
             IOService *aks=native_keyevents_allocate();
             if(aks && aks->init() && aks->attach(parent) && aks->start(parent)) {
@@ -893,20 +895,114 @@ static bool gopTextOpen(void) {
     return true;
 }
 
+
+// dandelion-panel-persist
+// ---- persistent panel status -------------------------------------------------------------------
+// The kernel console shares MSDC0 with the storage driver, so raising the card clock kills the log while
+// the system keeps running; sr49 logged 116 lines and stopped exactly at the policy read.  The panel is a
+// framebuffer and does not depend on that controller, so a small journal of the last diagnostic lines is
+// kept in memory and redrawn from a thread that does not care what the UI does.  This is the part of the
+// main branch's boot-progress page that survives: a frozen or superseded screen still shows the numbers.
+enum { kDiagJournalLines = 6, kDiagTextBytes = 96 };
+static char diagJournal[kDiagJournalLines][kDiagTextBytes];
+static unsigned diagJournalLine[kDiagJournalLines];
+static volatile unsigned diagJournalNext;
+static volatile unsigned diagJournalTicks;
+static volatile int diagPersistMode = -1;
+static const char *diagBuildTag;
+
+static void gopDrawLine (unsigned line, const char *text);
+
+static void
+diagJournalRecord (unsigned line, const char *text)
+{
+    if (!text) return;
+    if (diagPersistMode < 0) {
+        unsigned want = 0;
+        diagPersistMode = (PE_parse_boot_argn ("dandelion-panel-text", &want, sizeof (want)) && want != 0) ? int (want) : 0;
+        char tag[32] = {0};
+        if (PE_parse_boot_argn ("sheng-build-tag", tag, sizeof (tag) - 1)) diagBuildTag = tag;
+    }
+    if (diagPersistMode < 2) return;
+    const unsigned slot = diagJournalNext % kDiagJournalLines;
+    diagJournalNext = diagJournalNext + 1;
+    diagJournalLine[slot] = line;
+    unsigned i = 0;
+    for (; text[i] && i + 1 < kDiagTextBytes; ++i) diagJournal[slot][i] = text[i];
+    diagJournal[slot][i] = 0;
+}
+
+static void
+diagPersistThread (void *, wait_result_t)
+{
+    for (;;) {
+        IOSleep (2000);
+        diagJournalTicks = diagJournalTicks + 1;
+        if (!gopTextOpen ()) continue;
+        // Rows 0..kDiagJournalLines-1: the journal, newest last, then a live counter and the build tag.
+        const unsigned count = diagJournalNext < kDiagJournalLines ? diagJournalNext : kDiagJournalLines;
+        for (unsigned i = 0; i < kDiagJournalLines; ++i) {
+            unsigned row = i;
+            if (i < count) {
+                const unsigned slot = (diagJournalNext - count + i) % kDiagJournalLines;
+                char out[kDiagTextBytes + 16];
+                unsigned p = 0;
+                const char *prefix = "L";
+                for (const char *c = prefix; *c && p + 1 < sizeof (out); ++c) out[p++] = *c;
+                unsigned value = diagJournalLine[slot];
+                char digits[8]; unsigned n = 0;
+                if (!value) digits[n++] = '0';
+                while (value && n < sizeof (digits)) { digits[n++] = char ('0' + value % 10); value /= 10; }
+                while (n) out[p++] = digits[--n];
+                out[p++] = ' ';
+                for (const char *c = diagJournal[slot]; *c && p + 1 < sizeof (out); ++c) out[p++] = *c;
+                out[p] = 0;
+                gopDrawLine (row, out);
+            } else {
+                gopDrawLine (row, "");
+            }
+        }
+        char tail[48];
+        unsigned p = 0;
+        const char *tag = diagBuildTag ? diagBuildTag : "dandelion";
+        for (const char *c = tag; *c && p + 1 < sizeof (tail); ++c) tail[p++] = *c;
+        const char *mark = " alive ";
+        for (const char *c = mark; *c && p + 1 < sizeof (tail); ++c) tail[p++] = *c;
+        unsigned ticks = diagJournalTicks;
+        char digits[8]; unsigned n = 0;
+        if (!ticks) digits[n++] = '0';
+        while (ticks && n < sizeof (digits)) { digits[n++] = char ('0' + ticks % 10); ticks /= 10; }
+        while (n) tail[p++] = digits[--n];
+        tail[p] = 0;
+        gopDrawLine (kDiagJournalLines, tail);
+    }
+    thread_terminate (current_thread ());
+}
+
+extern "C" void
+native_diag_persist_start (void)
+{
+    if (diagPersistMode < 2) return;
+    thread_t thread = THREAD_NULL;
+    if (kernel_thread_start (diagPersistThread, nullptr, &thread) == KERN_SUCCESS) thread_deallocate (thread);
+}
+
 extern "C" void
 native_gop_text (unsigned line, const char *text)
 {
-  /*
-   * Once the lock screen renders, these diagnostic strings are drawn over the UI, so the whole panel
-   * text path is off unless the boot argument asks for it.  The kernel console still reaches the
-   * flashinfo log, so a silent panel costs nothing for diagnosis; dandelion-panel-text=1 restores it.
-   */
   static int panelText = -1;
   if (panelText < 0) {
     unsigned want = 0;
     panelText = (PE_parse_boot_argn("dandelion-panel-text", &want, sizeof(want)) && want != 0) ? 1 : 0;
   }
   if (!panelText) return;
+  diagJournalRecord (line, text);
+  gopDrawLine (line, text);
+}
+
+static void
+gopDrawLine (unsigned line, const char *text)
+{
   if (!text || !gopTextOpen()) return;
   volatile uint8_t *base = reinterpret_cast<volatile uint8_t *>(textMapping->getVirtualAddress());
   const unsigned scale = textVideo.v_width >= 600 ? 2u : 1u;
