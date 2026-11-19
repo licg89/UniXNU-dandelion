@@ -933,6 +933,44 @@ dandelionAutoResetThread (void *, wait_result_t)
         gopDrawLine (21, "autoreset");
     }
     IOSleep (1500);
+    /*
+     * Reset through the SoC's own reset unit rather than PSCI.
+     *
+     * PSCI SYSTEM_RESET returns without doing anything on this part: sr77 set dandelion-autoreset=240 and the
+     * board never rebooted.  The device tree names the unit and the register that selects the next boot mode:
+     *
+     *   toprgu@10007000 { reg = <0x0 0x10007000 0x0 0x1000>;
+     *                     reboot-mode { offset = <0x24>; mask = <0x0f>;
+     *                                   mode-bootloader = <0x03>; } }
+     *
+     * and 0x24 as the reboot-mode register is the same layout MediaTek's watchdog uses, where 0x14 is the
+     * software-reset register and 0x1209 its key.  Writing the mode first means the preloader comes back into
+     * the bootloader, which is what makes a round unattended: no key press, and the next image can be flashed.
+     *
+     * Both writes are plain register stores to a mapped page; if either offset is wrong the board simply does
+     * not reset, which is exactly where it is today.
+     */
+    constexpr uintptr_t kTopRguPhys = 0x10007000;
+    constexpr uint32_t kTopRguRebootMode = 0x24;   // offset 0x24, mask 0x0f, 0x03 = bootloader
+    constexpr uint32_t kTopRguSwReset = 0x14;      // software reset
+    constexpr uint32_t kTopRguSwResetKey = 0x1209;
+    IODeviceMemory *rguMemory = IODeviceMemory::withRange (kTopRguPhys, 0x1000);
+    IOMemoryMap *rguMap = rguMemory ? rguMemory->map (kIOMapAnywhere) : nullptr;
+    if (rguMap && rguMap->getVirtualAddress ()) {
+        uintptr_t rgu = rguMap->getVirtualAddress ();
+        volatile uint32_t *mode = (volatile uint32_t *)(rgu + kTopRguRebootMode);
+        volatile uint32_t *swrst = (volatile uint32_t *)(rgu + kTopRguSwReset);
+        *mode = (*mode & ~0x0fu) | 0x03u;   // mode-bootloader
+        __asm__ volatile ("dsb sy" ::: "memory");
+        *swrst = kTopRguSwResetKey;
+        __asm__ volatile ("dsb sy" ::: "memory");
+    } else {
+        gopDrawLine (21, "autoreset no map");
+        IOSleep (1500);
+    }
+    OSSafeReleaseNULL (rguMap);
+    OSSafeReleaseNULL (rguMemory);
+    // Fall back to PSCI in case the reset unit is not the one this part uses.
     register uint64_t x0 __asm__ ("x0") = 0x84000009;   // PSCI SYSTEM_RESET
     register uint64_t x1 __asm__ ("x1") = 0;
     register uint64_t x2 __asm__ ("x2") = 0;
