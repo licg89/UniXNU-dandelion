@@ -85,22 +85,14 @@ SEED_FILES = (
     # plist in the seed because this board does not link BootProgress yet, but only with the jobs the
     # main-branch guide says block the first boot -- no display/render services.
     #
+    # Matched to UniXNU's 21H461 launchd qualification: system-domain,
+    # root-owned policy plus a real zero-byte migration marker. This tests
+    # watchdog suppression only; do not infer domain from an exec basename.
     ('db/com.apple.xpc.launchd/disabled.plist', 0, 0, 0o644, {
-        'com.apple.identityservicesd': True,
-        'com.apple.locationd': True,
-        'com.apple.CommCenter': True,
-        'com.apple.iconservices.iconservicesagent': True,
         'com.apple.watchdogd': True,
-        'com.apple.bluetoothd': True,
-        'com.apple.coreduetd': True,
     }),
-    #
-    # The 501 file is the mobile user's domain, and it is the one that matters for the services that keep
-    # respawning: measured on sr69, bluetoothd launched 98 times, fairplayd.A2 62 and com.apple.datamigrator
-    # 14, all with ppid 1, while the three labels above sat at one launch each.  The system-domain plist
-    # lists bluetoothd too and it makes no difference, which is what identified the domain as the problem:
-    # these are user-domain jobs, so they belong here.  Denying their exec is not enough -- launchd simply
-    # SIGKILLs and respawns them, 98 times in 40 minutes -- so the job has to be disabled instead.
+    ('db/com.apple.xpc.launchd/disabled.migrated', 0, 0, 0o644, b''),
+    # Preserve the baseline user preferences.
     ('db/com.apple.xpc.launchd/disabled.501.plist', 0, 0, 0o644, {
         'com.apple.ScreenTimeAgent': True,
         'com.apple.dmd': True,
@@ -147,7 +139,10 @@ def write_seed_files(root: Path) -> int:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         with destination.open('wb') as stream:
-            plistlib.dump(content, stream)
+            if isinstance(content, bytes):
+                stream.write(content)
+            else:
+                plistlib.dump(content, stream)
         os.chmod(destination, mode)
         try:
             os.chown(destination, uid, gid)
