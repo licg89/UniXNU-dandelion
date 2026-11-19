@@ -11448,3 +11448,81 @@ run 线程总数随时间增长：beat 34 → 21，beat 61 → 24，beat 80 → 
 （一次直接失败："The job was not acquired by Runner of type hosted"）✗
 
 ---
+
+## 0.201 2026-11-19 上午：**符号化了等待点** —— 系统卡在 mach 系统调用里，不是在算
+
+### 一、怎么做到的（不需要再刷机）
+
+日志里本来就有共享缓存的 slide：
+
+```
+DANDELION-IMG: pid=52 comm=watchdogd cache_slide=0x10a54000 cache_base=0x190a54000 images=159
+```
+
+⇒ 任何用户态地址减去 `0x10a54000` 就是 unslid 地址 ✓
+⇒ 用 `/root/work/symtab/dyld_shared_cache_arm64` + `.symbols` 离线符号化 ✓
+（脚本：`D:\aios\out\cache_lookup2.py`，用法 `cache_lookup2.py 0x10a54000 <addr>...`）
+
+### 二、结果
+
+sr69 日志里 `DANDELION-FOCUS` 的等待点统计：
+
+| waitpc | 次数 | 符号化结果 |
+| --- | --- | --- |
+| `0x1dc1d4b58` | 448 | **libsystem_kernel.dylib + 0x1b58** |
+| `0x1dc1d4970` | 212 | **libsystem_kernel.dylib + 0x1970** |
+| `0x1dc1d48c0` | 189 | **libsystem_kernel.dylib + 0x18c0** |
+| `0x1dc1d48e8` | 27 | **libsystem_kernel.dylib + 0x18e8** |
+| `0x1b9e92444` | 64 | **dyld + 0x17444**（MachOFile::trieWalk）|
+| `0x1b9e83894` | 7 | **dyld + 0x8894**（strcmp）|
+| `0x1b9e97df0` | 19 | **dyld + 0x1cdf0**（Atlas::ProcessSnapshot）|
+| `0x1c6e3855c` | 6 | **MediaAccessibility + 0x655c**（preference 读取）|
+
+⇒ **876 次（绝大多数）落在 libsystem_kernel 的 0x18c0–0x1b58** ✓
+⇒ 那是该镜像**文本最开头的系统调用 stub 区** ✓ 即 **mach 消息等待** ✓
+⇒ 其余是 **dyld 加载镜像** 和 **偏好设置读取** ✓
+
+### 三、结论：不是算不动，是在等
+
+| 证据 | 含义 |
+| --- | --- |
+| 87 个进程 CPU 时间合计只有 **120ms / 47ms / 42ms** | CPU 基本空闲 ✗ |
+| 等待点全在 **mach 系统调用** | 阻塞在消息接收 ✓ |
+| 一部分在 **dyld** | 反复加载镜像 ✓ |
+| 存储 226 秒 | 不是主因 ✗ |
+
+⇒ **SpringBoard / backboardd / lsd 都在等 mach 消息** ✓
+⇒ 它们等的服务**因为缺少硬件驱动永远不回复** ✗（蓝牙是已确认的一个 ✓）
+⇒ 而 174 次进程启动各自触发 dyld 加载 ✓ 进一步拉长时间 ✓
+
+### 四、为什么禁用服务行不通（已实测）
+
+| 尝试 | 结果 |
+| --- | --- |
+| 禁 bluetoothd（sr73）| 8 分钟时 P2，启动停滞 ✗ |
+| 禁 4 个（sr70）| SpringBoard 停在 2 线程 ✗ |
+| **禁 bluetoothd（sr74，overnight）** | **launchd 空转 3,487,336 ms = 58 分钟 CPU** ✗✗ |
+
+⇒ 服务不在 ⇒ 客户端永远等 ⇒ launchd 反复重试 ✓ 比让它崩溃更糟 ✓
+⇒ **⇒ 崩溃重启是代价较小的那个选项** ✓
+
+### 五、所以"问题到底出在哪里"
+
+**一句话**：不是启动流程慢，而是**缺少硬件驱动**（蓝牙等）导致依赖它们的服务无法响应，
+用户态进程在 mach 消息里**阻塞等待**，而每次重试又触发一轮 dyld 镜像加载。
+
+| 层 | 状态 |
+| --- | --- |
+| UEFI 阶段 | ✅ **已修复**（400 kHz → 26 MHz，10+ 分钟 → 8.6 秒）|
+| 存储 | ✅ 已量化，9%，不是主因 |
+| 显示渲染 | ✅ 已排除（2.8 ms/帧）|
+| vsync | ✅ 已排除（定时器正常，只是没人注册）|
+| CPU 计算 | ✅ 已排除（空闲）|
+| **服务响应等待** | ❌ **这是剩下的 33 分钟** ✓ |
+
+### 六、能做的两条路
+
+1. **写缺失的驱动**（蓝牙优先）⇒ 服务能响应 ⇒ 等待消失 ✓ 这是根治 ✓
+2. 在驱动写出来之前：**接受这个耗时** ✓ 因为所有配置手段都试过且更糟 ✗
+
+---

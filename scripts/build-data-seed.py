@@ -105,13 +105,6 @@ SEED_FILES = (
         'com.apple.ScreenTimeAgent': True,
         'com.apple.dmd': True,
         'com.apple.UsageTrackingAgent': True,
-        #
-        # bluetoothd only.  sr70 disabled bluetoothd, fairplayd and datamigrator together and the exec count
-        # fell from 780 to 200 with bluetoothd at zero -- the mechanism works -- but SpringBoard then stopped
-        # at two threads, both waiting, at beat 50, against seventeen threads and beat 118 for sr69.  FairPlay
-        # is what SpringBoard's DRM path initialises, so disabling it stalls the UI.  UniXNU main's lite list
-        # is exactly bluetoothd and coreduetd, which is what this now matches.
-        'com.apple.bluetoothd': True,
     }),
     ('mobile/Library/Preferences/com.apple.migration.plist', 501, 501, 0o600, {
         'LastSystemVersion': '21H461',
