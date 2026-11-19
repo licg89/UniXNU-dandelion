@@ -105,6 +105,14 @@ SEED_FILES = (
         'com.apple.ScreenTimeAgent': True,
         'com.apple.dmd': True,
         'com.apple.UsageTrackingAgent': True,
+        #
+        # sr80 measured what the stall is made of: the failing services exit in 0.2-0.6 s and launchd's default
+        # ThrottleInterval puts 10 s between attempts, so a client waits out about 140 cycles.  fairplayd.A2 is
+        # the largest churn (55 launches) and the first candidate for the service SpringBoard waits for, so this
+        # seed disables it alone -- bluetoothd stays enabled, because disabling that stalled the boot at two
+        # processes.
+        'com.apple.fairplayd': True,
+        'com.apple.fairplayd.A2': True,
     }),
     ('mobile/Library/Preferences/com.apple.migration.plist', 501, 501, 0o600, {
         'LastSystemVersion': '21H461',

@@ -1,0 +1,24 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8766,7 +8766,8 @@
+ 			 */
+ 			const char *exe_name = vnode_getname(imgp->ip_vp);
+ 
+-			printf("DANDELION-EXEC: pid %d comm=%s (policy answer %d)\n",
++			printf("DANDELION-EXEC: t=%llu pid %d comm=%s (policy answer %d)\n",
++			    (unsigned long long)mach_absolute_time(),
+ 			    proc_getpid(p), exe_name != NULL ? exe_name : "?", imgp->ip_mac_return);
+ 			if (exe_name != NULL) {
+ 				extern void native_diag_focus_note(int, const char *);
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -1649,7 +1649,8 @@
+ 	 * line per exit names the process, the raw code, and whether it was signalled (a crash or
+ 	 * jetsam's SIGKILL) or exited normally.
+ 	 */
+-	printf("DANDELION-EXIT: pid=%d comm=%s ppid=%d rv=%#x sig=%d status=%d\n",
++	printf("DANDELION-EXIT: t=%llu pid=%d comm=%s ppid=%d rv=%#x sig=%d status=%d\n",
++	    (unsigned long long)mach_absolute_time(),
+ 	    proc_getpid(p), p->p_comm, p->p_ppid, rv,
+ 	    WIFSIGNALED(rv) ? WTERMSIG(rv) : 0,
+ 	    WIFEXITED(rv) ? WEXITSTATUS(rv) : -1);
