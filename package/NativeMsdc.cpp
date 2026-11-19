@@ -904,6 +904,56 @@ IOReturn transfer (uint64_t sector, uint32_t blocks, uint8_t *buffer, bool write
   return result;
 }
 
+// ---- unattended return to fastboot ------------------------------------------------------------
+// A test boot is only useful if it ends by itself and leaves the phone where it can be flashed again.
+// The bootloader reads Android's bootloader control block out of the misc partition, and "boot-fastboot"
+// is one of its commands, so writing that command before resetting makes the board come back into
+// fastboot instead of booting this image again.
+//
+// If the partition is missing or the write fails nothing changes and the reset still happens, so the
+// worst case is the behaviour without this code.
+extern "C" bool native_msdc_write_bcb (const char *command)
+{
+  if (!gHost.layoutValid || !gHost.map) return false;
+
+  HostSession session;
+  // The GPT entries were read once during start(); read them again so a stale bounce buffer cannot
+  // decide which partition gets written.
+  if (transfer (gHost.gpt.entriesLba, gHost.gpt.entrySectors, gHost.bounce, false) != kIOReturnSuccess)
+    return false;
+
+  uint64_t first = 0, sectors = 0;
+  for (uint32_t index = 0; index < gHost.gpt.entryCount; ++index) {
+    const uint8_t *entry = gHost.bounce + index * kGptEntryBytes;
+    if (!gptEntryUsed (entry)) continue;
+    if (!gptEntryNamed (entry, "misc")) continue;
+    first = le64 (entry + 32);
+    sectors = le64 (entry + 40) - first + 1;
+    break;
+  }
+  // struct bootloader_message is 2048 bytes, and Android's misc partition is exactly that (four 512-byte
+  // sectors).  Requiring more would refuse on every real device; writing more would run past the partition.
+  if (!first || sectors < 4) {
+    IOLog ("NativeMsdc: bcb: no usable misc partition (%llu sectors)\n", (unsigned long long)sectors);
+    return false;
+  }
+
+  // struct bootloader_message: command[32] status[32] recovery[768] stage[32] reserved[1184] = 2048 bytes.
+  // Written whole and zeroed apart from the command, so a stale recovery request cannot survive.
+  static uint8_t block[2048];
+  bzero (block, sizeof (block));
+  size_t length = strlen (command);
+  if (length > 31) length = 31;
+  memcpy (block, command, length);
+
+  if (transfer (first, 4, block, true) != kIOReturnSuccess) {
+    IOLog ("NativeMsdc: bcb: write failed\n");
+    return false;
+  }
+  IOLog ("NativeMsdc: bcb: wrote \"%s\" to misc at %llu\n", command, (unsigned long long)first);
+  return true;
+}
+
 // On-screen progress.  The display glue renders native_boot_progress() into the boot framebuffer, so
 // the phone itself can show how far a boot got instead of looking identical to a hang.  Weak, so the
 // storage driver still links when the display component is not selected.

@@ -22,6 +22,10 @@
 static void gopDrawLine (unsigned line, const char *text);   // defined below, used by the diagnostics
 extern "C" void native_gop_text(unsigned line, const char *text) __attribute__((weak));
 extern "C" void native_diag_persist_start (void);
+static void dandelionAutoResetStart (void);
+// Storage driver: write an Android bootloader control block command (misc partition).
+// Storage driver: write an Android bootloader control block command into the misc partition.
+extern "C" bool native_msdc_write_bcb (const char *command);
 static void dandelionAutoResetStart (void);   // starts the panel journal thread when mode 2
 extern "C" void native_gop_redraw_ring(void) __attribute__((weak));
 extern "C" void native_diag_process_summary(void) __attribute__((weak));
@@ -915,8 +919,19 @@ dandelionAutoResetThread (void *, wait_result_t)
         return;
     }
     IOSleep (seconds * 1000);
-    // Say so on the panel first: a photo proves the timer fired and dates the run.
-    gopDrawLine (21, "autoreset");
+    /*
+     * Ask the bootloader for fastboot before resetting.  dandelion-autoreset-fastboot=1 enables it; without
+     * the argument the reset happens exactly as before, so a board whose bootloader ignores the command is
+     * left where it is today.  A photo of the panel dates the run either way.
+     */
+    unsigned wantFastboot = 0;
+    if (PE_parse_boot_argn ("dandelion-autoreset-fastboot", &wantFastboot, sizeof (wantFastboot)) &&
+        wantFastboot != 0) {
+        bool wrote = native_msdc_write_bcb ("boot-fastboot");
+        gopDrawLine (21, wrote ? "autoreset bcb ok" : "autoreset bcb fail");
+    } else {
+        gopDrawLine (21, "autoreset");
+    }
     IOSleep (1500);
     register uint64_t x0 __asm__ ("x0") = 0x84000009;   // PSCI SYSTEM_RESET
     register uint64_t x1 __asm__ ("x1") = 0;
