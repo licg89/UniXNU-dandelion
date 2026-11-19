@@ -132,6 +132,19 @@ jobs:
             echo "::error title=build-data-seed::$(tail -n 1 "$RUNNER_TEMP/out/build-data-seed.log")"
             exit "$status"
           fi
+
+      - name: Repair system watchdog policy ownership
+        run: |
+          set -euo pipefail
+          python3 device/scripts/repair-seed-watchdog-ownership.py \
+            --seed "$RUNNER_TEMP/out/dandelion-data.dbr" \
+            --report "$RUNNER_TEMP/out/dandelion-data.dbr.json" \
+            --backup "$RUNNER_TEMP/seed-work/dandelion-data.original.dbr" \
+            --work "$RUNNER_TEMP/seed-repair" --unixnu unixnu
+
+      - name: Record verified seed identity
+        run: |
+          set -euo pipefail
           uuid=$(python3 -c "import json,os;print(json.load(open(os.environ['RUNNER_TEMP']+'/out/dandelion-data.dbr.json'))['volume_uuid'])")
           {
             echo "device $(git -C device rev-parse HEAD)"
